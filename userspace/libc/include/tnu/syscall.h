@@ -1,0 +1,67 @@
+#ifndef TNU_USER_SYSCALL_H
+#define TNU_USER_SYSCALL_H
+
+#include <stddef.h>
+#include <stdint.h>
+#include <sys/types.h>
+
+struct stat;
+
+enum {
+    SYS_READ = 0,
+    SYS_WRITE = 1,
+    SYS_OPEN = 2,
+    SYS_CLOSE = 3,
+    SYS_SPAWN = 4,
+    SYS_EXEC = 5,
+    SYS_WAIT = 6,
+    SYS_EXIT = 7,
+    SYS_GETPID = 8,
+    SYS_CHDIR = 9,
+    SYS_GETCWD = 10,
+    SYS_MKDIR = 11,
+    SYS_UNLINK = 12,
+    SYS_STAT = 13,
+    SYS_CHMOD = 14,
+    SYS_CHOWN = 15,
+    SYS_GETUID = 16,
+    SYS_GETGID = 17,
+    SYS_LSEEK = 18,
+    SYS_ACCESS = 19,
+    SYS_DUP = 20,
+    SYS_DUP2 = 21,
+    SYS_GETPPID = 22,
+};
+
+#define O_RDONLY 0x0
+#define O_WRONLY 0x1
+#define O_RDWR   0x2
+#define O_CREAT  0x40
+#define O_TRUNC  0x200
+
+long tnu_syscall(long n, long a0, long a1, long a2, long a3, long a4, long a5);
+ssize_t read(int fd, void *buf, size_t count);
+ssize_t write(int fd, const void *buf, size_t count);
+int open(const char *path, int flags, ...);
+int close(int fd);
+int spawn(const char *path);
+int exec(const char *path);
+int wait(int pid);
+void exit(int code) __attribute__((noreturn));
+int getpid(void);
+int getppid(void);
+int getuid(void);
+int getgid(void);
+int chdir(const char *path);
+int getcwd(char *buf, size_t size);
+int mkdir(const char *path, mode_t mode);
+int unlink(const char *path);
+int stat(const char *path, struct stat *st);
+int chmod(const char *path, mode_t mode);
+int chown(const char *path, uid_t uid, gid_t gid);
+off_t lseek(int fd, off_t offset, int whence);
+int access(const char *path, int mode);
+int dup(int oldfd);
+int dup2(int oldfd, int newfd);
+
+#endif

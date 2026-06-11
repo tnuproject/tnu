@@ -1,0 +1,7 @@
+NAME=TNU
+PRETTY_NAME="TNU"
+ID=tnu
+VERSION_ID=0.1.0
+VERSION_CODENAME=espresso
+HOME_URL=https://github.com/tnuproject
+BUG_REPORT_URL=https://github.com/tnuproject/tnu/issues

@@ -1,0 +1,133 @@
+{
+  "ports": [
+    {
+      "name": "nano",
+      "kind": "editor",
+      "upstream": "GNU nano",
+      "source": "https://www.nano-editor.org/dist/latest/nano.tar.xz",
+      "license": "GPL-3.0-or-later",
+      "target_binary": "/bin/nano",
+      "required_features": [
+        "exec",
+        "termios",
+        "signals",
+        "directory_iteration",
+        "locale_minimal"
+      ],
+      "dependencies": [
+        "libc",
+        "ncurses-or-tiny-termcap"
+      ]
+    },
+    {
+      "name": "doom",
+      "kind": "game",
+      "upstream": "doomgeneric",
+      "source": "https://github.com/ozkl/doomgeneric.git",
+      "license": "GPL-2.0-or-later",
+      "target_binary": "/usr/games/doom",
+      "required_features": [
+        "exec",
+        "framebuffer_userspace",
+        "keyboard_events",
+        "monotonic_time",
+        "filesystem_read",
+        "heap_syscall"
+      ],
+      "dependencies": [
+        "libc"
+      ]
+    },
+    {
+      "name": "curl",
+      "kind": "network-tool",
+      "upstream": "curl",
+      "source": "https://curl.se/download/curl.tar.xz",
+      "license": "curl",
+      "target_binary": "/usr/bin/curl",
+      "required_features": [
+        "exec",
+        "tcp",
+        "sockets",
+        "dns",
+        "select_poll",
+        "tls_or_no_tls_profile",
+        "filesystem_write"
+      ],
+      "dependencies": [
+        "libc",
+        "zlib-optional",
+        "mbedtls-or-bearssl-optional"
+      ]
+    },
+    {
+      "name": "wget",
+      "kind": "network-tool",
+      "upstream": "GNU Wget",
+      "source": "https://ftp.gnu.org/gnu/wget/wget-latest.tar.gz",
+      "license": "GPL-3.0-or-later",
+      "target_binary": "/usr/bin/wget",
+      "required_features": [
+        "exec",
+        "tcp",
+        "sockets",
+        "dns",
+        "select_poll",
+        "filesystem_write"
+      ],
+      "dependencies": [
+        "libc",
+        "gnulib-subset",
+        "tls-optional"
+      ]
+    },
+    {
+      "name": "xorg",
+      "kind": "display-server",
+      "upstream": "X.Org modular tree",
+      "source": "https://gitlab.freedesktop.org/xorg/xserver.git",
+      "license": "MIT/X11",
+      "target_binary": "/usr/bin/Xorg",
+      "required_features": [
+        "exec",
+        "mmap",
+        "shared_memory",
+        "signals",
+        "sockets",
+        "select_poll",
+        "ioctl",
+        "userspace_graphics",
+        "input_events",
+        "dynamic_loader"
+      ],
+      "dependencies": [
+        "libc",
+        "libdrm-or-fbdev-backend",
+        "pixman",
+        "xproto",
+        "xtrans"
+      ]
+    },
+    {
+      "name": "xbrowser",
+      "kind": "web-browser",
+      "upstream": "TNU simple X11 browser",
+      "source": "ports/xbrowser",
+      "license": "BSD-2-Clause",
+      "target_binary": "/usr/bin/xbrowser",
+      "required_features": [
+        "exec",
+        "xorg",
+        "tcp",
+        "sockets",
+        "dns",
+        "http_client",
+        "font_rendering"
+      ],
+      "dependencies": [
+        "libc",
+        "xlib-or-tinyxlib"
+      ]
+    }
+  ]
+}
