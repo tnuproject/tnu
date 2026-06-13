@@ -36,6 +36,7 @@ enum {
     SYS_UPTIME_MS = 25,
     SYS_BRK = 26,
     SYS_SIGACTION = 27,
+    SYS_FSTAT = 28,
 };
 
 #define TNU_IOCTL_FB_GETINFO 0x544e4601u
@@ -90,6 +91,7 @@ int getcwd(char *buf, size_t size);
 int mkdir(const char *path, mode_t mode);
 int unlink(const char *path);
 int stat(const char *path, struct stat *st);
+int fstat(int fd, struct stat *st);
 int chmod(const char *path, mode_t mode);
 int chown(const char *path, uid_t uid, gid_t gid);
 off_t lseek(int fd, off_t offset, int whence);

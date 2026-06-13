@@ -6,6 +6,7 @@
 #include <tnu/net.h>
 #include <tnu/printf.h>
 #include <tnu/string.h>
+#include <tnu/vfs.h>
 
 #define ETH_TYPE_IPV4 0x0800
 #define ETH_TYPE_ARP  0x0806
@@ -170,6 +171,14 @@ static uint16_t inet_checksum(const void *data, size_t len)
         sum = (sum & 0xffff) + (sum >> 16);
     }
     return (uint16_t)~sum;
+}
+
+static bool name_ends_with(const char *name, const char *suffix)
+{
+    size_t name_len = strlen(name);
+    size_t suffix_len = strlen(suffix);
+    return name_len >= suffix_len &&
+           strcmp(name + name_len - suffix_len, suffix) == 0;
 }
 
 static struct net_iface *add_iface(const char *name, enum net_iface_type type)
@@ -1274,7 +1283,7 @@ int net_wifi_scan(void)
         return 0;
     }
     if (saw_iwlwifi) {
-        return last_iwl_rc;
+        return last_iwl_rc == -1 ? -3 : last_iwl_rc;
     }
     for (size_t i = 0; i < iface_count; i++) {
         if (ifaces[i].type == NET_IFACE_WIFI) {
@@ -1311,9 +1320,111 @@ int net_wifi_connect(const char *iface_name, const char *ssid, const char *passp
             log_warn("iwlwifi", "%s association blocked: firmware %s is not loaded",
                      iface_name, st && st->firmware_name ? st->firmware_name : "unknown");
         }
-        return rc;
+        return rc == -1 ? -3 : rc;
     }
     log_warn("wifi", "%s cannot associate with '%s': firmware/MAC/WPA layer unavailable",
              iface_name, ssid ? ssid : "");
     return -2;
+}
+
+struct wifi_profile {
+    char iface[NET_NAME_MAX + 1];
+    char ssid[33];
+    char passphrase[65];
+    bool autoconnect;
+};
+
+static void profile_value(const char *text, const char *key, char *out, size_t out_size)
+{
+    if (!text || !key || !out || out_size == 0) {
+        return;
+    }
+    out[0] = '\0';
+    size_t key_len = strlen(key);
+    const char *line = text;
+    while (*line) {
+        const char *end = strchr(line, '\n');
+        size_t len = end ? (size_t)(end - line) : strlen(line);
+        if (len > key_len && strncmp(line, key, key_len) == 0 && line[key_len] == '=') {
+            size_t value_len = len - key_len - 1;
+            if (value_len >= out_size) {
+                value_len = out_size - 1;
+            }
+            memcpy(out, line + key_len + 1, value_len);
+            out[value_len] = '\0';
+            return;
+        }
+        if (!end) {
+            return;
+        }
+        line = end + 1;
+    }
+}
+
+static bool profile_bool_value(const char *text, const char *key)
+{
+    char value[8];
+    profile_value(text, key, value, sizeof(value));
+    return strcmp(value, "yes") == 0 || strcmp(value, "true") == 0 ||
+           strcmp(value, "1") == 0;
+}
+
+static int parse_wifi_profile(const struct vfs_node *node, struct wifi_profile *profile)
+{
+    if (!node || !node->data || node->size == 0 || !profile) {
+        return -1;
+    }
+    char text[256];
+    size_t len = node->size < sizeof(text) - 1 ? (size_t)node->size : sizeof(text) - 1;
+    memcpy(text, node->data, len);
+    text[len] = '\0';
+
+    memset(profile, 0, sizeof(*profile));
+    profile_value(text, "iface", profile->iface, sizeof(profile->iface));
+    profile_value(text, "ssid", profile->ssid, sizeof(profile->ssid));
+    profile_value(text, "passphrase", profile->passphrase, sizeof(profile->passphrase));
+    profile->autoconnect = profile_bool_value(text, "autoconnect");
+    if (!profile->iface[0] || !profile->ssid[0]) {
+        return -1;
+    }
+    return 0;
+}
+
+struct wifi_autoconnect_ctx {
+    int attempted;
+    int connected;
+};
+
+static void wifi_autoconnect_emit(struct vfs_node *node, void *ctx)
+{
+    struct wifi_autoconnect_ctx *state = ctx;
+    if (!node || node->type != VFS_NODE_FILE || !state ||
+        !name_ends_with(node->name, ".conf")) {
+        return;
+    }
+
+    struct wifi_profile profile;
+    if (parse_wifi_profile(node, &profile) < 0 || !profile.autoconnect) {
+        return;
+    }
+    state->attempted++;
+    int rc = net_wifi_connect(profile.iface, profile.ssid, profile.passphrase);
+    if (rc == 0) {
+        state->connected++;
+        log_info("wifi", "autoconnected %s to '%s'", profile.iface, profile.ssid);
+    } else {
+        log_warn("wifi", "autoconnect %s -> '%s' failed (%d)",
+                 profile.iface, profile.ssid, rc);
+    }
+}
+
+int net_wifi_autoconnect(void)
+{
+    struct vfs_node *dir = vfs_lookup("/etc/wifi", "/");
+    if (!dir || dir->type != VFS_NODE_DIR) {
+        return 0;
+    }
+    struct wifi_autoconnect_ctx ctx = {0};
+    vfs_list(dir, wifi_autoconnect_emit, &ctx);
+    return ctx.connected > 0 ? 0 : (ctx.attempted > 0 ? -1 : 0);
 }

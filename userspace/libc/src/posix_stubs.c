@@ -1,19 +1,21 @@
 #include <arpa/inet.h>
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <locale.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdarg.h>
-#include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/select.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <tnu/syscall.h>
 #include <termios.h>
+#include <time.h>
 #include <unistd.h>
 
 int raise(int sig)
@@ -341,29 +343,57 @@ int FD_ISSET(int fd, fd_set *set)
 int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
            struct timeval *timeout)
 {
-    (void)nfds;
-    (void)readfds;
-    (void)writefds;
-    (void)exceptfds;
     (void)timeout;
-    errno = ENOSYS;
-    return -1;
+    if (nfds < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    int ready = 0;
+    for (int fd = 0; fd < nfds && fd < FD_SETSIZE; fd++) {
+        if (readfds && FD_ISSET(fd, readfds)) {
+            ready++;
+        }
+        if (writefds && FD_ISSET(fd, writefds)) {
+            ready++;
+        }
+    }
+    if (exceptfds) {
+        FD_ZERO(exceptfds);
+    }
+    return ready;
 }
 
 int poll(struct pollfd *fds, nfds_t nfds, int timeout)
 {
-    (void)fds;
-    (void)nfds;
     (void)timeout;
-    errno = ENOSYS;
-    return -1;
+    if (!fds && nfds) {
+        errno = EINVAL;
+        return -1;
+    }
+    int ready = 0;
+    for (nfds_t i = 0; i < nfds; i++) {
+        fds[i].revents = 0;
+        if (fds[i].fd < 0) {
+            continue;
+        }
+        if (fds[i].events & POLLIN) {
+            fds[i].revents |= POLLIN;
+        }
+        if (fds[i].events & POLLOUT) {
+            fds[i].revents |= POLLOUT;
+        }
+        if (fds[i].revents) {
+            ready++;
+        }
+    }
+    return ready;
 }
 
 void *mmap(void *addr, size_t length, int prot, int flags, int fd, long offset)
 {
     (void)addr;
     (void)prot;
-    if (length == 0 || (flags & MAP_SHARED)) {
+    if (length == 0) {
         errno = EINVAL;
         return MAP_FAILED;
     }
@@ -422,4 +452,48 @@ int ioctl(int fd, unsigned long request, ...)
 int isatty(int fd)
 {
     return fd >= 0 && fd <= 2;
+}
+
+int fcntl(int fd, int cmd, ...)
+{
+    (void)fd;
+    (void)cmd;
+    /* F_GETFL = 3, F_SETFL = 4 — return a safe flags value; flags changes ignored */
+    if (cmd == 3 /* F_GETFL */) {
+        return 0;
+    }
+    return 0;
+}
+
+int nanosleep(const struct timespec *req, struct timespec *rem)
+{
+    (void)req;
+    if (rem) {
+        rem->tv_sec = 0;
+        rem->tv_nsec = 0;
+    }
+    return 0;
+}
+
+int gettimeofday(struct timeval *tv, void *tz)
+{
+    (void)tz;
+    if (tv) {
+        uint64_t ms = uptime_ms();
+        tv->tv_sec = (long)(ms / 1000);
+        tv->tv_usec = (long)((ms % 1000) * 1000);
+    }
+    return 0;
+}
+
+unsigned int sleep(unsigned int seconds)
+{
+    (void)seconds;
+    return 0;
+}
+
+int usleep(unsigned long usec)
+{
+    (void)usec;
+    return 0;
 }

@@ -7,6 +7,9 @@ extern char kernel_end;
 static struct memory_stats stats;
 static uintptr_t frame_cursor;
 static uintptr_t frame_limit;
+#define PMM_FREE_STACK_MAX 65536
+static uintptr_t free_stack[PMM_FREE_STACK_MAX];
+static size_t free_stack_count;
 
 static uintptr_t align_up(uintptr_t value, uintptr_t alignment)
 {
@@ -72,6 +75,7 @@ void pmm_init(const struct boot_info *boot)
     if (frame_limit < frame_cursor) {
         frame_limit = frame_cursor;
     }
+    free_stack_count = 0;
     stats.free_frames_estimate = (frame_limit - frame_cursor) / PAGE_SIZE;
 
     log_info("pmm", "memory total=%llu KiB usable=%llu KiB frame pool=%p-%p",
@@ -81,6 +85,14 @@ void pmm_init(const struct boot_info *boot)
 
 uintptr_t pmm_alloc_frame(void)
 {
+    if (free_stack_count) {
+        uintptr_t frame = free_stack[--free_stack_count];
+        stats.allocated_frames++;
+        if (stats.free_frames_estimate) {
+            stats.free_frames_estimate--;
+        }
+        return frame;
+    }
     if (frame_cursor + PAGE_SIZE > frame_limit) {
         return 0;
     }
@@ -91,6 +103,21 @@ uintptr_t pmm_alloc_frame(void)
         stats.free_frames_estimate--;
     }
     return frame;
+}
+
+void pmm_free_frame(uintptr_t frame)
+{
+    if (!frame || (frame & (PAGE_SIZE - 1)) != 0) {
+        return;
+    }
+    if (free_stack_count >= PMM_FREE_STACK_MAX) {
+        return;
+    }
+    free_stack[free_stack_count++] = frame;
+    if (stats.allocated_frames) {
+        stats.allocated_frames--;
+    }
+    stats.free_frames_estimate++;
 }
 
 const struct memory_stats *memory_stats_get(void)

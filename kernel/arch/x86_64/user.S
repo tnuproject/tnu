@@ -77,6 +77,7 @@ syscall_entry:
     movq saved_user_rsp(%rip), %rsp
     movq saved_user_rip(%rip), %rcx
     movq saved_user_rflags(%rip), %r11
+    orq  $0x200, %r11      /* ensure IF is set in restored RFLAGS */
 
     movq $0x1b, %rdx
     movw %dx, %ds
@@ -118,6 +119,7 @@ syscall_entry:
 
 .global arch_enter_user
 arch_enter_user:
+    /* rdi = ELF entry point, rsi = user stack pointer */
     pushq %rbx
     pushq %rbp
     pushq %r12
@@ -125,17 +127,41 @@ arch_enter_user:
     pushq %r14
     pushq %r15
     movq %rsp, saved_kernel_rsp(%rip)
-    movq %rsi, %rax
+
     movq $0x1b, %rdx
     movw %dx, %ds
     movw %dx, %es
 
-    pushq $0x1b
-    pushq %rdi
-    pushq $0x202
-    pushq $0x23
-    pushq %rax
+    /* iretq pops: RIP, CS, RFLAGS, RSP, SS (lowest address first) */
+    pushq $0x1b          /* SS  = user data */
+    pushq %rsi           /* RSP = user stack */
+    pushq $0x202         /* RFLAGS: IF=1, reserved bit 1 */
+    pushq $0x23          /* CS  = user code */
+    pushq %rdi           /* RIP = entry point */
     iretq
+
+.global arch_abort_user
+arch_abort_user:
+    /*
+     * Abort a faulting ring-3 image and return to the kernel caller that
+     * entered it through arch_enter_user().  This mirrors the SYS_EXIT
+     * return-to-kernel path, but can be used from exception context where
+     * SYSRET/IRET back to the faulting instruction would be unsafe.
+     *
+     * rdi = process exit code to return from arch_enter_user()
+     */
+    movq %rdi, %rax
+    movq $0x10, %rdx
+    movw %dx, %ds
+    movw %dx, %es
+    movq saved_kernel_rsp(%rip), %rsp
+    popq %r15
+    popq %r14
+    popq %r13
+    popq %r12
+    popq %rbp
+    popq %rbx
+    ret
 
 .section .bss
 .align 16
@@ -178,5 +204,5 @@ saved_arg5:
 
 .align 16
 syscall_stack_bottom:
-    .skip 32768
+    .skip 262144
 syscall_stack_top:

@@ -18,5 +18,7 @@ void tnu_wpa_pmk_from_passphrase(const char *passphrase, const char *ssid,
 void tnu_wpa_prf(const uint8_t *key, size_t key_len, const char *label,
                  const uint8_t *data, size_t data_len,
                  uint8_t *out, size_t out_len);
+void tnu_aes128_encrypt_block(const uint8_t key[16], const uint8_t in[16],
+                              uint8_t out[16]);
 
 #endif

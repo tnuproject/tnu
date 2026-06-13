@@ -83,13 +83,21 @@ int elf64_validate(const void *image, size_t size, struct elf_image_info *info)
     return 0;
 }
 
+/*
+ * Userspace load region: [USER_LOAD_MIN, USER_LOAD_MAX).
+ * Must cover the code+heap+stack windows mapped by sys_exec_image.
+ * Large binaries (nano, doom) extend well past 0x8000000 into heap space.
+ */
+#define USER_LOAD_MIN 0x400000ULL
+#define USER_LOAD_MAX 0x30000000ULL
+
 int elf64_load(const void *image, size_t size)
 {
     struct elf_image_info info;
     if (elf64_validate(image, size, &info) < 0) {
         return -1;
     }
-    if (info.lowest_vaddr < 0x4000000 || info.highest_vaddr > 0x5000000) {
+    if (info.lowest_vaddr < USER_LOAD_MIN || info.highest_vaddr > USER_LOAD_MAX) {
         return -1;
     }
 

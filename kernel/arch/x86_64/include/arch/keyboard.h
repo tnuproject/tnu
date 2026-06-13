@@ -7,6 +7,7 @@ void keyboard_init(void);
 void keyboard_handle_irq(void);
 int keyboard_try_getchar(void);
 int keyboard_getchar(void);
+bool keyboard_input_available(void);
 bool keyboard_consume_interrupt(void);
 void keyboard_ack_interrupt(void);
 int keyboard_set_layout(const char *name);

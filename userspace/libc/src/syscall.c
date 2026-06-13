@@ -149,6 +149,11 @@ int stat(const char *path, struct stat *st)
     return (int)tnu_syscall(SYS_STAT, (long)path, (long)st, 0, 0, 0, 0);
 }
 
+int fstat(int fd, struct stat *st)
+{
+    return (int)tnu_syscall(SYS_FSTAT, fd, (long)st, 0, 0, 0, 0);
+}
+
 int chmod(const char *path, mode_t mode)
 {
     return (int)tnu_syscall(SYS_CHMOD, (long)path, mode, 0, 0, 0, 0);

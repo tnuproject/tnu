@@ -44,6 +44,7 @@ USER_LDFLAGS := -T userspace/linker.ld -nostdlib -static -no-pie \
 	-Wl,-z,max-page-size=0x1000
 
 KERNEL_C := $(shell find kernel -name '*.c' | sort)
+# tss.c is automatically included by the recursive kernel source scan
 KERNEL_S := $(shell find kernel -name '*.S' | sort)
 KERNEL_HEADERS := $(shell find kernel/include kernel/arch/x86_64/include -name '*.h' | sort) \
 	$(GENERATED_VERSION)
@@ -64,6 +65,7 @@ COREUTIL_NAMES := cat chmod chown clear cp date dmesg echo hostname \
 
 IWN_FW_SRC := $(shell find freebsd-src/sys/contrib/dev/iwn freebsd-src/sys/contrib/dev/wpi -maxdepth 1 -name '*.fw.uu' 2>/dev/null | sort)
 IWM_FW_SRC := $(shell find freebsd-src/sys/contrib/dev/iwm -maxdepth 1 -name '*.fw' 2>/dev/null | sort)
+LINUX_IWL_FW_SRC := $(shell find rootfs/lib/firmware rootfs/lib/firmware/iwlwifi /lib/firmware /lib/firmware/iwlwifi -maxdepth 1 \( -name 'iwlwifi-*.ucode' -o -name 'iwlwifi-*.fw' \) 2>/dev/null | sort -u)
 
 .PHONY: all kernel userspace iso run clean rootfs universe version-files permission-tests verify verify-kernel verify-iso \
 	firmware-iwlwifi ports-preflight ports-fetch ports-fetch-core
@@ -90,9 +92,21 @@ version-files: $(GENERATED_VERSION) $(GENERATED_GRUB)
 $(GENERATED_VERSION) $(GENERATED_GRUB): version.mk boot/grub/grub.cfg.in tools/gen_version.py
 	$(HOSTPY) tools/gen_version.py --version version.mk --out $(GENERATED)
 
-firmware-iwlwifi: tools/decode_iwn_firmware.py $(IWN_FW_SRC) $(IWM_FW_SRC)
+firmware-iwlwifi: tools/decode_iwn_firmware.py
 	rm -rf $(BUILD)/firmware/iwlwifi
-	$(HOSTPY) tools/decode_iwn_firmware.py --out $(BUILD)/firmware/iwlwifi $(IWN_FW_SRC) $(IWM_FW_SRC)
+	mkdir -p $(BUILD)/firmware/iwlwifi
+	@if [ -n "$(strip $(IWN_FW_SRC) $(IWM_FW_SRC))" ]; then \
+		$(HOSTPY) tools/decode_iwn_firmware.py --out $(BUILD)/firmware/iwlwifi $(IWN_FW_SRC) $(IWM_FW_SRC); \
+	else \
+		echo "No FreeBSD iwn/iwm firmware sources found, skipping decode"; \
+		printf "TNU iwlwifi firmware bundle\n\nNo FreeBSD .fw/.fw.uu sources were found during this build.\n" > $(BUILD)/firmware/iwlwifi/README.TNU; \
+	fi
+	@if [ -n "$(strip $(LINUX_IWL_FW_SRC))" ]; then \
+		for fw in $(LINUX_IWL_FW_SRC); do cp -f "$$fw" $(BUILD)/firmware/iwlwifi/; done; \
+		echo "Copied Linux iwlwifi firmware into $(BUILD)/firmware/iwlwifi"; \
+	else \
+		echo "No Linux iwlwifi-*.ucode/.fw files found in rootfs/lib/firmware or /lib/firmware"; \
+	fi
 
 $(KERNEL): $(KERNEL_OBJS) kernel/linker.ld $(GENERATED_VERSION)
 	@mkdir -p $(dir $@)

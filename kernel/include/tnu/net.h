@@ -63,5 +63,6 @@ int net_iface_set_up(const char *name, bool up);
 int net_iface_dhcp(const char *name);
 int net_wifi_scan(void);
 int net_wifi_connect(const char *iface, const char *ssid, const char *passphrase);
+int net_wifi_autoconnect(void);
 
 #endif

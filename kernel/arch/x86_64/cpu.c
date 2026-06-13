@@ -103,9 +103,9 @@ void syscall_init(void)
     };
 
     wrmsr(IA32_EFER, rdmsr(IA32_EFER) | EFER_SCE);
-    /* SYSCALL: CS=0x08 (kernel code), SS=0x10 (kernel data)
-     * SYSRET:  CS=0x23 (user code),   SS=0x1b (user data) */
-    wrmsr(IA32_STAR, ((uint64_t)0x08 << 48) | ((uint64_t)0x10 << 32));
+    /* STAR[47:32] = SYSCALL CS → CS=0x08, SS=0x08+8=0x10
+     * STAR[63:48] = SYSRET base → 64-bit SYSRET CS=base+16=0x23, SS=base+8=0x1b */
+    wrmsr(IA32_STAR, ((uint64_t)0x10 << 48) | ((uint64_t)0x08 << 32));
     wrmsr(IA32_LSTAR, (uint64_t)(uintptr_t)syscall_entry);
     wrmsr(IA32_FMASK, 0x200);
 }

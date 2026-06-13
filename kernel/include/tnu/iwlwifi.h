@@ -12,6 +12,14 @@ struct iwlwifi_fw_part {
     uint32_t data_size;
 };
 
+#define IWLWIFI_FW_SECTION_MAX 96
+
+struct iwlwifi_fw_section {
+    uint32_t offset;
+    const uint8_t *data;
+    uint32_t size;
+};
+
 #define IWLWIFI_AP_CACHE_MAX 16
 
 struct iwlwifi_ap {
@@ -55,6 +63,7 @@ struct iwlwifi_state {
     uint8_t wpa_ptk[64];
     uint8_t wpa_anonce[32];
     uint8_t wpa_snonce[32];
+    uint64_t ccmp_tx_pn;
     struct net_iface *iface;
     char associated_ssid[33];
     uint8_t bssid[6];
@@ -69,6 +78,15 @@ struct iwlwifi_state {
     struct iwlwifi_fw_part init_ucode;
     struct iwlwifi_fw_part runtime_ucode;
     struct iwlwifi_fw_part boot_ucode;
+    struct iwlwifi_fw_section runtime_sections[IWLWIFI_FW_SECTION_MAX];
+    size_t runtime_section_count;
+    uint64_t runtime_section_bytes;
+    struct iwlwifi_fw_section init_sections[IWLWIFI_FW_SECTION_MAX];
+    size_t init_section_count;
+    uint64_t init_section_bytes;
+    uint32_t tlv_flags;
+    uint32_t api_flags[4];
+    uint32_t capa_flags[4];
     void *firmware_dma;
     uintptr_t firmware_dma_phys;
     size_t firmware_dma_size;

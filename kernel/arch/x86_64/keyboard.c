@@ -1,6 +1,7 @@
 #include <arch/cpu.h>
 #include <arch/io.h>
 #include <arch/keyboard.h>
+#include <arch/pit.h>
 #include <tnu/string.h>
 #include <tnu/types.h>
 
@@ -78,6 +79,7 @@ static int caps_lock;
 static int extended_prefix;
 static int set2_break_prefix;
 static int raw_set2_mode;
+static uint64_t backspace_last_make_tick;
 
 /*
  * We intentionally use translated scancode set 1.
@@ -464,6 +466,7 @@ void keyboard_init(void)
     extended_prefix = 0;
     set2_break_prefix = 0;
     raw_set2_mode = 0;
+    backspace_last_make_tick = 0;
     scancode_set = 1;
     layout = "us";
 
@@ -647,11 +650,21 @@ static void process_set1_scancode(uint8_t scancode)
         return;
     }
 
-    if (key_down[code] && code != 0x0e) {
-        return;
+    if (key_down[code]) {
+        if (code != 0x0e) {
+            return;
+        }
+        uint64_t now = pit_ticks();
+        if (now - backspace_last_make_tick < 5) {
+            return;
+        }
+        backspace_last_make_tick = now;
     }
 
     key_down[code] = true;
+    if (code == 0x0e) {
+        backspace_last_make_tick = pit_ticks();
+    }
 
     if (code == 0x2a) {
         left_shift_down = 1;
@@ -848,6 +861,12 @@ int keyboard_try_getchar(void)
     read_pos = (read_pos + 1) % KBD_BUFFER;
 
     return c;
+}
+
+bool keyboard_input_available(void)
+{
+    keyboard_poll();
+    return read_pos != write_pos;
 }
 
 int keyboard_set_layout(const char *name)

@@ -97,3 +97,55 @@ void pci_enable_bus_mastering(const struct pci_device *dev)
     command |= 0x00000007u;
     pci_config_write32(dev->bus, dev->slot, dev->function, 0x04, command);
 }
+
+static uint8_t pci_find_capability(const struct pci_device *dev, uint8_t cap_id)
+{
+    if (!dev) {
+        return 0;
+    }
+    uint32_t status_cmd = pci_config_read32(dev->bus, dev->slot, dev->function, 0x04);
+    if (!(status_cmd & (1u << 20))) {
+        return 0;
+    }
+
+    uint8_t ptr = (uint8_t)(pci_config_read32(dev->bus, dev->slot, dev->function, 0x34) & 0xfc);
+    for (size_t guard = 0; ptr >= 0x40 && guard < 48; guard++) {
+        uint32_t cap = pci_config_read32(dev->bus, dev->slot, dev->function, ptr);
+        if ((cap & 0xff) == cap_id) {
+            return ptr;
+        }
+        ptr = (uint8_t)((cap >> 8) & 0xfc);
+    }
+    return 0;
+}
+
+int pci_set_power_state_d0(const struct pci_device *dev)
+{
+    uint8_t pm = pci_find_capability(dev, 0x01);
+    if (!pm) {
+        return -1;
+    }
+    uint32_t csr = pci_config_read32(dev->bus, dev->slot, dev->function, (uint8_t)(pm + 4));
+    if ((csr & 0x3u) == 0) {
+        return 0;
+    }
+    csr &= ~0x3u;
+    pci_config_write32(dev->bus, dev->slot, dev->function, (uint8_t)(pm + 4), csr);
+    for (volatile size_t i = 0; i < 100000; i++) {
+        __asm__ volatile("pause");
+    }
+    return 0;
+}
+
+int pci_disable_link_power_management(const struct pci_device *dev)
+{
+    uint8_t pcie = pci_find_capability(dev, 0x10);
+    if (!pcie) {
+        return -1;
+    }
+    uint8_t link_ctrl = (uint8_t)(pcie + 0x10);
+    uint32_t value = pci_config_read32(dev->bus, dev->slot, dev->function, link_ctrl);
+    value &= ~0x3u;
+    pci_config_write32(dev->bus, dev->slot, dev->function, link_ctrl, value);
+    return 0;
+}

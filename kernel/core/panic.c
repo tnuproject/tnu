@@ -4,19 +4,41 @@
 #include <tnu/panic.h>
 #include <tnu/printf.h>
 #include <tnu/version.h>
+#include <tnu/types.h>
+
+static int ptr_looks_safe(void *p)
+{
+    uintptr_t v = (uintptr_t)p;
+
+    /* Avoid obvious null/low-memory garbage and non-canonical x86-64 values. */
+    if (v < 0x1000) {
+        return 0;
+    }
+    if (((v >> 48) != 0) && ((v >> 48) != 0xffff)) {
+        return 0;
+    }
+    return 1;
+}
 
 static void stack_trace(void)
 {
     void **rbp;
     __asm__ volatile("movq %%rbp, %0" : "=r"(rbp));
     kprintf("\nStack trace:\n");
-    for (int i = 0; i < 8 && rbp; i++) {
+
+    for (int i = 0; i < 8 && ptr_looks_safe(rbp); i++) {
+        void **next = (void **)rbp[0];
         void *ret = rbp[1];
-        if (!ret) {
+        if (!ptr_looks_safe(ret)) {
             break;
         }
         kprintf("  #%d %p\n", i, ret);
-        rbp = (void **)rbp[0];
+
+        /* Kernel stacks grow down; the frame chain should move upward. */
+        if (next <= rbp) {
+            break;
+        }
+        rbp = next;
     }
 }
 

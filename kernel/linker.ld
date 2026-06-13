@@ -11,8 +11,11 @@ SECTIONS
 {
     . = 1M;
 
-    .text ALIGN(4K) : {
+    .multiboot ALIGN(8) : {
         KEEP(*(.multiboot))
+    } :text
+
+    .text ALIGN(4K) : {
         *(.text.boot)
         *(.text*)
     } :text

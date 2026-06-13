@@ -247,3 +247,125 @@ void tnu_wpa_prf(const uint8_t *key, size_t key_len, const char *label,
         done += take;
     }
 }
+
+static uint8_t aes_xtime(uint8_t x)
+{
+    return (uint8_t)((x << 1) ^ ((x & 0x80) ? 0x1b : 0));
+}
+
+static uint8_t aes_mul(uint8_t a, uint8_t b)
+{
+    uint8_t r = 0;
+    while (b) {
+        if (b & 1) {
+            r ^= a;
+        }
+        a = aes_xtime(a);
+        b >>= 1;
+    }
+    return r;
+}
+
+static uint8_t aes_pow(uint8_t a, uint8_t n)
+{
+    uint8_t r = 1;
+    while (n) {
+        if (n & 1) {
+            r = aes_mul(r, a);
+        }
+        a = aes_mul(a, a);
+        n >>= 1;
+    }
+    return r;
+}
+
+static uint8_t aes_sbox(uint8_t x)
+{
+    uint8_t y = x ? aes_pow(x, 254) : 0;
+    uint8_t s = (uint8_t)(0x63 ^ y ^ ((y << 1) | (y >> 7)) ^
+                          ((y << 2) | (y >> 6)) ^
+                          ((y << 3) | (y >> 5)) ^
+                          ((y << 4) | (y >> 4)));
+    return s;
+}
+
+static void aes_sub_bytes(uint8_t s[16])
+{
+    for (size_t i = 0; i < 16; i++) {
+        s[i] = aes_sbox(s[i]);
+    }
+}
+
+static void aes_shift_rows(uint8_t s[16])
+{
+    uint8_t t[16];
+    t[0] = s[0];   t[1] = s[5];   t[2] = s[10];  t[3] = s[15];
+    t[4] = s[4];   t[5] = s[9];   t[6] = s[14];  t[7] = s[3];
+    t[8] = s[8];   t[9] = s[13];  t[10] = s[2];  t[11] = s[7];
+    t[12] = s[12]; t[13] = s[1];  t[14] = s[6];  t[15] = s[11];
+    memcpy(s, t, sizeof(t));
+}
+
+static void aes_mix_columns(uint8_t s[16])
+{
+    for (size_t c = 0; c < 4; c++) {
+        uint8_t *p = s + c * 4;
+        uint8_t a0 = p[0], a1 = p[1], a2 = p[2], a3 = p[3];
+        p[0] = aes_mul(a0, 2) ^ aes_mul(a1, 3) ^ a2 ^ a3;
+        p[1] = a0 ^ aes_mul(a1, 2) ^ aes_mul(a2, 3) ^ a3;
+        p[2] = a0 ^ a1 ^ aes_mul(a2, 2) ^ aes_mul(a3, 3);
+        p[3] = aes_mul(a0, 3) ^ a1 ^ a2 ^ aes_mul(a3, 2);
+    }
+}
+
+static void aes_add_round_key(uint8_t s[16], const uint8_t *rk)
+{
+    for (size_t i = 0; i < 16; i++) {
+        s[i] ^= rk[i];
+    }
+}
+
+static void aes_expand_key(const uint8_t key[16], uint8_t round_keys[176])
+{
+    static const uint8_t rcon[10] =
+        { 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36 };
+    memcpy(round_keys, key, 16);
+    size_t bytes = 16;
+    size_t rcon_index = 0;
+    uint8_t temp[4];
+    while (bytes < 176) {
+        memcpy(temp, round_keys + bytes - 4, 4);
+        if ((bytes % 16) == 0) {
+            uint8_t first = temp[0];
+            temp[0] = aes_sbox(temp[1]) ^ rcon[rcon_index++];
+            temp[1] = aes_sbox(temp[2]);
+            temp[2] = aes_sbox(temp[3]);
+            temp[3] = aes_sbox(first);
+        }
+        for (size_t i = 0; i < 4; i++) {
+            round_keys[bytes] = round_keys[bytes - 16] ^ temp[i];
+            bytes++;
+        }
+    }
+}
+
+void tnu_aes128_encrypt_block(const uint8_t key[16], const uint8_t in[16],
+                              uint8_t out[16])
+{
+    uint8_t round_keys[176];
+    uint8_t state[16];
+    aes_expand_key(key, round_keys);
+    memcpy(state, in, sizeof(state));
+
+    aes_add_round_key(state, round_keys);
+    for (size_t round = 1; round < 10; round++) {
+        aes_sub_bytes(state);
+        aes_shift_rows(state);
+        aes_mix_columns(state);
+        aes_add_round_key(state, round_keys + round * 16);
+    }
+    aes_sub_bytes(state);
+    aes_shift_rows(state);
+    aes_add_round_key(state, round_keys + 160);
+    memcpy(out, state, 16);
+}

@@ -34,7 +34,11 @@ static void idt_set_gate(uint8_t vector, void (*handler)(void), uint8_t flags)
     uint64_t addr = (uint64_t)handler;
     idt[vector].offset_low = (uint16_t)(addr & 0xffff);
     idt[vector].selector = 0x08;
-    idt[vector].ist = 0;
+    if (vector == 8 || vector == 13 || vector == 14) {
+        idt[vector].ist = 1;
+    } else {
+        idt[vector].ist = 0;
+    }
     idt[vector].type_attr = flags;
     idt[vector].offset_mid = (uint16_t)((addr >> 16) & 0xffff);
     idt[vector].offset_high = (uint32_t)((addr >> 32) & 0xffffffff);

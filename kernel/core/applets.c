@@ -1251,6 +1251,67 @@ static int cmd_ping(int argc, char **argv)
     return 0;
 }
 
+static const struct net_iface *first_wifi_iface(void)
+{
+    for (size_t i = 0; i < net_iface_count(); i++) {
+        const struct net_iface *iface = net_iface_get(i);
+        if (iface && iface->type == NET_IFACE_WIFI) {
+            return iface;
+        }
+    }
+    return NULL;
+}
+
+static bool wifi_arg_is_iface(const char *arg)
+{
+    if (!arg || strncmp(arg, "wlan", 4) != 0) {
+        return false;
+    }
+    return arg[4] >= '0' && arg[4] <= '9';
+}
+
+static const char *wifi_arg_value(int argc, char **argv, const char *name)
+{
+    for (int i = 0; i + 1 < argc; i++) {
+        if (strcmp(argv[i], name) == 0) {
+            return argv[i + 1];
+        }
+    }
+    return NULL;
+}
+
+static bool wifi_arg_present(int argc, char **argv, const char *name)
+{
+    for (int i = 0; i < argc; i++) {
+        if (strcmp(argv[i], name) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static int wifi_save_credentials(const char *iface, const char *ssid,
+                                 const char *passphrase)
+{
+    if (!iface || !ssid || !ssid[0]) {
+        return -1;
+    }
+    if (!vfs_lookup("/etc/wifi", "/")) {
+        int mk = vfs_mkdir("/etc/wifi", "/", VFS_S_IFDIR | 0700, 0, 0);
+        if (mk < 0) {
+            return mk;
+        }
+    }
+
+    char path[VFS_PATH_MAX];
+    char body[192];
+    ksnprintf(path, sizeof(path), "/etc/wifi/%s.conf", iface);
+    ksnprintf(body, sizeof(body),
+              "iface=%s\nssid=%s\npassphrase=%s\nautoconnect=yes\n",
+              iface, ssid, passphrase ? passphrase : "");
+    return vfs_write_file(path, "/", body, strlen(body));
+}
+
 static int cmd_wifi(int argc, char **argv)
 {
     if (argc == 1 || (argc == 2 && strcmp(argv[1], "status") == 0)) {
@@ -1270,20 +1331,40 @@ static int cmd_wifi(int argc, char **argv)
                                 (unsigned long long)(st->firmware_size / 1024),
                                 st->firmware_tlv ? "TLV" : "legacy",
                                 st->firmware_version);
-                        kprintf("%s: parsed=%s staged=%s runtime=%u+%u init=%u+%u\n",
-                                iface->name,
-                                st->firmware_parsed ? "yes" : "no",
-                                st->firmware_staged ? "yes" : "no",
-                                st->runtime_ucode.text_size,
-                                st->runtime_ucode.data_size,
-                                st->init_ucode.text_size,
-                                st->init_ucode.data_size);
-                        kprintf("%s: running=%s alive=%s; scan engine and WPA are next\n",
+                        if (st->runtime_section_count && !st->init_section_count) {
+                            kprintf("%s: parsed=%s staged=%s runtime=%llu bytes init=runtime-only\n",
+                                    iface->name,
+                                    st->firmware_parsed ? "yes" : "no",
+                                    st->firmware_staged ? "yes" : "no",
+                                    (unsigned long long)st->runtime_section_bytes);
+                        } else {
+                            kprintf("%s: parsed=%s staged=%s runtime=%u+%u init=%u+%u\n",
+                                    iface->name,
+                                    st->firmware_parsed ? "yes" : "no",
+                                    st->firmware_staged ? "yes" : "no",
+                                    st->runtime_ucode.text_size,
+                                    st->runtime_ucode.data_size,
+                                    st->init_ucode.text_size,
+                                    st->init_ucode.data_size);
+                        }
+                        if (st->runtime_section_count || st->init_section_count) {
+                            kprintf("%s: sections runtime=%u/%llu bytes init=%u/%llu bytes api=%08x capa=%08x\n",
+                                    iface->name,
+                                    (uint32_t)st->runtime_section_count,
+                                    (unsigned long long)st->runtime_section_bytes,
+                                    (uint32_t)st->init_section_count,
+                                    (unsigned long long)st->init_section_bytes,
+                                    st->api_flags[0],
+                                    st->capa_flags[0]);
+                        }
+                        kprintf("%s: running=%s alive=%s associated=%s link=%s\n",
                                 iface->name,
                                 st->firmware_running ? "yes" : "no",
-                                st->firmware_alive ? "yes" : "no");
+                                st->firmware_alive ? "yes" : "no",
+                                st->associated ? "yes" : "no",
+                                st->link_ready ? "yes" : "no");
                         if (st->modern_transport) {
-                            kprintf("%s: transport=modern Intel iwm/iwlwifi (command/RX/TX bring-up pending)\n",
+                            kprintf("%s: transport=modern Intel iwm/iwlwifi\n",
                                     iface->name);
                         } else {
                             kprintf("%s: transport=legacy Intel iwn\n", iface->name);
@@ -1332,7 +1413,7 @@ static int cmd_wifi(int argc, char **argv)
         } else if (rc == -7) {
             kprintf("wifi: legacy Intel scan command/RX parser is not complete yet\n");
         } else if (rc == -9) {
-            kprintf("wifi: firmware command queue did not answer yet\n");
+            kprintf("wifi: scan not supported on this device yet (MVM command set not implemented)\n");
         } else if (rc == -10) {
             kprintf("wifi: scan completed but no APs were decoded\n");
         } else {
@@ -1362,13 +1443,42 @@ static int cmd_wifi(int argc, char **argv)
         kprintf("wifi: no iwlwifi interface named %s\n", name);
         return 1;
     }
-    if (argc >= 4 && strcmp(argv[1], "connect") == 0) {
+    if (argc >= 3 && strcmp(argv[1], "connect") == 0) {
         if (!require_root("wifi")) {
             return 1;
         }
-        int rc = net_wifi_connect(argv[2], argv[3], argc > 4 ? argv[4] : "");
+        const char *iface_name = NULL;
+        const char *ssid = NULL;
+        const char *passphrase = "";
+        bool save = !wifi_arg_present(argc, argv, "--no-save");
+
+        if (wifi_arg_is_iface(argv[2])) {
+            iface_name = argv[2];
+            ssid = argc >= 4 ? argv[3] : NULL;
+            if (argc >= 5 && argv[4][0] != '-') {
+                passphrase = argv[4];
+            }
+        } else {
+            const struct net_iface *iface = first_wifi_iface();
+            iface_name = iface ? iface->name : "wlan0";
+            ssid = argv[2];
+        }
+
+        const char *pw_opt = wifi_arg_value(argc, argv, "--password");
+        if (!pw_opt) {
+            pw_opt = wifi_arg_value(argc, argv, "-p");
+        }
+        if (pw_opt) {
+            passphrase = pw_opt;
+        }
+        if (!ssid || !ssid[0]) {
+            kprintf("usage: wifi connect [IFACE] SSID [PASSPHRASE] [--password PASSPHRASE] [--no-save]\n");
+            return 1;
+        }
+
+        int rc = net_wifi_connect(iface_name, ssid, passphrase);
         if (rc == -1) {
-            kprintf("wifi: no such Wi-Fi interface: %s\n", argv[2]);
+            kprintf("wifi: no such Wi-Fi interface: %s\n", iface_name);
         } else if (rc == -3) {
             kprintf("wifi: iwlwifi attach is online, but firmware/scan/WPA association is not complete yet\n");
         } else if (rc == -4) {
@@ -1380,7 +1490,7 @@ static int cmd_wifi(int argc, char **argv)
         } else if (rc == -8) {
             kprintf("wifi: WPA passphrase support is not complete yet\n");
         } else if (rc == -10) {
-            kprintf("wifi: SSID not found during scan\n");
+            kprintf("wifi: SSID not found (MVM devices not yet supported, or AP out of range)\n");
         } else if (rc == -11) {
             kprintf("wifi: 802.11 authentication failed or timed out\n");
         } else if (rc == -12) {
@@ -1394,13 +1504,20 @@ static int cmd_wifi(int argc, char **argv)
         } else if (rc == -16) {
             kprintf("wifi: WPA pairwise CCMP key install failed\n");
         } else if (rc == -17) {
-            kprintf("wifi: WPA PTK installed; GTK/msg4/data path still pending\n");
+            kprintf("wifi: WPA PTK installed; CCMP data encryption is not online yet\n");
         } else {
             kprintf("wifi: connect needs the Intel Wi-Fi firmware/MAC layer before association can work\n");
         }
+        if (rc == 0 && save) {
+            int save_rc = wifi_save_credentials(iface_name, ssid, passphrase);
+            if (save_rc < 0) {
+                kprintf("wifi: connected, but could not save /etc/wifi/%s.conf (%d)\n",
+                        iface_name, save_rc);
+            }
+        }
         return rc == 0 ? 0 : 1;
     }
-    kprintf("usage: wifi [status|scan|connect IFACE SSID [PASSPHRASE]]\n");
+    kprintf("usage: wifi [status|scan|start IFACE|connect [IFACE] SSID [PASSPHRASE] [--password PASSPHRASE] [--no-save]]\n");
     return 1;
 }
 
@@ -1653,8 +1770,8 @@ static const struct applet_command applets[] = {
       "Print detected USB controller/device information." },
     { "ping", cmd_ping, "ping HOST|IPv4",
       "Send ICMP echo requests through the kernel network stack." },
-    { "wifi", cmd_wifi, "wifi [status|scan|start IFACE|connect IFACE SSID [PASSPHRASE]]",
-      "Inspect and manage Wi-Fi. Starting and connecting require root." },
+    { "wifi", cmd_wifi, "wifi [status|scan|start IFACE|connect [IFACE] SSID [--password PASS]]",
+      "Inspect and manage Wi-Fi. Starting, connecting, and saving credentials require root." },
     { "xedit", cmd_xedit, "xedit FILE",
       "Open the simple line editor and save replacement text." },
     { "passwd", cmd_passwd, "passwd [USER]",

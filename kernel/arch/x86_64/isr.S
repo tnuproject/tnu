@@ -88,8 +88,18 @@ isr_common:
     pushq %rax
 
     cld
-    movq %rsp, %rdi
+
+    /*
+     * RDI = pointer to the interrupt_frame on the stack.
+     * We need 16-byte alignment before the call.  The frame is a fixed-size
+     * struct so we know RSP mod 16 after all the pushes; just sub 8 to align,
+     * call, then add 8 back.  Do NOT use R12 as a scratch register here –
+     * it was already saved to the frame and must not be overwritten.
+     */
+    movq %rsp, %rdi        /* arg0 = struct interrupt_frame * */
+    subq $8, %rsp          /* align to 16 bytes before call (frame size is 8-aligned) */
     call isr_dispatch
+    addq $8, %rsp
 
     popq %rax
     popq %rbx

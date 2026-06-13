@@ -28,5 +28,6 @@ uint64_t cpu_read_cr2(void);
 void cpu_init_fpu(void);
 void syscall_init(void);
 int arch_enter_user(uint64_t entry, uint64_t user_stack);
+__attribute__((noreturn)) void arch_abort_user(int exit_code);
 
 #endif

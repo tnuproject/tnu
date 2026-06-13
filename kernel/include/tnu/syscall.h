@@ -32,6 +32,7 @@ enum syscall_number {
     SYS_UPTIME_MS = 25,
     SYS_BRK = 26,
     SYS_SIGACTION = 27,
+    SYS_FSTAT = 28,
 };
 
 #define TNU_IOCTL_FB_GETINFO 0x544e4601u

@@ -15,6 +15,36 @@
 #include <arch/keyboard.h>
 #include <arch/pit.h>
 
+/* Validate that a user-supplied pointer and length are within user address space */
+static bool uptr_ok(const void *ptr, size_t len)
+{
+    if (!ptr) {
+        return false;
+    }
+    uintptr_t start = (uintptr_t)ptr;
+    /* Reject kernel addresses (upper half) and null-page */
+    if (start < 0x1000) {
+        return false;
+    }
+    if (start >= 0x0000800000000000ULL) {
+        return false;
+    }
+    /* Check for overflow */
+    if (len && start + len < start) {
+        return false;
+    }
+    return true;
+}
+
+static bool ustr_ok(const char *s)
+{
+    if (!s) {
+        return false;
+    }
+    uintptr_t v = (uintptr_t)s;
+    return v >= 0x1000 && v < 0x0000800000000000ULL;
+}
+
 static bool has_perm(const struct process *proc, const struct vfs_node *node, uint32_t perm)
 {
     if (!proc || !node) {
@@ -271,6 +301,9 @@ static struct vfs_node *resolve_exec_node(const char *path, char *resolved, size
 
 static long sys_open(const char *path, int flags, int mode)
 {
+    if (!ustr_ok(path)) {
+        return -1;
+    }
     struct process *proc = process_current();
     char normal[VFS_PATH_MAX];
     if (normalize_for_process(proc, path, normal, sizeof(normal)) < 0) {
@@ -324,6 +357,9 @@ static long sys_open(const char *path, int flags, int mode)
 
 static long sys_read(int fd, void *buf, size_t count)
 {
+    if (count > 0 && !uptr_ok(buf, count)) {
+        return -1;
+    }
     struct process *proc = process_current();
     if (fd == 0) {
         char *cbuf = buf;
@@ -397,6 +433,9 @@ static long sys_read(int fd, void *buf, size_t count)
 
 static long sys_write(int fd, const void *buf, size_t count)
 {
+    if (count > 0 && !uptr_ok(buf, count)) {
+        return -1;
+    }
     struct process *proc = process_current();
     if (fd == 1 || fd == 2) {
         console_write_n(buf, count);
@@ -533,6 +572,26 @@ static long sys_readdir(int fd, struct syscall_dirent *out)
     return 0;
 }
 
+static long sys_fstat(int fd, struct vfs_stat *out)
+{
+    if (!uptr_ok(out, sizeof(*out))) {
+        return -1;
+    }
+    struct process *proc = process_current();
+    struct file_descriptor *file = process_get_fd(proc, fd);
+    if (!file || !file->node) {
+        return -1;
+    }
+
+    out->mode = file->node->mode;
+    out->uid = file->node->uid;
+    out->gid = file->node->gid;
+    out->size = file->node->size;
+    out->modified = file->node->modified;
+    out->type = file->node->type;
+    return 0;
+}
+
 static long sys_ioctl(int fd, unsigned long request, void *arg)
 {
     struct process *proc = process_current();
@@ -571,14 +630,14 @@ static long sys_exec_image(const char *path, int argc, char **argv)
 {
     enum {
         USER_BASE = 0x4000000,
-        USER_LIMIT = 0x5000000,
-        USER_HEAP_BASE = 0x5000000,
-        USER_HEAP_LIMIT_SMALL = 0x7000000,
-        USER_STACK_BOTTOM_SMALL = 0x7fc0000,
-        USER_STACK_TOP_SMALL = 0x8000000,
-        USER_HEAP_LIMIT_LARGE = 0xe000000,
-        USER_STACK_BOTTOM_LARGE = 0xefc0000,
-        USER_STACK_TOP_LARGE = 0xf000000,
+        USER_LIMIT = 0x8000000,
+        USER_HEAP_BASE = 0x8000000,
+        USER_HEAP_LIMIT_SMALL = 0x10000000,
+        USER_STACK_BOTTOM_SMALL = 0x17c00000,
+        USER_STACK_TOP_SMALL = 0x18000000,
+        USER_HEAP_LIMIT_LARGE = 0x20000000,
+        USER_STACK_BOTTOM_LARGE = 0x2fc00000,
+        USER_STACK_TOP_LARGE = 0x30000000,
         MAX_ARGS = 16,
         MAX_ARG_LEN = 127,
     };
@@ -610,6 +669,10 @@ static long sys_exec_image(const char *path, int argc, char **argv)
             arg_values[arg_count++] = arg_storage[i];
         }
     }
+    log_debug("exec", "path=%s argc=%d argv0=%s argv1=%s",
+              path_copy, arg_count,
+              arg_count > 0 ? arg_values[0] : "",
+              arg_count > 1 ? arg_values[1] : "");
 
     struct vfs_node *node = resolve_exec_node(path_copy, resolved, sizeof(resolved));
     if (!node || node->type != VFS_NODE_FILE || !node->data) {
@@ -627,7 +690,7 @@ static long sys_exec_image(const char *path, int argc, char **argv)
     uintptr_t user_stack_bottom = USER_STACK_BOTTOM_SMALL;
     uintptr_t user_stack_top = USER_STACK_TOP_SMALL;
     const struct memory_stats *mem = memory_stats_get();
-    if (mem && mem->usable_bytes >= USER_STACK_TOP_LARGE + 0x100000) {
+    if (mem && mem->usable_bytes >= USER_STACK_TOP_LARGE + 0x1000000) {
         user_heap_limit = USER_HEAP_LIMIT_LARGE;
         user_stack_bottom = USER_STACK_BOTTOM_LARGE;
         user_stack_top = USER_STACK_TOP_LARGE;
@@ -638,16 +701,32 @@ static long sys_exec_image(const char *path, int argc, char **argv)
         user_stack_top = USER_STACK_TOP_SMALL;
     }
 
-    if (vmm_map_range_identity(USER_BASE, USER_LIMIT - USER_BASE,
+    /*
+     * Ensure ELF segments fit within our mapped regions.
+     * highest_vaddr may reach into the heap area for large binaries (nano, doom).
+     * We allow it as long as it stays below user_heap_limit.
+     */
+    if (info.lowest_vaddr < USER_BASE ||
+        info.highest_vaddr > user_heap_limit) {
+        return -1;
+    }
+
+    /* Map code region, heap region, and stack region */
+    if (vmm_map_range_identity(USER_BASE, user_heap_limit - USER_BASE,
                                VMM_FLAG_WRITABLE | VMM_FLAG_USER) < 0 ||
         vmm_map_range_identity(user_stack_bottom, user_stack_top - user_stack_bottom,
                                VMM_FLAG_WRITABLE | VMM_FLAG_USER) < 0) {
         return -1;
     }
 
-    memset((void *)(uintptr_t)USER_BASE, 0, USER_LIMIT - USER_BASE);
+    memset((void *)(uintptr_t)USER_BASE, 0, user_heap_limit - USER_BASE);
     memset((void *)user_stack_bottom, 0, user_stack_top - user_stack_bottom);
-    user_brk_current = USER_HEAP_BASE;
+    /* brk starts just after the highest ELF segment, page-aligned */
+    uintptr_t elf_end = (uintptr_t)((info.highest_vaddr + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1));
+    if (elf_end < (uintptr_t)USER_HEAP_BASE) {
+        elf_end = USER_HEAP_BASE;
+    }
+    user_brk_current = elf_end;
     user_heap_limit_current = user_heap_limit;
     if (elf64_load(node->data, (size_t)node->size) < 0) {
         return -1;
@@ -732,25 +811,23 @@ static long sys_sigaction(int sig, const struct user_sigaction_abi *act,
 
 static long sys_brk(uintptr_t next)
 {
-    enum {
-        USER_HEAP_BASE = 0x5000000,
-    };
     if (next == 0) {
         return (long)user_brk_current;
     }
-    if (next < USER_HEAP_BASE || next > user_heap_limit_current) {
-        log_warn("syscall", "brk out of range next=%p current=%p limit=%p",
-                 (void *)next, (void *)user_brk_current, (void *)user_heap_limit_current);
-        return -1;
+    /* Allow any value in [initial_brk, heap_limit]; shrink is always ok */
+    if (next > user_heap_limit_current) {
+        log_warn("syscall", "brk out of range next=%p limit=%p",
+                 (void *)next, (void *)user_heap_limit_current);
+        return (long)user_brk_current;
     }
     if (next > user_brk_current) {
+        /* vmm_map_range_identity is idempotent for already-mapped pages */
         if (vmm_map_range_identity(user_brk_current, next - user_brk_current,
                                    VMM_FLAG_WRITABLE | VMM_FLAG_USER) < 0) {
-            log_warn("syscall", "brk map failed start=%p len=%llu next=%p limit=%p",
+            log_warn("syscall", "brk map failed start=%p len=%llu",
                      (void *)user_brk_current,
-                     (uint64_t)(next - user_brk_current),
-                     (void *)next, (void *)user_heap_limit_current);
-            return -1;
+                     (uint64_t)(next - user_brk_current));
+            return (long)user_brk_current;
         }
     }
     user_brk_current = next;
@@ -858,6 +935,8 @@ long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
     }
     case SYS_STAT:
         return vfs_stat((const char *)a0, proc->cwd, (struct vfs_stat *)a1);
+    case SYS_FSTAT:
+        return sys_fstat((int)a0, (struct vfs_stat *)a1);
     case SYS_CHMOD:
     {
         char normal[VFS_PATH_MAX];

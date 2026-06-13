@@ -926,7 +926,11 @@ int console_getchar(void)
 
 void console_banner(void)
 {
+    console_set_color(CONSOLE_WHITE, CONSOLE_BLACK);
+    console_write("\nBooting ");
     console_set_color(CONSOLE_LIGHT_CYAN, CONSOLE_BLACK);
-    kprintf("%s %s \"%s\"\n", TNU_NAME, TNU_VERSION, TNU_CODENAME);
+    kprintf("%s %s \"%s\"", TNU_NAME, TNU_VERSION, TNU_CODENAME);
+    console_set_color(CONSOLE_WHITE, CONSOLE_BLACK);
+    console_write("...\n");
     console_set_color(CONSOLE_LIGHT_GREY, CONSOLE_BLACK);
 }
