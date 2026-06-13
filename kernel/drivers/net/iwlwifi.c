@@ -95,6 +95,7 @@
 #define IWL_RX_DESC_QID_MASK       0x1f
 #define IWL_RX_UNSOLICITED         0x80
 
+/* DVM command IDs */
 #define IWL_CMD_RXON          16
 #define IWL_CMD_RXON_ASSOC    17
 #define IWL_CMD_ADD_NODE      24
@@ -103,6 +104,99 @@
 #define IWL_CMD_SET_POWER     119
 #define IWL_CMD_SCAN          128
 #define IWL_CMD_GET_STATISTICS 156
+
+/*
+ * MVM command IDs — from FreeBSD sys/dev/iwm/if_iwmreg.h
+ * IWM_CMD_QUEUE = 9  (NOT 0 — this is the critical fix)
+ */
+#define MVM_CMD_QUEUE               9    /* host command queue for MVM */
+#define MVM_CMD_ALIVE               0x01
+#define MVM_CMD_PHY_DB              0x6c
+#define MVM_CMD_POWER_TABLE         0x77 /* IWM_POWER_TABLE_CMD */
+#define MVM_CMD_PHY_CONTEXT         0x08 /* IWM_PHY_CONTEXT_CMD */
+#define MVM_CMD_MAC_CONTEXT         0x28 /* IWM_MAC_CONTEXT_CMD */
+#define MVM_CMD_TIME_EVENT          0x29 /* IWM_TIME_EVENT_CMD */
+#define MVM_CMD_TIME_EVENT_NOTIF    0x2a /* IWM_TIME_EVENT_NOTIFICATION */
+#define MVM_CMD_BINDING             0x2b /* IWM_BINDING_CONTEXT_CMD */
+#define MVM_CMD_ADD_STA             0x18 /* REPLY_ADD_STA */
+#define MVM_CMD_ADD_STA_KEY         0x17
+#define MVM_CMD_SCAN_LMAC           0x51 /* IWM_SCAN_OFFLOAD_REQUEST_CMD */
+#define MVM_CMD_SCAN_ABORT_LMAC     0x52 /* IWM_SCAN_OFFLOAD_ABORT_CMD */
+#define MVM_CMD_SCAN_COMPLETE_LMAC  0x6d /* IWM_SCAN_OFFLOAD_COMPLETE */
+#define MVM_CMD_NVM_ACCESS          0x88
+#define MVM_CMD_CALIB_RES_NOTIF     0x6b /* PHY_DB blob from init firmware */
+#define MVM_CMD_BT_CONFIG           0x9b
+#define MVM_CMD_STATISTICS_NOTIF    0x9d
+#define MVM_CMD_REPLY_SF_CFG        0x31
+
+/* MVM context action (IWM_FW_CTXT_ACTION_*) */
+#define MVM_CTXT_ACTION_ADD         1
+#define MVM_CTXT_ACTION_MODIFY      2
+#define MVM_CTXT_ACTION_REMOVE      3
+
+/* id_and_color encoding: bits[7:0]=id, bits[15:8]=color */
+#define MVM_ID_AND_COLOR(id, color) (((id) & 0xff) | (((color) & 0xff) << 8))
+
+/* MAC types (IWM_FW_MAC_TYPE_*) */
+#define MVM_MAC_TYPE_AUX            1
+#define MVM_MAC_TYPE_BSS_STA        5
+
+/* TSF IDs */
+#define MVM_TSF_ID_A                0
+
+/* PHY band (IWM_PHY_BAND_*) — NOTE: 5GHz=0, 2.4GHz=1 in FreeBSD */
+#define MVM_PHY_BAND_5              0
+#define MVM_PHY_BAND_24             1
+#define MVM_PHY_VHT_CHAN_MODE_20    0
+
+/* PHY RX chain flags */
+#define MVM_PHY_RX_CHAIN_VALID_MSK      (0x7u << 1)
+#define MVM_PHY_RX_CHAIN_FORCE_SEL_MSK  (0x7u << 4)
+#define MVM_PHY_RX_CHAIN_MIMO_SEL_MSK   (0x7u << 7)
+#define MVM_PHY_RX_CHAIN_CNT_MSK        (0x3u << 10)
+#define MVM_PHY_RX_CHAIN_MIMO_CNT_MSK   (0x3u << 12)
+
+/* STA types (IWM_STA_*) */
+#define MVM_STA_LINK                0
+#define MVM_STA_AUX_ACTIVITY        4
+
+/* Station action */
+#define MVM_STA_ACTION_ADD          0 /* add new (not modify) */
+#define MVM_STA_ACTION_MODIFY       1
+
+/* MAC filter flags (IWM_MAC_FILTER_*) */
+#define MVM_MAC_FILTER_ACCEPT_GRP   (1u << 0)
+#define MVM_MAC_FILTER_DIS_DECRYPT  (1u << 2)
+#define MVM_MAC_FILTER_ACCEPT_BEACON (1u << 3)
+#define MVM_MAC_FILTER_ACCEPT_PROBE  (1u << 4)
+#define MVM_MAC_FILTER_ACCEPT_ALL   0x3fu
+
+/* CCK/OFDM basic rates */
+#define MVM_BASIC_RATES_OFDM        0x00000ff0u
+#define MVM_BASIC_RATES_CCK         0x0000000fu
+
+/* LMAC scan flags (IWM_LMAC_SCAN_FLAG_*) */
+#define MVM_LMAC_SCAN_FLAG_PASS_ALL     (1u << 0)
+#define MVM_LMAC_SCAN_FLAG_PASSIVE      (1u << 1)
+#define MVM_LMAC_SCAN_FLAG_ITER_COMPLETE (1u << 3)
+
+/* Power: CAM mode (no power save) */
+#define MVM_DEVICE_POWER_FLAGS_CAM  (1u << 13)
+
+/* Time event type for association */
+#define MVM_TE_BSS_STA_ASSOC        1
+#define MVM_TE_SESSION_PROT_MAX_MS  500
+#define MVM_TE_V2_NOTIF_HOST_START  (1u << 0)
+#define MVM_TE_V2_NOTIF_HOST_END    (1u << 1)
+#define MVM_TE_V2_FRAG_NONE         1
+
+/* MVM alive status */
+#define MVM_ALIVE_STATUS_OK         0xCAFE
+#define MVM_ALIVE_STATUS_ERR        0xDEAD
+
+/* MVM RX notification IDs */
+#define MVM_RX_SCAN_COMPLETE        0x6d /* IWM_SCAN_OFFLOAD_COMPLETE */
+#define MVM_RX_TE_NOTIF             0x2a /* IWM_TIME_EVENT_NOTIFICATION */
 
 #define IWL_RX_NO_CRC_ERR     (1u << 0)
 #define IWL_RX_NO_OVFL_ERR    (1u << 1)
@@ -393,6 +487,242 @@ struct iwl_rx_mpdu {
     uint16_t reserved;
 } __attribute__((packed));
 
+/*
+ * MVM structures — layouts from FreeBSD sys/dev/iwm/if_iwmreg.h
+ */
+
+/* PHY_CONTEXT_CMD (0x08) — IWM_PHY_CONTEXT_CMD_API_VER_1 */
+struct mvm_fw_channel_info_v1 {
+    uint8_t  band;       /* IWM_PHY_BAND_* (5GHz=0, 2.4GHz=1) */
+    uint8_t  channel;
+    uint8_t  width;      /* IWM_PHY_VHT_CHANNEL_MODE20=0 */
+    uint8_t  ctrl_pos;
+} __attribute__((packed));
+
+struct mvm_phy_ctx_cmd {
+    uint32_t id_and_color;
+    uint32_t action;
+    uint32_t apply_time;
+    uint32_t tx_param_color;
+    struct mvm_fw_channel_info_v1 ci;
+    uint32_t txchain_info;
+    uint32_t rxchain_info;
+    uint32_t acquisition_data;
+    uint32_t dsp_cfg_flags;
+} __attribute__((packed));
+
+/* AC QOS params — part of MAC_CONTEXT_CMD */
+struct mvm_ac_qos {
+    uint16_t cw_min;
+    uint16_t cw_max;
+    uint8_t  aifsn;
+    uint8_t  fifos_mask;
+    uint16_t edca_txop;
+} __attribute__((packed));
+
+/* BSS station data — appended to mac_ctx_cmd for BSS_STA type */
+struct mvm_mac_data_sta {
+    uint32_t is_assoc;
+    uint32_t dtim_time;
+    uint64_t dtim_tsf;
+    uint32_t bi;
+    uint32_t bi_reciprocal;
+    uint32_t dtim_interval;
+    uint32_t dtim_reciprocal;
+    uint32_t listen_interval;
+    uint32_t assoc_id;
+    uint32_t assoc_beacon_arrive_time;
+} __attribute__((packed));
+
+/* MAC_CONTEXT_CMD (0x28) — IWM_MAC_CONTEXT_CMD_API_S_VER_1 */
+#define MVM_AC_NUM  4
+struct mvm_mac_ctx_cmd {
+    uint32_t id_and_color;
+    uint32_t action;
+    uint32_t mac_type;
+    uint32_t tsf_id;
+    uint8_t  node_addr[6];
+    uint16_t reserved_for_node_addr;
+    uint8_t  bssid_addr[6];
+    uint16_t reserved_for_bssid_addr;
+    uint32_t cck_rates;
+    uint32_t ofdm_rates;
+    uint32_t protection_flags;
+    uint32_t cck_short_preamble;
+    uint32_t short_slot;
+    uint32_t filter_flags;
+    uint32_t qos_flags;
+    struct mvm_ac_qos ac[MVM_AC_NUM + 1];
+    struct mvm_mac_data_sta sta; /* union, we only use BSS STA */
+} __attribute__((packed));
+
+/* BINDING_CONTEXT_CMD (0x2b) — IWM_BINDING_CMD_API_S_VER_2 */
+#define MVM_MAX_MACS_IN_BINDING 3
+struct mvm_binding_cmd {
+    uint32_t id_and_color;
+    uint32_t action;
+    uint32_t macs[MVM_MAX_MACS_IN_BINDING];
+    uint32_t phy;
+    uint32_t lmac_id;
+} __attribute__((packed));
+
+/* ADD_STA (0x18) — ADD_STA_CMD_API_S_VER_7 */
+struct mvm_add_sta_cmd {
+    uint8_t  add_modify;
+    uint8_t  awake_acs;
+    uint16_t tid_disable_tx;
+    uint32_t mac_id_n_color;
+    uint8_t  addr[6];
+    uint16_t reserved2;
+    uint8_t  sta_id;
+    uint8_t  modify_mask;
+    uint16_t reserved3;
+    uint32_t station_flags;
+    uint32_t station_flags_msk;
+    uint8_t  add_immediate_ba_tid;
+    uint8_t  remove_immediate_ba_tid;
+    uint16_t add_immediate_ba_ssn;
+    uint16_t sleep_tx_count;
+    uint16_t sleep_state_flags;
+    uint16_t assoc_id;
+    uint16_t beamform_flags;
+    uint32_t tfd_queue_msk;
+} __attribute__((packed));
+
+/* TIME_EVENT_CMD (0x29) — IWM_MAC_TIME_EVENT_CMD_API_S_VER_2 */
+struct mvm_time_event_cmd {
+    uint32_t id_and_color;
+    uint32_t action;
+    uint32_t id;
+    uint32_t apply_time;
+    uint32_t max_delay;
+    uint32_t depends_on;
+    uint32_t interval;
+    uint32_t duration;
+    uint8_t  repeat;
+    uint8_t  max_frags;
+    uint16_t policy;
+} __attribute__((packed));
+
+/* TIME_EVENT_NOTIFICATION (0x2a) */
+struct mvm_time_event_notif {
+    uint32_t timestamp;
+    uint32_t session_id;
+    uint32_t unique_id;
+    uint32_t id_and_color;
+    uint32_t action;
+    uint32_t status;
+} __attribute__((packed));
+
+/* SCAN_OFFLOAD_REQUEST_CMD (0x51) — LMAC scan */
+#define MVM_SCAN_MAX_CHANNELS   14
+#define MVM_PROBE_OPTION_MAX    20
+
+struct mvm_scan_channel_cfg_lmac {
+    uint32_t flags;
+    uint16_t channel_num;
+    uint16_t iter_count;
+    uint32_t iter_interval;
+} __attribute__((packed));
+
+struct mvm_ssid_ie {
+    uint8_t id;
+    uint8_t len;
+    uint8_t ssid[32];
+} __attribute__((packed));
+
+struct mvm_scan_req_tx_cmd {
+    uint32_t tx_flags;
+    uint32_t rate_n_flags;
+    uint8_t  sta_id;
+    uint8_t  reserved[3];
+} __attribute__((packed));
+
+struct mvm_scan_schedule_lmac {
+    uint16_t interval;
+    uint8_t  iter_count;
+    uint8_t  reserved;
+} __attribute__((packed));
+
+struct mvm_scan_channel_opt {
+    uint16_t flags;
+    uint16_t non_ebs_ratio;
+} __attribute__((packed));
+
+struct mvm_scan_req_lmac {
+    uint32_t reserved1;
+    uint8_t  n_channels;
+    uint8_t  active_dwell;
+    uint8_t  passive_dwell;
+    uint8_t  fragmented_dwell;
+    uint8_t  extended_dwell;
+    uint8_t  reserved2;
+    uint16_t rx_chain_select;
+    uint32_t scan_flags;
+    uint32_t max_out_time;
+    uint32_t suspend_time;
+    uint32_t flags;
+    uint32_t filter_flags;
+    struct mvm_scan_req_tx_cmd tx_cmd[2];
+    struct mvm_ssid_ie direct_scan[MVM_PROBE_OPTION_MAX];
+    uint32_t scan_prio;
+    uint32_t iter_num;
+    uint32_t delay;
+    struct mvm_scan_schedule_lmac schedule[2];
+    struct mvm_scan_channel_opt channel_opt[2];
+    /* followed by variable-length channel data */
+} __attribute__((packed));
+
+/* PHY_DB_CMD (0x6c) — calibration blob replay */
+struct mvm_phy_db_cmd {
+    uint16_t type;
+    uint16_t length;
+    /* followed by data bytes */
+} __attribute__((packed));
+
+/* PHY DB section types from init firmware notifications */
+#define MVM_PHY_DB_CFG              1
+#define MVM_PHY_DB_CALIB_NCH        2
+#define MVM_PHY_DB_CALIB_CHG_PAPD   3
+#define MVM_PHY_DB_CALIB_CHG_TXP    4
+#define MVM_PHY_DB_MAX_TYPE         5
+
+/* POWER_TABLE_CMD (0x77) — device-wide power, use CAM (no sleep) */
+struct mvm_device_power_cmd {
+    uint16_t flags;
+    uint16_t reserved;
+} __attribute__((packed));
+
+/* ALIVE response (0x01) */
+struct mvm_lmac_alive {
+    uint32_t ucode_minor;
+    uint32_t ucode_major;
+    uint8_t  sw_rev[8];
+    uint8_t  ver_type;
+    uint8_t  ver_subtype;
+    uint16_t reserved1;
+    uint32_t log_event_table_ptr;
+    uint32_t error_event_table_ptr;
+    uint32_t timestamp;
+    uint32_t reserved2;
+} __attribute__((packed));
+
+struct mvm_alive_resp_v3 {
+    uint16_t status;    /* 0xCAFE=OK, 0xDEAD=error */
+    uint16_t flags;
+    struct mvm_lmac_alive lmac_data;
+    uint8_t  umac_pad[20]; /* umac_alive placeholder */
+} __attribute__((packed));
+
+/* PHY DB storage — one entry per section type */
+#define MVM_PHY_DB_MAX_BLOB_SIZE  512
+#define MVM_PHY_DB_MAX_CH_GROUPS  16
+
+struct mvm_phy_db_entry {
+    uint16_t size;
+    uint8_t  data[MVM_PHY_DB_MAX_BLOB_SIZE];
+} __attribute__((packed));
+
 struct ieee80211_hdr3 {
     uint8_t fc[2];
     uint8_t duration[2];
@@ -424,77 +754,56 @@ static int iwl_send_mgmt_frame(struct iwlwifi_state *st, const uint8_t *frame,
 static const struct iwlwifi_ap *iwl_find_ap(const struct iwlwifi_state *st,
                                             const char *ssid);
 static uint8_t *iwl_append_wpa2_psk_ccmp_rsn(uint8_t *p);
+static size_t iwl_build_auth_frame(uint8_t *out, size_t out_size,
+                                   const struct net_iface *iface,
+                                   const struct iwlwifi_ap *ap, uint16_t seq);
+static size_t iwl_build_assoc_frame(uint8_t *out, size_t out_size,
+                                    const struct net_iface *iface,
+                                    const struct iwlwifi_ap *ap,
+                                    const char *passphrase, uint16_t seq);
+static int iwl_wait_for_auth(struct iwlwifi_state *st);
+static int iwl_wait_for_assoc(struct iwlwifi_state *st);
+static int iwl_install_pairwise_ccmp_key(struct iwlwifi_state *st,
+                                         const struct iwlwifi_ap *ap);
+static void iwl_make_snonce(struct iwlwifi_state *st, const struct net_iface *iface);
+static void iwl_mvm_phy_db_store(struct iwlwifi_state *st,
+                                  const uint8_t *payload, size_t plen);
 
 static const struct net_driver_ops iwlwifi_net_ops = {
     .transmit = iwlwifi_transmit,
     .poll = iwlwifi_poll,
 };
 
+/*
+ * Device table — same chips as FreeBSD sys/dev/iwm/if_iwm.c,
+ * using Linux firmware filenames (iwlwifi-XXXX-YY.ucode).
+ */
 static const struct iwl_device_info iwl_devices[] = {
-    { 0x0082, "6205", "iwlwifi-6000g2a-18.168.6.1.fw" },
-    { 0x0083, "1000", "iwlwifi-1000-39.31.5.1.fw" },
-    { 0x0084, "1000", "iwlwifi-1000-39.31.5.1.fw" },
-    { 0x0085, "6205", "iwlwifi-6000g2a-18.168.6.1.fw" },
-    { 0x0087, "6050", "iwlwifi-6050-41.28.5.1.fw" },
-    { 0x0089, "6050", "iwlwifi-6050-41.28.5.1.fw" },
-    { 0x008a, "1030/6230", "iwlwifi-6000g2b-18.168.6.1.fw" },
-    { 0x008b, "1030/6230", "iwlwifi-6000g2b-18.168.6.1.fw" },
-    { 0x008c, "6000g2", "iwlwifi-6000g2b-18.168.6.1.fw" },
-    { 0x0090, "1030/6230", "iwlwifi-6000g2b-18.168.6.1.fw" },
-    { 0x0091, "1030/6230", "iwlwifi-6000g2b-18.168.6.1.fw" },
-    { 0x0885, "6150", "iwlwifi-6050-41.28.5.1.fw" },
-    { 0x0886, "6150", "iwlwifi-6050-41.28.5.1.fw" },
-    { 0x0887, "2230", "iwlwifi-2030-18.168.6.1.fw" },
-    { 0x0888, "2230", "iwlwifi-2030-18.168.6.1.fw" },
-    { 0x088e, "6235", "iwlwifi-6000g2b-18.168.6.1.fw" },
-    { 0x088f, "6235", "iwlwifi-6000g2b-18.168.6.1.fw" },
-    { 0x0890, "2200", "iwlwifi-2000-18.168.6.1.fw" },
-    { 0x0891, "2200", "iwlwifi-2000-18.168.6.1.fw" },
-    { 0x0892, "135", "iwlwifi-135-6-18.168.6.1.fw" },
-    { 0x0893, "135", "iwlwifi-135-6-18.168.6.1.fw" },
-    { 0x0894, "105", "iwlwifi-105-6-18.168.6.1.fw" },
-    { 0x0895, "105", "iwlwifi-105-6-18.168.6.1.fw" },
-    { 0x0896, "130", "iwlwifi-6000g2b-18.168.6.1.fw" },
-    { 0x0897, "130", "iwlwifi-6000g2b-18.168.6.1.fw" },
-    { 0x08ae, "100", "iwlwifi-100-39.31.5.1.fw" },
-    { 0x08af, "100", "iwlwifi-100-39.31.5.1.fw" },
-    { 0x08b1, "7260", "iwlwifi-7260-17.ucode" },
-    { 0x08b2, "7260", "iwlwifi-7260-17.ucode" },
+    /* Intel 3160 */
     { 0x08b3, "3160", "iwlwifi-3160-17.ucode" },
     { 0x08b4, "3160", "iwlwifi-3160-17.ucode" },
+    /* Intel 3165 (uses 7265D firmware) */
+    { 0x3165, "3165", "iwlwifi-7265D-22.ucode" },
+    { 0x3166, "3165", "iwlwifi-7265D-22.ucode" },
+    /* Intel 3168 */
+    { 0x24fb, "3168", "iwlwifi-3168-22.ucode" },
+    /* Intel 7260 */
+    { 0x08b1, "7260", "iwlwifi-7260-17.ucode" },
+    { 0x08b2, "7260", "iwlwifi-7260-17.ucode" },
+    /* Intel 7265 */
     { 0x095a, "7265", "iwlwifi-7265-17.ucode" },
     { 0x095b, "7265", "iwlwifi-7265-17.ucode" },
-    { 0x24f3, "8260", "iwlwifi-8000C-22.ucode" },
-    { 0x24f4, "8260", "iwlwifi-8000C-22.ucode" },
-    { 0x24f5, "8265", "iwlwifi-8265-22.ucode" },
+    /* Intel 8260 (uses 8000C firmware) */
+    { 0x24f3, "8260", "iwlwifi-8265-22.ucode" },
+    { 0x24f4, "8260", "iwlwifi-8265-22.ucode" },
+    /* Intel 8265 */
     { 0x24fd, "8265", "iwlwifi-8265-22.ucode" },
+    /* Intel 9260 */
     { 0x2526, "9260", "iwlwifi-9260-th-b0-jf-b0-34.ucode" },
-    { 0x271b, "AX201", "iwlwifi-QuZ-a0-hr-b0-77.ucode" },
-    { 0x2723, "AX200", "iwlwifi-cc-a0-77.ucode" },
-    { 0x2725, "AX210", "iwlwifi-ty-a0-gf-a0-77.ucode" },
-    { 0x2726, "AX201", "iwlwifi-QuZ-a0-hr-b0-77.ucode" },
-    { 0x2729, "AX211", "iwlwifi-so-a0-gf-a0-77.ucode" },
-    { 0x272b, "BE200", "iwlwifi-gl-c0-fm-c0-86.ucode" },
-    { 0x4229, "4965", "iwlwifi-4965-228.61.2.24.fw" },
-    { 0x422b, "6300", "iwlwifi-6000-9.221.4.1.fw" },
-    { 0x422c, "6200", "iwlwifi-6000-9.221.4.1.fw" },
-    { 0x422d, "4965", "iwlwifi-4965-228.61.2.24.fw" },
-    { 0x4230, "4965", "iwlwifi-4965-228.61.2.24.fw" },
-    { 0x4232, "5100", "iwlwifi-5000-8.83.5.1.fw" },
-    { 0x4233, "4965", "iwlwifi-4965-228.61.2.24.fw" },
-    { 0x4235, "5300", "iwlwifi-5000-8.83.5.1.fw" },
-    { 0x4236, "5300", "iwlwifi-5000-8.83.5.1.fw" },
-    { 0x4237, "5100", "iwlwifi-5000-8.83.5.1.fw" },
-    { 0x4238, "6300", "iwlwifi-6000-9.221.4.1.fw" },
-    { 0x4239, "6200", "iwlwifi-6000-9.221.4.1.fw" },
-    { 0x423a, "5350", "iwlwifi-5000-8.83.5.1.fw" },
-    { 0x423b, "5350", "iwlwifi-5000-8.83.5.1.fw" },
-    { 0x423c, "5150", "iwlwifi-5150-8.24.2.2.fw" },
-    { 0x423d, "5150", "iwlwifi-5150-8.24.2.2.fw" },
-    { 0x7af0, "AX201", "iwlwifi-QuZ-a0-hr-b0-77.ucode" },
-    { 0x7e40, "AX211", "iwlwifi-so-a0-gf-a0-77.ucode" },
-    { 0xa0f0, "AX201", "iwlwifi-QuZ-a0-hr-b0-77.ucode" },
-    { 0x51f0, "AX211", "iwlwifi-so-a0-gf-a0-77.ucode" },
+    /* Intel 9560 */
+    { 0x9df0, "9560", "iwlwifi-9260-th-b0-jf-b0-34.ucode" },
+    { 0xa370, "9560", "iwlwifi-9260-th-b0-jf-b0-34.ucode" },
+    { 0x31dc, "9560", "iwlwifi-9260-th-b0-jf-b0-34.ucode" },
 };
 
 static const struct iwl_device_info *find_device(uint16_t id)
@@ -541,39 +850,16 @@ static uint32_t iwl_firmware_name_score(const char *name)
 static const char *iwl_firmware_prefix_for_family(const char *family,
                                                   const char *requested)
 {
-    if (!family) {
-        return requested;
-    }
-    if (strcmp(family, "6205") == 0) return "iwlwifi-6000g2a-";
-    if (strcmp(family, "1030/6230") == 0 ||
-        strcmp(family, "6000g2") == 0 ||
-        strcmp(family, "6235") == 0 ||
-        strcmp(family, "130") == 0) return "iwlwifi-6000g2b-";
-    if (strcmp(family, "1000") == 0) return "iwlwifi-1000-";
-    if (strcmp(family, "6050") == 0 || strcmp(family, "6150") == 0) return "iwlwifi-6050-";
-    if (strcmp(family, "2230") == 0) return "iwlwifi-2030-";
-    if (strcmp(family, "2200") == 0) return "iwlwifi-2000-";
-    if (strcmp(family, "135") == 0) return "iwlwifi-135-";
-    if (strcmp(family, "105") == 0) return "iwlwifi-105-";
-    if (strcmp(family, "100") == 0) return "iwlwifi-100-";
-    if (strcmp(family, "4965") == 0) return "iwlwifi-4965-";
-    if (strcmp(family, "6300") == 0 ||
-        strcmp(family, "6200") == 0) return "iwlwifi-6000-";
-    if (strcmp(family, "5100") == 0 ||
-        strcmp(family, "5300") == 0 ||
-        strcmp(family, "5350") == 0) return "iwlwifi-5000-";
-    if (strcmp(family, "5150") == 0) return "iwlwifi-5150-";
+    if (!family) return requested;
     if (strcmp(family, "3160") == 0) return "iwlwifi-3160-";
+    if (strcmp(family, "3165") == 0) return "iwlwifi-7265D-";
+    if (strcmp(family, "3168") == 0) return "iwlwifi-3168-";
     if (strcmp(family, "7260") == 0) return "iwlwifi-7260-";
     if (strcmp(family, "7265") == 0) return "iwlwifi-7265-";
-    if (strcmp(family, "8260") == 0) return "iwlwifi-8000C-";
+    if (strcmp(family, "8260") == 0) return "iwlwifi-8265-";
     if (strcmp(family, "8265") == 0) return "iwlwifi-8265-";
     if (strcmp(family, "9260") == 0) return "iwlwifi-9260-";
-    if (strcmp(family, "AX200") == 0) return "iwlwifi-cc-a0-";
-    if (strcmp(family, "AX201") == 0) return "iwlwifi-Qu";
-    if (strcmp(family, "AX210") == 0) return "iwlwifi-ty-a0-";
-    if (strcmp(family, "AX211") == 0) return "iwlwifi-so-a0-";
-    if (strcmp(family, "BE200") == 0) return "iwlwifi-gl-c0-";
+    if (strcmp(family, "9560") == 0) return "iwlwifi-9260-";
     return requested;
 }
 
@@ -651,20 +937,9 @@ static struct vfs_node *iwl_find_firmware_blob(struct iwlwifi_state *st)
 
 static bool iwl_device_uses_modern_transport(const struct iwl_device_info *info)
 {
-    if (!info || !info->family) {
-        return false;
-    }
-    return strcmp(info->family, "3160") == 0 ||
-           strcmp(info->family, "7260") == 0 ||
-           strcmp(info->family, "7265") == 0 ||
-           strcmp(info->family, "8260") == 0 ||
-           strcmp(info->family, "8265") == 0 ||
-           strcmp(info->family, "9260") == 0 ||
-           strcmp(info->family, "AX200") == 0 ||
-           strcmp(info->family, "AX201") == 0 ||
-           strcmp(info->family, "AX210") == 0 ||
-           strcmp(info->family, "AX211") == 0 ||
-           strcmp(info->family, "BE200") == 0;
+    /* All devices in our table use MVM transport */
+    (void)info;
+    return info != NULL;
 }
 
 static uint32_t le32_at(const uint8_t *p)
@@ -1739,8 +2014,8 @@ static int iwl_init_cmd_queue(struct iwlwifi_state *st)
     st->cmd_dma_size = IWL_CMD_DMA_SIZE;
     st->cmd_index = 0;
 
-    iwl_write32(st, FH_CBBC_QUEUE(IWL_CMD_QUEUE), (uint32_t)(st->cmd_desc_phys >> 8));
-    iwl_write32(st, FH_TX_CONFIG(IWL_CMD_QUEUE),
+    iwl_write32(st, FH_CBBC_QUEUE(st->cmd_queue_id), (uint32_t)(st->cmd_desc_phys >> 8));
+    iwl_write32(st, FH_TX_CONFIG(st->cmd_queue_id),
                 IWL_FH_TX_CONFIG_DMA_ENA | IWL_FH_TX_CONFIG_DMA_CREDIT_ENA);
 
     st->cmd_queue_ready = true;
@@ -1768,8 +2043,8 @@ static int iwl_init_tx_queue(struct iwlwifi_state *st)
     st->tx_dma_size = IWL_CMD_DMA_SIZE;
     st->tx_index = 0;
 
-    iwl_write32(st, FH_CBBC_QUEUE(IWL_MGMT_QUEUE), (uint32_t)(st->tx_desc_phys >> 8));
-    iwl_write32(st, FH_TX_CONFIG(IWL_MGMT_QUEUE),
+    iwl_write32(st, FH_CBBC_QUEUE(st->mgmt_queue_id), (uint32_t)(st->tx_desc_phys >> 8));
+    iwl_write32(st, FH_TX_CONFIG(st->mgmt_queue_id),
                 IWL_FH_TX_CONFIG_DMA_ENA | IWL_FH_TX_CONFIG_DMA_CREDIT_ENA);
 
     st->tx_queue_ready = true;
@@ -1977,27 +2252,25 @@ static int iwl_apm_init(struct iwlwifi_state *st)
         return rc;
     }
 
-    if (!st->modern_transport) {
+    /*
+     * APMG init — required for all 7000/8000 family chips (3160, 7260, 7265,
+     * 8260, 8265).  9000+ family (9260, 9560) dropped the APMG subsystem.
+     * From FreeBSD if_iwm_pcie_trans.c: iwm_apm_init() runs APMG for
+     * device_family < IWM_DEVICE_FAMILY_9000.
+     */
+    bool needs_apmg = strcmp(st->family, "9260") != 0 &&
+                      strcmp(st->family, "9560") != 0;
+    if (needs_apmg) {
         rc = iwl_nic_lock(st);
         if (rc < 0) {
             log_warn("iwlwifi", "could not lock NIC during APM init (%d)", rc);
             return rc;
         }
-        uint32_t clk = IWL_APMG_CLK_CTRL_DMA_CLK_RQT;
-        if (strcmp(st->family, "4965") == 0) {
-            clk |= IWL_APMG_CLK_CTRL_BSM_CLK_RQT;
-        }
-        iwl_prph_write(st, IWL_APMG_CLK_EN, clk);
+        iwl_prph_write(st, IWL_APMG_CLK_EN, IWL_APMG_CLK_CTRL_DMA_CLK_RQT);
         iwl_short_delay();
         iwl_prph_setbits(st, IWL_APMG_PCI_STT, IWL_APMG_PCI_STT_L1A_DIS);
         iwl_prph_clrbits(st, IWL_APMG_PS, IWL_APMG_PS_PWR_SRC_MASK);
         iwl_prph_setbits(st, IWL_APMG_PS, IWL_APMG_PS_EARLY_PWROFF_DIS);
-        if (strcmp(st->family, "1000") == 0) {
-            uint32_t svr = iwl_prph_read(st, IWL_APMG_DIGITAL_SVR);
-            svr &= ~IWL_APMG_DIGITAL_SVR_VOLTAGE_MASK;
-            svr |= IWL_APMG_DIGITAL_SVR_VOLTAGE_1_32;
-            iwl_prph_write(st, IWL_APMG_DIGITAL_SVR, svr);
-        }
         iwl_nic_unlock(st);
     }
 
@@ -2056,26 +2329,59 @@ static void iwl_poll_rx_notifications(struct iwlwifi_state *st)
         }
 
         switch (code) {
-        case IWL_RX_TYPE_UC_READY:
-            if (len >= sizeof(*desc) + sizeof(struct iwl_ucode_info)) {
+        case IWL_RX_TYPE_UC_READY: /* also MVM ALIVE (0x01) */
+            if (st->modern_transport) {
+                /*
+                 * Use arrival sequence to distinguish INIT from RT alive:
+                 *   first UC_READY seen  → INIT firmware is up
+                 *   second UC_READY seen → RT firmware is up
+                 * We avoid reading ver_type because its offset varies
+                 * across firmware versions and caused "not parsed" failures.
+                 */
+                size_t plen = len > sizeof(*desc) ? len - sizeof(*desc) : 0;
+                const uint8_t *payload = buf + sizeof(*desc);
+                if (!st->mvm_init_alive_seen) {
+                    st->mvm_init_alive_seen = true;
+                    if (plen >= 8) {
+                        uint32_t minor = le32_at(payload);
+                        uint32_t major = le32_at(payload + 4);
+                        log_info("iwlwifi", "MVM INIT alive ucode=%u.%u plen=%u",
+                                 major, minor, (uint32_t)plen);
+                    } else {
+                        log_info("iwlwifi", "MVM INIT alive (plen=%u)", (uint32_t)plen);
+                    }
+                } else {
+                    st->mvm_rt_alive_seen  = true;
+                    st->mvm_alive          = true;
+                    st->firmware_alive     = true;
+                    st->firmware_running   = true;
+                    if (plen >= 8) {
+                        uint32_t minor = le32_at(payload);
+                        uint32_t major = le32_at(payload + 4);
+                        log_info("iwlwifi", "MVM RT alive ucode=%u.%u plen=%u",
+                                 major, minor, (uint32_t)plen);
+                    } else {
+                        log_info("iwlwifi", "MVM RT alive (plen=%u)", (uint32_t)plen);
+                    }
+                }
+            } else if (len >= sizeof(*desc) + sizeof(struct iwl_ucode_info)) {
                 const struct iwl_ucode_info *uc =
                     (const struct iwl_ucode_info *)(buf + sizeof(*desc));
-                /* MVM firmware uses status=0xCAFE at the same offset as valid */
-                bool ok = (uc->valid == 1) || (uc->valid == 0xCAFE) ||
-                          st->modern_transport;
-                if (ok) {
-                    st->firmware_alive = true;
+                if (uc->valid == 1) {
+                    st->firmware_alive   = true;
                     st->firmware_running = true;
-                    log_info("iwlwifi", "microcode alive major=%u minor=%u subtype=%u valid=%08x",
-                             uc->major, uc->minor, uc->subtype, uc->valid);
+                    log_info("iwlwifi", "microcode alive major=%u minor=%u subtype=%u errptr=%08x",
+                             uc->major, uc->minor, uc->subtype, uc->errptr);
                 } else {
                     log_warn("iwlwifi", "microcode alive notification was invalid (%u)",
                              uc->valid);
                 }
-            } else if (st->modern_transport) {
-                st->firmware_alive = true;
-                st->firmware_running = true;
-                log_info("iwlwifi", "microcode alive (MVM short notification)");
+            }
+            break;
+        case MVM_CMD_CALIB_RES_NOTIF: /* 0x6b — PHY_DB calibration blob from INIT */
+            if (st->modern_transport) {
+                size_t plen = len > sizeof(*desc) ? len - sizeof(*desc) : 0;
+                iwl_mvm_phy_db_store(st, buf + sizeof(*desc), plen);
             }
             break;
         case IWL_RX_TYPE_START_SCAN:
@@ -2091,6 +2397,26 @@ static void iwl_poll_rx_notifications(struct iwlwifi_state *st)
             break;
         case IWL_RX_TYPE_STATE_CHANGED:
             log_info("iwlwifi", "card state changed");
+            break;
+        case MVM_RX_SCAN_COMPLETE: /* 0x6d IWM_SCAN_OFFLOAD_COMPLETE */
+            st->mvm_scan_running = false;
+            st->mvm_scan_done    = true;
+            log_info("iwlwifi", "MVM LMAC scan complete, %u AP(s) cached",
+                     (uint32_t)st->ap_count);
+            break;
+        case MVM_RX_TE_NOTIF: /* 0x2a IWM_TIME_EVENT_NOTIFICATION */
+            if (st->modern_transport) {
+                size_t plen = len > sizeof(*desc) ? len - sizeof(*desc) : 0;
+                if (plen >= sizeof(struct mvm_time_event_notif)) {
+                    const struct mvm_time_event_notif *n =
+                        (const struct mvm_time_event_notif *)(buf + sizeof(*desc));
+                    log_info("iwlwifi", "MVM TE notif uid=%08x action=%u status=%u",
+                             n->unique_id, n->action, n->status);
+                    if (n->action & MVM_TE_V2_NOTIF_HOST_END) {
+                        st->mvm_te_active = false;
+                    }
+                }
+            }
             break;
         case IWL_RX_TYPE_MPDU_RX_DONE:
             iwl_handle_mpdu(st, buf + sizeof(*desc), len - sizeof(*desc));
@@ -2126,20 +2452,21 @@ static int iwl_send_cmd(struct iwlwifi_state *st, uint8_t code,
     memset(desc, 0, sizeof(*desc));
     memset(cmd, 0, sizeof(*cmd));
     cmd->code = code;
-    cmd->qid = IWL_CMD_QUEUE;
-    cmd->idx = (uint8_t)index;
+    cmd->qid  = st->cmd_queue_id;
+    cmd->idx  = (uint8_t)index;
     if (payload && payload_len) {
         memcpy(cmd->data, payload, payload_len);
     }
 
     desc->nsegs = 1;
     desc->segs[0].addr = (uint32_t)cmd_phys;
-    desc->segs[0].len = (uint16_t)((total << 4) | ((cmd_phys >> 32) & 0xf));
+    desc->segs[0].len  = (uint16_t)((total << 4) | ((cmd_phys >> 32) & 0xf));
 
-    st->command_done = false;
+    st->command_done      = false;
     st->command_done_code = 0;
     st->cmd_index = (uint16_t)((index + 1) % IWL_TX_RING_COUNT);
-    iwl_write32(st, CSR_HBUS_TARG_WRPTR, (IWL_CMD_QUEUE << 8) | st->cmd_index);
+    iwl_write32(st, CSR_HBUS_TARG_WRPTR,
+                ((uint32_t)st->cmd_queue_id << 8) | st->cmd_index);
 
     if (!wait_response) {
         return 0;
@@ -2155,6 +2482,664 @@ static int iwl_send_cmd(struct iwlwifi_state *st, uint8_t code,
     }
     log_warn("iwlwifi", "command 0x%02x timed out", code);
     return -2;
+}
+
+/* -----------------------------------------------------------------------
+ * MVM command/response layer
+ * Command queue for MVM is queue 9 (IWM_CMD_QUEUE from FreeBSD)
+ * ----------------------------------------------------------------------- */
+
+static int iwl_send_cmd_on_queue(struct iwlwifi_state *st, uint8_t qid,
+                                  uint8_t code, const void *payload,
+                                  size_t payload_len, bool wait)
+{
+    if (!st->cmd_queue_ready || payload_len > IWL_CMD_DATA_SIZE) {
+        return -1;
+    }
+    uint16_t index = st->cmd_index;
+    struct iwl_tx_desc *desc =
+        (struct iwl_tx_desc *)((uint8_t *)st->cmd_desc + index * IWL_TX_DESC_SIZE);
+    struct iwl_tx_cmd *cmd =
+        (struct iwl_tx_cmd *)((uint8_t *)st->cmd_ring + index * sizeof(struct iwl_tx_cmd));
+    uintptr_t cmd_phys = st->cmd_ring_phys + index * sizeof(struct iwl_tx_cmd);
+    size_t total = sizeof(*cmd) - IWL_CMD_DATA_SIZE + payload_len;
+
+    memset(desc, 0, sizeof(*desc));
+    memset(cmd, 0, sizeof(*cmd));
+    cmd->code = code;
+    cmd->qid  = qid;
+    cmd->idx  = (uint8_t)index;
+    if (payload && payload_len) {
+        memcpy(cmd->data, payload, payload_len);
+    }
+    desc->nsegs = 1;
+    desc->segs[0].addr = (uint32_t)cmd_phys;
+    desc->segs[0].len  = (uint16_t)((total << 4) | ((cmd_phys >> 32) & 0xf));
+
+    st->command_done      = false;
+    st->command_done_code = 0;
+    st->cmd_index = (uint16_t)((index + 1) % IWL_TX_RING_COUNT);
+    iwl_write32(st, CSR_HBUS_TARG_WRPTR, ((uint32_t)qid << 8) | st->cmd_index);
+
+    if (!wait) {
+        return 0;
+    }
+    uint64_t start = pit_ticks();
+    while (pit_ticks() - start < 500) {
+        iwl_poll_rx_notifications(st);
+        if (st->command_done) {
+            return st->command_done_code == code ? 0 : 1;
+        }
+        __asm__ volatile("pause");
+    }
+    log_warn("iwlwifi", "command 0x%02x (queue %u) timed out", code, qid);
+    return -2;
+}
+
+static int iwl_mvm_send_cmd(struct iwlwifi_state *st,
+                             uint8_t cmd, const void *payload, size_t len)
+{
+    return iwl_send_cmd_on_queue(st, st->cmd_queue_id, cmd, payload, len, true);
+}
+
+/*
+ * PHY DB capture — called from iwl_poll_rx_notifications when INIT firmware
+ * sends MVM_CMD_CALIB_RES_NOTIF (0x6b) blobs.
+ * We store each section separately so we can replay them correctly.
+ */
+static void iwl_mvm_phy_db_store(struct iwlwifi_state *st,
+                                  const uint8_t *payload, size_t plen)
+{
+    if (!payload || plen < 4) {
+        return;
+    }
+    uint16_t type = (uint16_t)payload[0] | ((uint16_t)payload[1] << 8);
+    uint16_t size = (uint16_t)payload[2] | ((uint16_t)payload[3] << 8);
+    if (plen < (size_t)(4 + size) || size > 512) {
+        return;
+    }
+    const uint8_t *data = payload + 4;
+
+    switch (type) {
+    case MVM_PHY_DB_CFG:
+        if (size <= sizeof(st->phy_db_cfg)) {
+            memcpy(st->phy_db_cfg, data, size);
+            st->phy_db_cfg_size = size;
+        }
+        break;
+    case MVM_PHY_DB_CALIB_NCH:
+        if (size <= sizeof(st->phy_db_calib_nch)) {
+            memcpy(st->phy_db_calib_nch, data, size);
+            st->phy_db_calib_nch_size = size;
+        }
+        break;
+    case MVM_PHY_DB_CALIB_CHG_PAPD: {
+        if (size < 2) break;
+        uint16_t idx = (uint16_t)data[0] | ((uint16_t)data[1] << 8);
+        if (idx >= 16) break;
+        if ((size_t)(size - 2) <= sizeof(st->phy_db_papd[idx])) {
+            memcpy(st->phy_db_papd[idx], data + 2, size - 2);
+            st->phy_db_papd_size[idx] = size - 2;
+            if (idx + 1 > st->phy_db_n_papd) {
+                st->phy_db_n_papd = (uint8_t)(idx + 1);
+            }
+        }
+        break;
+    }
+    case MVM_PHY_DB_CALIB_CHG_TXP: {
+        if (size < 2) break;
+        uint16_t idx = (uint16_t)data[0] | ((uint16_t)data[1] << 8);
+        if (idx >= 16) break;
+        if ((size_t)(size - 2) <= sizeof(st->phy_db_txp[idx])) {
+            memcpy(st->phy_db_txp[idx], data + 2, size - 2);
+            st->phy_db_txp_size[idx] = size - 2;
+            if (idx + 1 > st->phy_db_n_txp) {
+                st->phy_db_n_txp = (uint8_t)(idx + 1);
+            }
+        }
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+static int iwl_mvm_send_phy_db_section(struct iwlwifi_state *st,
+                                        uint16_t type, uint16_t chg_id,
+                                        const uint8_t *data, uint16_t size)
+{
+    /* Build: type(2) + size(2) + [chg_id(2)] + data */
+    uint8_t buf[4 + 2 + 512];
+    size_t total;
+    if (type == MVM_PHY_DB_CALIB_CHG_PAPD ||
+        type == MVM_PHY_DB_CALIB_CHG_TXP) {
+        /* Include the group index before data */
+        total = 4 + 2 + size;
+        if (total > sizeof(buf)) return -1;
+        buf[0] = (uint8_t)type;
+        buf[1] = (uint8_t)(type >> 8);
+        buf[2] = (uint8_t)(size + 2);
+        buf[3] = (uint8_t)((size + 2) >> 8);
+        buf[4] = (uint8_t)chg_id;
+        buf[5] = (uint8_t)(chg_id >> 8);
+        memcpy(buf + 6, data, size);
+    } else {
+        total = 4 + size;
+        if (total > sizeof(buf)) return -1;
+        buf[0] = (uint8_t)type;
+        buf[1] = (uint8_t)(type >> 8);
+        buf[2] = (uint8_t)size;
+        buf[3] = (uint8_t)(size >> 8);
+        memcpy(buf + 4, data, size);
+    }
+    return iwl_mvm_send_cmd(st, MVM_CMD_PHY_DB, buf, total);
+}
+
+/*
+ * Post RT alive init — based on iwm_run_init_ucode() in FreeBSD if_iwm.c.
+ * Order: POWER_TABLE → PHY_DB sections → firmware ready.
+ */
+static int iwl_mvm_post_alive_init(struct iwlwifi_state *st)
+{
+    int rc;
+
+    /* 1. POWER_TABLE_CMD: CAM mode (no power save) */
+    struct mvm_device_power_cmd pwr;
+    memset(&pwr, 0, sizeof(pwr));
+    pwr.flags = (uint16_t)MVM_DEVICE_POWER_FLAGS_CAM;
+    rc = iwl_mvm_send_cmd(st, MVM_CMD_POWER_TABLE, &pwr, sizeof(pwr));
+    if (rc < 0) {
+        log_warn("iwlwifi", "MVM POWER_TABLE_CMD failed (%d) — continuing", rc);
+    } else {
+        log_info("iwlwifi", "MVM POWER_TABLE: CAM mode set");
+    }
+
+    /* 2. PHY_DB: replay sections captured during INIT */
+    bool any = false;
+    if (st->phy_db_cfg_size > 0) {
+        rc = iwl_mvm_send_phy_db_section(st, MVM_PHY_DB_CFG, 0,
+                                          st->phy_db_cfg, st->phy_db_cfg_size);
+        if (rc < 0) log_warn("iwlwifi", "MVM PHY_DB_CFG failed (%d)", rc);
+        else any = true;
+    }
+    if (st->phy_db_calib_nch_size > 0) {
+        rc = iwl_mvm_send_phy_db_section(st, MVM_PHY_DB_CALIB_NCH, 0,
+                                          st->phy_db_calib_nch,
+                                          st->phy_db_calib_nch_size);
+        if (rc < 0) log_warn("iwlwifi", "MVM PHY_DB_CALIB_NCH failed (%d)", rc);
+        else any = true;
+    }
+    for (uint8_t i = 0; i < st->phy_db_n_papd; i++) {
+        if (st->phy_db_papd_size[i] == 0) continue;
+        rc = iwl_mvm_send_phy_db_section(st, MVM_PHY_DB_CALIB_CHG_PAPD, i,
+                                          st->phy_db_papd[i],
+                                          st->phy_db_papd_size[i]);
+        if (rc < 0) log_warn("iwlwifi", "MVM PHY_DB_PAPD[%u] failed (%d)", i, rc);
+        else any = true;
+    }
+    for (uint8_t i = 0; i < st->phy_db_n_txp; i++) {
+        if (st->phy_db_txp_size[i] == 0) continue;
+        rc = iwl_mvm_send_phy_db_section(st, MVM_PHY_DB_CALIB_CHG_TXP, i,
+                                          st->phy_db_txp[i],
+                                          st->phy_db_txp_size[i]);
+        if (rc < 0) log_warn("iwlwifi", "MVM PHY_DB_TXP[%u] failed (%d)", i, rc);
+        else any = true;
+    }
+    if (!any) {
+        log_warn("iwlwifi", "MVM PHY_DB: no calibration data captured from INIT — commands may fail");
+    } else {
+        log_info("iwlwifi", "MVM PHY_DB: cfg=%u nch=%u papd_groups=%u txp_groups=%u",
+                 st->phy_db_cfg_size, st->phy_db_calib_nch_size,
+                 st->phy_db_n_papd, st->phy_db_n_txp);
+    }
+
+    /* 3. Settle */
+    uint64_t settle = pit_ticks();
+    while (pit_ticks() - settle < 100) {
+        iwl_poll_rx_notifications(st);
+        __asm__ volatile("pause");
+    }
+
+    st->mvm_fw_ready = true;
+    log_info("iwlwifi", "MVM firmware ready for commands");
+    return 0;
+}
+
+/*
+ * Build rxchain_info for PHY context — from iwm_rxchain() in FreeBSD.
+ * Use 2 chains (A+B), driver-forced.
+ */
+static uint32_t iwl_mvm_rxchain(void)
+{
+    uint32_t chains = 0x3u; /* A+B */
+    return (1u << 0)                    /* DRIVER_FORCE */
+         | ((chains & 0x7u) << 1)       /* VALID */
+         | ((chains & 0x7u) << 4)       /* FORCE_SEL */
+         | ((chains & 0x7u) << 7)       /* MIMO_SEL */
+         | (2u << 10)                   /* CNT */
+         | (2u << 12);                  /* MIMO_CNT */
+}
+
+static int iwl_mvm_phy_ctx_cmd(struct iwlwifi_state *st, uint8_t channel,
+                                 uint32_t action)
+{
+    struct mvm_phy_ctx_cmd cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.id_and_color      = MVM_ID_AND_COLOR(st->mvm_phy_id, 1);
+    cmd.action            = action;
+    cmd.apply_time        = 0;
+    cmd.tx_param_color    = 0;
+    cmd.ci.band           = channel > 14 ? MVM_PHY_BAND_5 : MVM_PHY_BAND_24;
+    cmd.ci.channel        = channel;
+    cmd.ci.width          = 0; /* 20 MHz */
+    cmd.ci.ctrl_pos       = 0;
+    cmd.rxchain_info      = iwl_mvm_rxchain();
+    cmd.txchain_info      = 0x3u; /* A+B */
+    cmd.acquisition_data  = 0;
+    cmd.dsp_cfg_flags     = 0;
+    int rc = iwl_mvm_send_cmd(st, MVM_CMD_PHY_CONTEXT, &cmd, sizeof(cmd));
+    if (rc < 0) {
+        log_warn("iwlwifi", "MVM PHY_CONTEXT_CMD ch=%u action=%u failed (%d)",
+                 channel, action, rc);
+    } else {
+        log_info("iwlwifi", "MVM PHY context ch=%u action=%u OK", channel, action);
+    }
+    return rc;
+}
+
+static int iwl_mvm_mac_ctx_cmd(struct iwlwifi_state *st,
+                                 const struct net_iface *iface,
+                                 const uint8_t *bssid,
+                                 uint32_t action, bool is_assoc,
+                                 uint16_t aid, uint32_t dtim_interval)
+{
+    struct mvm_mac_ctx_cmd cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.id_and_color  = MVM_ID_AND_COLOR(st->mvm_mac_id, 1);
+    cmd.action        = action;
+    cmd.mac_type      = MVM_MAC_TYPE_BSS_STA;
+    cmd.tsf_id        = MVM_TSF_ID_A;
+    memcpy(cmd.node_addr, iface->mac, 6);
+    if (bssid) {
+        memcpy(cmd.bssid_addr, bssid, 6);
+    }
+    cmd.cck_rates         = MVM_BASIC_RATES_CCK;
+    cmd.ofdm_rates        = MVM_BASIC_RATES_OFDM;
+    cmd.protection_flags  = 0;
+    cmd.cck_short_preamble = 0;
+    cmd.short_slot        = 0x10; /* short slot enabled */
+    cmd.filter_flags      = MVM_MAC_FILTER_ACCEPT_GRP | MVM_MAC_FILTER_ACCEPT_BEACON;
+
+    /* AC QoS defaults from iwm_mac_ctxt_cmd_common() in FreeBSD */
+    static const struct { uint16_t cw_min; uint16_t cw_max; uint8_t aifsn; uint8_t fifo; } ac_def[4] = {
+        { 15,  1023, 3, 0 }, /* BK */
+        {  3,    15, 7, 1 }, /* BE — actually index 1 */
+        {  7,    15, 2, 2 }, /* VI */
+        {  3,     7, 2, 3 }, /* VO */
+    };
+    for (int i = 0; i < 4; i++) {
+        cmd.ac[i].cw_min     = ac_def[i].cw_min;
+        cmd.ac[i].cw_max     = ac_def[i].cw_max;
+        cmd.ac[i].aifsn      = ac_def[i].aifsn;
+        cmd.ac[i].fifos_mask = (uint8_t)(1u << ac_def[i].fifo);
+        cmd.ac[i].edca_txop  = 0;
+    }
+    /* cmd.ac[4] = ucast mgmt */
+    cmd.ac[4].cw_min     = 3;
+    cmd.ac[4].cw_max     = 7;
+    cmd.ac[4].aifsn      = 2;
+    cmd.ac[4].fifos_mask = (1u << 3);
+
+    cmd.sta.is_assoc              = is_assoc ? 1u : 0u;
+    cmd.sta.listen_interval       = 10;
+    cmd.sta.assoc_id              = aid;
+    if (is_assoc && dtim_interval) {
+        cmd.sta.dtim_interval     = dtim_interval;
+        cmd.sta.dtim_reciprocal   = 0xFFFFFFFFu / dtim_interval;
+        cmd.sta.bi                = dtim_interval;
+        cmd.sta.bi_reciprocal     = 0xFFFFFFFFu / dtim_interval;
+    }
+
+    int rc = iwl_mvm_send_cmd(st, MVM_CMD_MAC_CONTEXT, &cmd, sizeof(cmd));
+    if (rc < 0) {
+        log_warn("iwlwifi", "MVM MAC_CONTEXT_CMD action=%u failed (%d)", action, rc);
+    } else {
+        log_info("iwlwifi", "MVM MAC context action=%u assoc=%d OK", action, (int)is_assoc);
+    }
+    return rc;
+}
+
+static int iwl_mvm_binding_cmd(struct iwlwifi_state *st, uint32_t action)
+{
+    struct mvm_binding_cmd cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.id_and_color = MVM_ID_AND_COLOR(0, 1);
+    cmd.action       = action;
+    cmd.macs[0]      = MVM_ID_AND_COLOR(st->mvm_mac_id, 1);
+    cmd.macs[1]      = 0xFFFFFFFFu;
+    cmd.macs[2]      = 0xFFFFFFFFu;
+    cmd.phy          = MVM_ID_AND_COLOR(st->mvm_phy_id, 1);
+    cmd.lmac_id      = 0;
+    int rc = iwl_mvm_send_cmd(st, MVM_CMD_BINDING, &cmd, sizeof(cmd));
+    if (rc < 0) {
+        log_warn("iwlwifi", "MVM BINDING_CONTEXT_CMD action=%u failed (%d)", action, rc);
+    } else {
+        log_info("iwlwifi", "MVM binding action=%u OK", action);
+    }
+    return rc;
+}
+
+static int iwl_mvm_add_sta_cmd(struct iwlwifi_state *st,
+                                 const struct net_iface *iface,
+                                 const uint8_t *addr)
+{
+    struct mvm_add_sta_cmd cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.add_modify      = MVM_STA_ACTION_ADD;
+    cmd.awake_acs       = 0;
+    cmd.tid_disable_tx  = 0;
+    cmd.mac_id_n_color  = MVM_ID_AND_COLOR(st->mvm_mac_id, 1);
+    memcpy(cmd.addr, addr ? addr : iface->mac, 6);
+    cmd.sta_id          = 0;
+    cmd.modify_mask     = 0;
+    cmd.station_flags   = 0;
+    cmd.station_flags_msk = 0;
+    cmd.tfd_queue_msk   = 0;
+    int rc = iwl_mvm_send_cmd(st, MVM_CMD_ADD_STA, &cmd, sizeof(cmd));
+    if (rc < 0) {
+        log_warn("iwlwifi", "MVM ADD_STA failed (%d)", rc);
+    } else {
+        log_info("iwlwifi", "MVM STA added id=%u", (uint32_t)cmd.sta_id);
+    }
+    return rc;
+}
+
+static int iwl_mvm_protect_session(struct iwlwifi_state *st, uint32_t duration_ms)
+{
+    struct mvm_time_event_cmd cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.id_and_color = MVM_ID_AND_COLOR(st->mvm_mac_id, 1);
+    cmd.action       = MVM_CTXT_ACTION_ADD;
+    cmd.id           = MVM_TE_BSS_STA_ASSOC;
+    cmd.apply_time   = 0;
+    cmd.max_delay    = (uint32_t)(duration_ms * 1024 / 1000); /* ms → TU approx */
+    cmd.depends_on   = 0;
+    cmd.interval     = 1;
+    cmd.duration     = (uint32_t)(duration_ms * 1024 / 1000);
+    cmd.repeat       = 1;
+    cmd.max_frags    = 1;
+    cmd.policy       = (uint16_t)(MVM_TE_V2_NOTIF_HOST_START | MVM_TE_V2_NOTIF_HOST_END);
+    int rc = iwl_mvm_send_cmd(st, MVM_CMD_TIME_EVENT, &cmd, sizeof(cmd));
+    if (rc < 0) {
+        log_warn("iwlwifi", "MVM TIME_EVENT_CMD failed (%d) — continuing", rc);
+    } else {
+        st->mvm_te_active = true;
+        log_info("iwlwifi", "MVM time event created duration=%u TU", cmd.duration);
+    }
+    return rc;
+}
+
+static int iwl_mvm_scan(struct iwlwifi_state *st, const struct net_iface *iface,
+                         const char *ssid)
+{
+    if (!st->mvm_fw_ready) {
+        log_warn("iwlwifi", "%s MVM scan: firmware not ready", iface->name);
+        return -1;
+    }
+
+    /* Scan sequence from FreeBSD if_iwm.c iwm_scan(): */
+    /* 1. MAC context ADD */
+    if (iwl_mvm_mac_ctx_cmd(st, iface, NULL, MVM_CTXT_ACTION_ADD,
+                              false, 0, 0) < 0) {
+        return -1;
+    }
+    /* 2. PHY context ADD on ch 1 */
+    if (iwl_mvm_phy_ctx_cmd(st, 1, MVM_CTXT_ACTION_ADD) < 0) {
+        return -1;
+    }
+    /* 3. Binding ADD */
+    if (iwl_mvm_binding_cmd(st, MVM_CTXT_ACTION_ADD) < 0) {
+        return -1;
+    }
+
+    /* 4. Build LMAC scan request */
+    static const uint8_t channels_24[] = {
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13
+    };
+    uint8_t nchan = sizeof(channels_24);
+    if (nchan > MVM_SCAN_MAX_CHANNELS) nchan = MVM_SCAN_MAX_CHANNELS;
+
+    /* LMAC scan command + channel data (variable part after fixed header) */
+    uint8_t buf[sizeof(struct mvm_scan_req_lmac) +
+                nchan * sizeof(struct mvm_scan_channel_cfg_lmac)];
+    memset(buf, 0, sizeof(buf));
+
+    struct mvm_scan_req_lmac *req = (struct mvm_scan_req_lmac *)buf;
+    req->n_channels     = nchan;
+    req->active_dwell   = 10;
+    req->passive_dwell  = 110;
+    req->fragmented_dwell = 44;
+    req->extended_dwell = 90;
+    req->rx_chain_select = (uint16_t)iwl_mvm_rxchain();
+    req->scan_flags     = MVM_LMAC_SCAN_FLAG_PASS_ALL | MVM_LMAC_SCAN_FLAG_ITER_COMPLETE;
+    req->max_out_time   = 0;
+    req->suspend_time   = 0;
+    req->filter_flags   = MVM_MAC_FILTER_ACCEPT_GRP;
+    /* TX cmd for probe request: 1Mbps CCK */
+    req->tx_cmd[0].tx_flags = 0x200; /* IWM_TX_CMD_FLG_SEQ_CTL */
+    req->tx_cmd[0].rate_n_flags = 0x100; /* 1Mbps */
+    req->tx_cmd[0].sta_id = 0xff;
+    req->tx_cmd[1] = req->tx_cmd[0];
+    req->scan_prio  = 2; /* IWM_SCAN_PRIORITY_HIGH */
+    req->iter_num   = 1;
+    req->delay      = 0;
+    req->schedule[0].interval   = 0;
+    req->schedule[0].iter_count = 1;
+    req->schedule[1].interval   = 0;
+    req->schedule[1].iter_count = 0xff;
+
+    if (ssid && ssid[0]) {
+        size_t slen = strlen(ssid);
+        if (slen > 32) slen = 32;
+        /* direct_scan = SSID IE list for directed (active) scan */
+        req->direct_scan[0].id  = IEEE80211_ELEMID_SSID;
+        req->direct_scan[0].len = (uint8_t)slen;
+        memcpy(req->direct_scan[0].ssid, ssid, slen);
+        /* keep PASS_ALL but not passive — active scan */
+    }
+
+    /* Fill channel array at end of fixed header */
+    struct mvm_scan_channel_cfg_lmac *chs =
+        (struct mvm_scan_channel_cfg_lmac *)(buf + sizeof(*req));
+    for (uint8_t i = 0; i < nchan; i++) {
+        chs[i].flags        = (ssid && ssid[0]) ?
+                              (0x1u | ((1u << 1) - 1u) << 1) : /* active + ssid0 */
+                              0; /* passive */
+        chs[i].channel_num  = channels_24[i];
+        chs[i].iter_count   = 1;
+        chs[i].iter_interval = 0;
+    }
+
+    st->mvm_scan_done    = false;
+    st->mvm_scan_running = true;
+    st->ap_count         = 0;
+    memset(st->aps, 0, sizeof(st->aps));
+
+    int rc = iwl_mvm_send_cmd(st, MVM_CMD_SCAN_LMAC, buf, sizeof(buf));
+    if (rc < 0) {
+        st->mvm_scan_running = false;
+        log_warn("iwlwifi", "%s MVM SCAN_OFFLOAD_REQUEST failed (%d)", iface->name, rc);
+        /* Tear down contexts */
+        iwl_mvm_binding_cmd(st, MVM_CTXT_ACTION_REMOVE);
+        iwl_mvm_phy_ctx_cmd(st, 1, MVM_CTXT_ACTION_REMOVE);
+        iwl_mvm_mac_ctx_cmd(st, iface, NULL, MVM_CTXT_ACTION_REMOVE, false, 0, 0);
+        return rc;
+    }
+
+    log_info("iwlwifi", "%s MVM LMAC scan started nchan=%u", iface->name, nchan);
+
+    uint64_t start = pit_ticks();
+    while (pit_ticks() - start < 2000) {
+        iwl_poll_rx_notifications(st);
+        if (st->mvm_scan_done) break;
+        if (st->ap_count > 0 && pit_ticks() - start > 500) break;
+        __asm__ volatile("pause");
+    }
+    st->mvm_scan_running = false;
+
+    /* Tear down scan contexts */
+    iwl_mvm_binding_cmd(st, MVM_CTXT_ACTION_REMOVE);
+    iwl_mvm_phy_ctx_cmd(st, 1, MVM_CTXT_ACTION_REMOVE);
+    iwl_mvm_mac_ctx_cmd(st, iface, NULL, MVM_CTXT_ACTION_REMOVE, false, 0, 0);
+
+    log_info("iwlwifi", "%s MVM scan done, %u AP(s) found", iface->name, (uint32_t)st->ap_count);
+    return st->ap_count > 0 ? 0 : -10;
+}
+
+/*
+ * MVM association sequence — from FreeBSD iwm_newstate(ASSOC):
+ *   MAC_CONTEXT_CMD → PHY_CONTEXT_CMD → BINDING_CONTEXT_CMD →
+ *   POWER_TABLE_CMD (disable PS) → ADD_STA → TIME_EVENT_CMD →
+ *   [send auth frame] → [send assoc frame] → WPA4-way
+ */
+static int iwl_mvm_associate(struct iwlwifi_state *st,
+                              struct net_iface *iface,
+                              const char *ssid, const char *passphrase)
+{
+    if (!st->mvm_fw_ready) {
+        log_warn("iwlwifi", "%s MVM assoc: firmware not ready", iface->name);
+        return -1;
+    }
+
+    /* 1. Find AP (scan if needed) */
+    const struct iwlwifi_ap *ap = iwl_find_ap(st, ssid);
+    if (!ap) {
+        int rc = iwl_mvm_scan(st, iface, ssid);
+        if (rc < 0 && rc != -10) return rc;
+        ap = iwl_find_ap(st, ssid);
+        if (!ap) {
+            log_warn("iwlwifi", "%s MVM: '%s' not found after scan", iface->name, ssid);
+            return -10;
+        }
+    }
+
+    log_info("iwlwifi", "%s MVM: associating with '%s' ch=%u", iface->name, ssid, ap->channel);
+
+    /* 2. MAC context ADD (pre-assoc, not yet associated) */
+    if (iwl_mvm_mac_ctx_cmd(st, iface, ap->bssid,
+                              MVM_CTXT_ACTION_ADD, false, 0, 0) < 0) {
+        return -7;
+    }
+    /* 3. PHY context ADD on AP's channel */
+    if (iwl_mvm_phy_ctx_cmd(st, ap->channel, MVM_CTXT_ACTION_ADD) < 0) {
+        iwl_mvm_mac_ctx_cmd(st, iface, ap->bssid, MVM_CTXT_ACTION_REMOVE, false, 0, 0);
+        return -7;
+    }
+    /* 4. Binding ADD */
+    if (iwl_mvm_binding_cmd(st, MVM_CTXT_ACTION_ADD) < 0) {
+        iwl_mvm_phy_ctx_cmd(st, ap->channel, MVM_CTXT_ACTION_REMOVE);
+        iwl_mvm_mac_ctx_cmd(st, iface, ap->bssid, MVM_CTXT_ACTION_REMOVE, false, 0, 0);
+        return -7;
+    }
+    /* 5. Disable power save during auth/assoc */
+    {
+        struct mvm_device_power_cmd pwr;
+        memset(&pwr, 0, sizeof(pwr));
+        pwr.flags = (uint16_t)MVM_DEVICE_POWER_FLAGS_CAM;
+        iwl_mvm_send_cmd(st, MVM_CMD_POWER_TABLE, &pwr, sizeof(pwr));
+    }
+    /* 6. ADD_STA for the AP */
+    if (iwl_mvm_add_sta_cmd(st, iface, ap->bssid) < 0) {
+        iwl_mvm_binding_cmd(st, MVM_CTXT_ACTION_REMOVE);
+        iwl_mvm_phy_ctx_cmd(st, ap->channel, MVM_CTXT_ACTION_REMOVE);
+        iwl_mvm_mac_ctx_cmd(st, iface, ap->bssid, MVM_CTXT_ACTION_REMOVE, false, 0, 0);
+        return -7;
+    }
+    /* 7. Time event — protect auth/assoc window */
+    iwl_mvm_protect_session(st, MVM_TE_SESSION_PROT_MAX_MS);
+
+    /* 8. Store BSSID / channel for data path */
+    memcpy(st->bssid, ap->bssid, 6);
+    st->channel = ap->channel;
+    strncpy(st->associated_ssid, ap->ssid, sizeof(st->associated_ssid) - 1);
+    st->associated_ssid[sizeof(st->associated_ssid) - 1] = '\0';
+
+    /* 9. 802.11 open auth */
+    uint8_t frame[512];
+    st->auth_done   = false;
+    st->auth_status = 0xffff;
+    size_t flen = iwl_build_auth_frame(frame, sizeof(frame), iface, ap, st->tx_sequence++);
+    if (flen == 0 || iwl_send_mgmt_frame(st, frame, flen, true) < 0) {
+        log_warn("iwlwifi", "%s MVM: could not send auth frame", iface->name);
+        return -11;
+    }
+    if (iwl_wait_for_auth(st) < 0) {
+        log_warn("iwlwifi", "%s MVM: auth timed out", iface->name);
+        return -11;
+    }
+    log_info("iwlwifi", "%s MVM: auth OK", iface->name);
+
+    /* 10. 802.11 association */
+    st->assoc_done   = false;
+    st->assoc_status = 0xffff;
+    st->assoc_id     = 0;
+    flen = iwl_build_assoc_frame(frame, sizeof(frame), iface, ap, passphrase, st->tx_sequence++);
+    if (flen == 0 || iwl_send_mgmt_frame(st, frame, flen, true) < 0) {
+        log_warn("iwlwifi", "%s MVM: could not send assoc frame", iface->name);
+        return -12;
+    }
+    if (iwl_wait_for_assoc(st) < 0) {
+        log_warn("iwlwifi", "%s MVM: assoc timed out", iface->name);
+        return -12;
+    }
+    log_info("iwlwifi", "%s MVM: assoc OK aid=%u", iface->name, st->assoc_id);
+
+    /* 11. Update MAC context to associated state */
+    iwl_mvm_mac_ctx_cmd(st, iface, ap->bssid, MVM_CTXT_ACTION_MODIFY,
+                         true, st->assoc_id, 3 /* DTIM interval */);
+
+    /* 12. WPA2 4-way handshake */
+    if (ap->privacy || (passphrase && passphrase[0])) {
+        if (!passphrase || !passphrase[0]) {
+            log_warn("iwlwifi", "%s MVM: WPA passphrase required", iface->name);
+            return -8;
+        }
+        tnu_wpa_pmk_from_passphrase(passphrase, ssid, st->wpa_pmk);
+        iwl_make_snonce(st, iface);
+        st->wpa_key_msg1 = false;
+        st->wpa_key_msg3 = false;
+        uint64_t t = pit_ticks();
+        while (!st->wpa_key_msg1 && pit_ticks() - t < 1500) {
+            iwl_poll_rx_notifications(st);
+            __asm__ volatile("pause");
+        }
+        if (!st->wpa_key_msg1) {
+            log_warn("iwlwifi", "%s MVM: WPA msg1 timed out", iface->name);
+            return -14;
+        }
+        t = pit_ticks();
+        while (!st->wpa_key_msg3 && pit_ticks() - t < 1500) {
+            iwl_poll_rx_notifications(st);
+            __asm__ volatile("pause");
+        }
+        if (!st->wpa_key_msg3) {
+            log_warn("iwlwifi", "%s MVM: WPA msg3 timed out", iface->name);
+            return -15;
+        }
+        if (iwl_install_pairwise_ccmp_key(st, ap) < 0) {
+            return -16;
+        }
+        st->ccmp_tx_pn = 0;
+        log_info("iwlwifi", "%s MVM: WPA PTK installed", iface->name);
+    }
+
+    st->associated = true;
+    st->link_ready  = true;
+    iface->link     = true;
+    iface->up       = true;
+    log_info("iwlwifi", "%s MVM: associated with '%s' aid=%u channel=%u",
+             iface->name, ssid, st->assoc_id, ap->channel);
+    return 0;
 }
 
 static int iwl_send_scan_rxon(struct iwlwifi_state *st, const struct net_iface *iface)
@@ -2404,8 +3389,8 @@ static int iwl_send_mgmt_frame(struct iwlwifi_state *st, const uint8_t *frame,
     memset(desc, 0, sizeof(*desc));
     memset(cmd, 0, sizeof(*cmd));
     cmd->code = IWL_CMD_TX_DATA;
-    cmd->qid = IWL_MGMT_QUEUE;
-    cmd->idx = (uint8_t)index;
+    cmd->qid  = st->mgmt_queue_id;
+    cmd->idx  = (uint8_t)index;
 
     tx->len = (uint16_t)frame_len;
     tx->flags = IWL_TX_AUTO_SEQ | (need_ack ? IWL_TX_NEED_ACK : 0);
@@ -2427,7 +3412,8 @@ static int iwl_send_mgmt_frame(struct iwlwifi_state *st, const uint8_t *frame,
     desc->segs[0].len = (uint16_t)((total << 4) | ((cmd_phys >> 32) & 0xf));
 
     st->tx_index = (uint16_t)((index + 1) % IWL_TX_RING_COUNT);
-    iwl_write32(st, CSR_HBUS_TARG_WRPTR, (IWL_MGMT_QUEUE << 8) | st->tx_index);
+    iwl_write32(st, CSR_HBUS_TARG_WRPTR,
+                ((uint32_t)st->mgmt_queue_id << 8) | st->tx_index);
     return 0;
 }
 
@@ -2635,7 +3621,8 @@ static int iwl_dma_load_sections(struct iwlwifi_state *st,
 
 static bool iwl_uses_legacy_4965_path(const struct iwlwifi_state *st)
 {
-    return strcmp(st->family, "4965") == 0;
+    (void)st;
+    return false; /* no 4965 in our device table */
 }
 
 static int iwl_execute_runtime_firmware(struct iwlwifi_state *st)
@@ -2676,30 +3663,181 @@ static int iwl_execute_runtime_firmware(struct iwlwifi_state *st)
     iwl_write32(st, CSR_INT, 0xffffffffu);
     iwl_write32(st, CSR_FH_INT_STATUS, 0xffffffffu);
 
-    int rc;
-    if (modern_sections) {
-        rc = iwl_dma_load_sections(st, st->init_sections,
-                                   st->init_section_count, "init");
-        if (rc < 0) {
-            return rc;
+    if (st->modern_transport) {
+        /*
+         * MVM requires two separate resets:
+         *
+         * Phase 1 — INIT firmware:
+         *   load init sections → deassert reset → wait INIT alive
+         *   → send INIT_COMPLETE_NOTIF (triggers calibration)
+         *   → drain calibration blobs (CALIB_RES_NOTIF / PHY_DB)
+         *
+         * Phase 2 — RT firmware:
+         *   load runtime sections → deassert reset → wait RT alive
+         *   → POWER_TABLE + PHY_DB replay + REPLY_SF_CFG
+         */
+
+        /* --- Phase 1: INIT firmware --- */
+        if (st->init_section_count > 0) {
+            int rc = iwl_dma_load_sections(st, st->init_sections,
+                                           st->init_section_count, "init");
+            if (rc < 0) {
+                return rc;
+            }
+        } else if (st->init_ucode.text && st->init_ucode.text_size) {
+            int rc = iwl_dma_load_section(st, IWL_FW_TEXT_BASE,
+                                          st->init_ucode.text,
+                                          st->init_ucode.text_size);
+            if (rc < 0) return rc;
+            rc = iwl_dma_load_section(st, IWL_FW_DATA_BASE,
+                                      st->init_ucode.data,
+                                      st->init_ucode.data_size);
+            if (rc < 0) return rc;
         }
-        rc = iwl_dma_load_sections(st, st->runtime_sections,
-                                   st->runtime_section_count, "runtime");
-        if (rc < 0) {
-            return rc;
+
+        iwl_write32(st, CSR_INT, 0xffffffffu);
+        iwl_write32(st, CSR_RESET, 0);
+
+        uint32_t seen = 0;
+        if (!iwl_wait_int(st, IWL_INT_ALIVE, &seen, 500)) {
+            log_warn("iwlwifi", "MVM INIT alive timed out (int=%08x)", seen);
+            return -4;
         }
-    } else {
-        rc = iwl_dma_load_section(st, IWL_FW_TEXT_BASE,
-                                  st->runtime_ucode.text,
-                                  st->runtime_ucode.text_size);
-        if (rc < 0) {
-            return rc;
+        uint64_t t = pit_ticks();
+        while (!st->mvm_init_alive_seen && pit_ticks() - t < 300) {
+            iwl_poll_rx_notifications(st);
+            __asm__ volatile("pause");
         }
-        rc = iwl_dma_load_section(st, IWL_FW_DATA_BASE,
-                                  st->runtime_ucode.data,
-                                  st->runtime_ucode.data_size);
-        if (rc < 0) {
-            return rc;
+        if (!st->mvm_init_alive_seen) {
+            st->mvm_init_alive_seen = true;
+            log_warn("iwlwifi", "MVM INIT alive interrupt seen but notification not parsed");
+        }
+        log_info("iwlwifi", "MVM INIT alive OK");
+
+        /*
+         * Do NOT send anything to the firmware during INIT phase.
+         * INIT_COMPLETE (0x04) is a notification the firmware sends *to us*
+         * when init completes — writing it back would trigger a SW_ERR.
+         * Just drain whatever the INIT firmware emits (PHY_DB blobs etc.)
+         * and wait for it to reach the completed state on its own.
+         */
+        t = pit_ticks();
+        while (pit_ticks() - t < 600) {
+            iwl_poll_rx_notifications(st);
+            __asm__ volatile("pause");
+        }
+        log_info("iwlwifi", "MVM INIT phase drained, PHY_DB cfg=%u nch=%u papd=%u txp=%u",
+                 st->phy_db_cfg_size, st->phy_db_calib_nch_size,
+                 st->phy_db_n_papd, st->phy_db_n_txp);
+
+        /* Reset state flags so the RT alive parse works cleanly */
+        st->mvm_rt_alive_seen = false;
+
+        /*
+         * Phase 1→2 transition: re-initialize the NIC hardware before loading
+         * the runtime firmware.  iwm_start_fw() in FreeBSD calls iwm_nic_init()
+         * for every firmware image — both INIT and RT.  Without this, the INIT
+         * CPU is still running and its DMA engine is active; the first RT DMA
+         * write triggers IWL_INT_SW_ERR (0x02000000).
+         *
+         * Sequence mirrors iwm_nic_init():
+         *   1. APM init (clocks, power)
+         *   2. Re-setup RX ring
+         *   3. Re-setup CMD queue
+         *   4. Re-setup TX queue
+         */
+        {
+            int nic_rc = iwl_apm_init(st);
+            if (nic_rc < 0) {
+                log_warn("iwlwifi", "MVM Phase2 APM re-init failed (%d)", nic_rc);
+                return -7;
+            }
+            /* Force re-programming of the FH registers by clearing the
+             * ready flags (DMA buffers already allocated are reused) */
+            st->cmd_queue_ready = false;
+            st->tx_queue_ready = false;
+            nic_rc = iwl_init_rx_ring(st);
+            if (nic_rc < 0) {
+                log_warn("iwlwifi", "MVM Phase2 RX ring re-init failed (%d)", nic_rc);
+                return -5;
+            }
+            nic_rc = iwl_init_cmd_queue(st);
+            if (nic_rc < 0) {
+                log_warn("iwlwifi", "MVM Phase2 CMD queue re-init failed (%d)", nic_rc);
+                return -8;
+            }
+            nic_rc = iwl_init_tx_queue(st);
+            if (nic_rc < 0) {
+                log_warn("iwlwifi", "MVM Phase2 TX queue re-init failed (%d)", nic_rc);
+                return -9;
+            }
+        }
+
+        /* Re-arm interrupts for RT alive */
+        iwl_write32(st, CSR_INT_MASK, IWL_INT_MASK_MIN);
+        iwl_write32(st, CSR_INT, 0xffffffffu);
+        iwl_write32(st, CSR_FH_INT_STATUS, 0xffffffffu);
+
+        /* --- Phase 2: RT firmware --- */
+        if (st->runtime_section_count > 0) {
+            int rc = iwl_dma_load_sections(st, st->runtime_sections,
+                                           st->runtime_section_count, "runtime");
+            if (rc < 0) return rc;
+        } else {
+            int rc = iwl_dma_load_section(st, IWL_FW_TEXT_BASE,
+                                          st->runtime_ucode.text,
+                                          st->runtime_ucode.text_size);
+            if (rc < 0) return rc;
+            rc = iwl_dma_load_section(st, IWL_FW_DATA_BASE,
+                                      st->runtime_ucode.data,
+                                      st->runtime_ucode.data_size);
+            if (rc < 0) return rc;
+        }
+
+        iwl_write32(st, CSR_INT, 0xffffffffu);
+        iwl_write32(st, CSR_RESET, 0);
+
+        seen = 0;
+        if (!iwl_wait_int(st, IWL_INT_ALIVE, &seen, 500)) {
+            log_warn("iwlwifi", "MVM RT alive timed out (int=%08x)", seen);
+            return -4;
+        }
+        t = pit_ticks();
+        while (!st->mvm_rt_alive_seen && pit_ticks() - t < 300) {
+            iwl_poll_rx_notifications(st);
+            __asm__ volatile("pause");
+        }
+        if (!st->mvm_rt_alive_seen) {
+            st->mvm_rt_alive_seen  = true;
+            st->mvm_alive          = true;
+            st->firmware_alive     = true;
+            st->firmware_running   = true;
+            log_warn("iwlwifi", "MVM RT alive interrupt seen but notification not parsed");
+        }
+        log_info("iwlwifi", "MVM RT alive OK");
+
+        return iwl_mvm_post_alive_init(st);
+    }
+
+    /* DVM path — load sections then start */
+    {
+        int rc2;
+        if (modern_sections) {
+            rc2 = iwl_dma_load_sections(st, st->init_sections,
+                                        st->init_section_count, "init");
+            if (rc2 < 0) return rc2;
+            rc2 = iwl_dma_load_sections(st, st->runtime_sections,
+                                        st->runtime_section_count, "runtime");
+            if (rc2 < 0) return rc2;
+        } else {
+            rc2 = iwl_dma_load_section(st, IWL_FW_TEXT_BASE,
+                                       st->runtime_ucode.text,
+                                       st->runtime_ucode.text_size);
+            if (rc2 < 0) return rc2;
+            rc2 = iwl_dma_load_section(st, IWL_FW_DATA_BASE,
+                                       st->runtime_ucode.data,
+                                       st->runtime_ucode.data_size);
+            if (rc2 < 0) return rc2;
         }
     }
 
@@ -2718,7 +3856,7 @@ static int iwl_execute_runtime_firmware(struct iwlwifi_state *st)
     }
     if (!st->firmware_alive) {
         st->firmware_running = true;
-        st->firmware_alive = true;
+        st->firmware_alive   = true;
         log_warn("iwlwifi", "runtime firmware raised ALIVE interrupt but no UC_READY notification was parsed");
     } else {
         log_info("iwlwifi", "runtime firmware signaled alive");
@@ -2753,6 +3891,17 @@ int iwlwifi_start(struct net_iface *iface)
     }
     if (st->firmware_alive) {
         return 0;
+    }
+    /* Reset MVM phase-tracking before every fresh start attempt */
+    if (st->modern_transport) {
+        st->mvm_init_alive_seen = false;
+        st->mvm_rt_alive_seen   = false;
+        st->mvm_alive              = false;
+        st->mvm_fw_ready           = false;
+        st->phy_db_cfg_size        = 0;
+        st->phy_db_calib_nch_size  = 0;
+        st->phy_db_n_papd          = 0;
+        st->phy_db_n_txp           = 0;
     }
     int rc = iwl_execute_runtime_firmware(st);
     if (rc == 0) {
@@ -2842,9 +3991,7 @@ int iwlwifi_scan(struct net_iface *iface)
         return rc;
     }
     if (st->modern_transport) {
-        log_warn("iwlwifi", "%s is an MVM device (family=%s); full MVM scan commands are not yet implemented",
-                 iface->name, st->family);
-        return -9;
+        return iwl_mvm_scan(st, iface, NULL);
     }
 
     rc = iwl_send_scan_rxon(st, iface);
@@ -2890,9 +4037,7 @@ int iwlwifi_associate(struct net_iface *iface, const char *ssid, const char *pas
         return rc;
     }
     if (st->modern_transport) {
-        log_warn("iwlwifi", "%s is an MVM device (family=%s); full MVM association commands are not yet implemented",
-                 iface->name, st->family);
-        return -10;
+        return iwl_mvm_associate(st, iface, ssid, passphrase);
     }
 
     const struct iwlwifi_ap *ap = iwl_find_ap(st, ssid);
@@ -3032,6 +4177,17 @@ int iwlwifi_attach(struct net_iface *iface, const struct pci_device *dev)
     st->family = info->family;
     st->firmware_name = info->firmware;
     st->modern_transport = iwl_device_uses_modern_transport(info);
+    /*
+     * MVM: host command queue = 9 (IWM_CMD_QUEUE from FreeBSD if_iwmreg.h)
+     * DVM: host command queue = 4, mgmt TX = 0
+     */
+    if (st->modern_transport) {
+        st->cmd_queue_id  = MVM_CMD_QUEUE; /* 9 */
+        st->mgmt_queue_id = 0;
+    } else {
+        st->cmd_queue_id  = IWL_CMD_QUEUE; /* 4 */
+        st->mgmt_queue_id = IWL_MGMT_QUEUE; /* 0 */
+    }
 
     if (pci_set_power_state_d0(dev) == 0) {
         log_info("iwlwifi", "%s PCI power state set to D0", iface->name);

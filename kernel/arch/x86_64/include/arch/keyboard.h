@@ -29,5 +29,8 @@ const char *keyboard_available_layouts(void);
 #define KEY_TTY1   0x10d
 #define KEY_TTY2   0x10e
 #define KEY_TTY3   0x10f
+#define KEY_TTY4   0x110
+#define KEY_TTY5   0x111
+#define KEY_TTY6   0x112
 
 #endif

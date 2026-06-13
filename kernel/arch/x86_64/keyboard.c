@@ -689,18 +689,12 @@ static void process_set1_scancode(uint8_t scancode)
     }
 
     if (ctrl_down && alt_down) {
-        if (code == 0x3b) {
-            push_key(KEY_TTY1);
-            return;
-        }
-        if (code == 0x3c) {
-            push_key(KEY_TTY2);
-            return;
-        }
-        if (code == 0x3d) {
-            push_key(KEY_TTY3);
-            return;
-        }
+        if (code == 0x3b) { push_key(KEY_TTY1); return; }
+        if (code == 0x3c) { push_key(KEY_TTY2); return; }
+        if (code == 0x3d) { push_key(KEY_TTY3); return; }
+        if (code == 0x3e) { push_key(KEY_TTY4); return; }
+        if (code == 0x3f) { push_key(KEY_TTY5); return; }
+        if (code == 0x40) { push_key(KEY_TTY6); return; }
     }
 
     if (ctrl_down && shift_down && code == 0x2e) {

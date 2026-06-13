@@ -46,11 +46,42 @@ void (*signal(int sig, void (*handler)(int)))(int)
 
 int sigemptyset(sigset_t *set)
 {
-    if (!set) {
-        errno = EINVAL;
-        return -1;
-    }
+    if (!set) { errno = EINVAL; return -1; }
     *set = 0;
+    return 0;
+}
+
+int sigfillset(sigset_t *set)
+{
+    if (!set) { errno = EINVAL; return -1; }
+    *set = ~(sigset_t)0;
+    return 0;
+}
+
+int sigaddset(sigset_t *set, int signum)
+{
+    if (!set || signum < 1 || signum > 31) { errno = EINVAL; return -1; }
+    *set |= (sigset_t)(1u << signum);
+    return 0;
+}
+
+int sigdelset(sigset_t *set, int signum)
+{
+    if (!set || signum < 1 || signum > 31) { errno = EINVAL; return -1; }
+    *set &= ~(sigset_t)(1u << signum);
+    return 0;
+}
+
+int sigismember(const sigset_t *set, int signum)
+{
+    if (!set || signum < 1 || signum > 31) { errno = EINVAL; return -1; }
+    return (*set & (sigset_t)(1u << signum)) ? 1 : 0;
+}
+
+int sigprocmask(int how, const sigset_t *set, sigset_t *oldset)
+{
+    (void)how; (void)set;
+    if (oldset) *oldset = 0;
     return 0;
 }
 

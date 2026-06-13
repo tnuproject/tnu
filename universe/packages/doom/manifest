@@ -1,8 +1,0 @@
-name=doom
-version=0.13.0-tnu1
-architecture=x86_64
-summary=Freedoom IWAD and DoomGeneric engine for TNU framebuffer
-license=GPL-2.0-or-later
-category=games
-file=/usr/games/doom
-file=/usr/share/games/doom/freedoom1.wad

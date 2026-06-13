@@ -1,7 +1,0 @@
-name=nano
-version=8.4-tnu1
-architecture=x86_64
-summary=GNU nano text editor port for TNU
-license=GPL-3.0-or-later
-category=editors
-file=/bin/nano

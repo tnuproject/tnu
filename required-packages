@@ -1,8 +1,0 @@
-# Packages to preinstall into the ISO rootfs from universe/.
-#
-# One package name per line. Blank lines and comments are ignored.
-# This lets downstream builds create distro-style images without requiring
-# Wi-Fi/network access during first boot.
-
-nano
-doom

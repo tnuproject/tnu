@@ -17,7 +17,7 @@
 #define FB_GLYPH_SCALE 2
 #define FB_MAX_COLS 160
 #define FB_MAX_ROWS 64
-#define CONSOLE_TTY_COUNT 3
+#define CONSOLE_TTY_COUNT 6
 
 enum console_backend {
     CONSOLE_BACKEND_VGA,
@@ -593,7 +593,7 @@ int console_switch_tty(size_t tty_index)
     move_cursor();
     fb_cursor_reset_blink();
     if (first_activation) {
-        kprintf("TTY %llu active. Ctrl+Alt+F1/F2/F3 switches workspace.\n",
+        kprintf("TTY %llu active. Ctrl+Alt+F1..F6 switches workspace.\n",
                 (unsigned long long)active_tty + 1);
     }
     return 0;
@@ -913,7 +913,7 @@ int console_getchar(void)
         }
         c = keyboard_try_getchar();
         if (c >= 0) {
-            if (c >= KEY_TTY1 && c <= KEY_TTY3) {
+            if (c >= KEY_TTY1 && c <= KEY_TTY6) {
                 console_switch_tty((size_t)(c - KEY_TTY1));
                 continue;
             }
@@ -929,7 +929,7 @@ void console_banner(void)
     console_set_color(CONSOLE_WHITE, CONSOLE_BLACK);
     console_write("\nBooting ");
     console_set_color(CONSOLE_LIGHT_CYAN, CONSOLE_BLACK);
-    kprintf("%s %s \"%s\"", TNU_NAME, TNU_VERSION, TNU_CODENAME);
+    kprintf("%s \"%s\"", TNU_NAME, TNU_CODENAME);
     console_set_color(CONSOLE_WHITE, CONSOLE_BLACK);
     console_write("...\n");
     console_set_color(CONSOLE_LIGHT_GREY, CONSOLE_BLACK);

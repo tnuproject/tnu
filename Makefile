@@ -67,7 +67,7 @@ IWN_FW_SRC := $(shell find freebsd-src/sys/contrib/dev/iwn freebsd-src/sys/contr
 IWM_FW_SRC := $(shell find freebsd-src/sys/contrib/dev/iwm -maxdepth 1 -name '*.fw' 2>/dev/null | sort)
 LINUX_IWL_FW_SRC := $(shell find rootfs/lib/firmware rootfs/lib/firmware/iwlwifi /lib/firmware /lib/firmware/iwlwifi -maxdepth 1 \( -name 'iwlwifi-*.ucode' -o -name 'iwlwifi-*.fw' \) 2>/dev/null | sort -u)
 
-.PHONY: all kernel userspace iso run clean rootfs universe version-files permission-tests verify verify-kernel verify-iso \
+.PHONY: all kernel userspace iso run clean rootfs version-files permission-tests verify verify-kernel verify-iso \
 	firmware-iwlwifi ports-preflight ports-fetch ports-fetch-core
 
 all: iso
@@ -77,7 +77,7 @@ kernel: $(KERNEL)
 userspace: $(USER_LIB) $(BUILD)/user/init $(BUILD)/user/tsh \
 	$(BUILD)/user/tnu-utils $(BUILD)/user/login $(BUILD)/user/passwd \
 	$(BUILD)/user/useradd $(BUILD)/user/userdel $(BUILD)/user/sysinstall \
-	$(BUILD)/user/pkg
+	$(BUILD)/user/nano $(BUILD)/user/doom
 
 iso: $(ISO)
 
@@ -167,39 +167,37 @@ $(BUILD)/user/sysinstall: $(BUILD)/obj/userspace/sbin/sysinstall.o $(USER_LIB) $
 	@mkdir -p $(dir $@)
 	$(CC) $(USER_CFLAGS) $(USER_LDFLAGS) -o $@ $(USER_CRT) $< $(USER_LIB) -lgcc
 
-$(BUILD)/user/pkg: $(BUILD)/obj/userspace/pkg/pkg.o $(USER_LIB) $(USER_CRT) userspace/linker.ld
-	@mkdir -p $(dir $@)
-	$(CC) $(USER_CFLAGS) $(USER_LDFLAGS) -o $@ $(USER_CRT) $< $(USER_LIB) -lgcc
+$(BUILD)/user/nano: $(USER_LIB) $(USER_CRT) userspace/linker.ld
+	$(MAKE) -C ports/nano CC="$(CC)" \
+		USER_CRT="$(abspath $(USER_CRT))" \
+		USER_LIB="$(abspath $(USER_LIB))"
 
-universe:
-	rm -rf $(BUILD)/universe
-	mkdir -p $(BUILD)/universe
-	cp -a universe/. $(BUILD)/universe/
+$(BUILD)/user/doom: $(USER_LIB) $(USER_CRT) userspace/linker.ld
+	$(MAKE) -C ports/doom CC="$(CC)" \
+		USER_CRT="$(abspath $(USER_CRT))" \
+		USER_LIB="$(abspath $(USER_LIB))"
 
-rootfs: userspace universe version-files firmware-iwlwifi
+rootfs: userspace version-files firmware-iwlwifi
 	rm -rf $(BUILD)/rootfs
 	mkdir -p $(BUILD)/rootfs
 	cp -a rootfs/. $(BUILD)/rootfs/
 	cp -a $(GENERATED)/rootfs/. $(BUILD)/rootfs/
 	cp ascii.txt $(BUILD)/rootfs/etc/sysfetch-logo
 	mkdir -p $(BUILD)/rootfs/bin $(BUILD)/rootfs/sbin $(BUILD)/rootfs/usr/bin \
-		$(BUILD)/rootfs/etc/pkg $(BUILD)/rootfs/var/db/pkg/installed \
-		$(BUILD)/rootfs/usr/share/pkg/repos/universe/packages \
+		$(BUILD)/rootfs/usr/games $(BUILD)/rootfs/usr/share/games/doom \
 		$(BUILD)/rootfs/lib/firmware/iwlwifi
 	cp $(BUILD)/user/init $(BUILD)/rootfs/sbin/init
 	cp $(BUILD)/user/tsh $(BUILD)/rootfs/bin/tsh
 	cp $(BUILD)/user/tsh $(BUILD)/rootfs/bin/sh
 	cp $(BUILD)/user/tsh $(BUILD)/rootfs/usr/bin/sh
-	cp $(BUILD)/user/pkg $(BUILD)/rootfs/bin/pkg
 	cp $(BUILD)/user/login $(BUILD)/rootfs/bin/login
 	cp $(BUILD)/user/passwd $(BUILD)/rootfs/bin/passwd
 	cp $(BUILD)/user/useradd $(BUILD)/rootfs/sbin/useradd
 	cp $(BUILD)/user/userdel $(BUILD)/rootfs/sbin/userdel
 	cp $(BUILD)/user/sysinstall $(BUILD)/rootfs/sbin/sysinstall
 	for name in $(COREUTIL_NAMES); do cp $(BUILD)/user/tnu-utils $(BUILD)/rootfs/bin/$$name; done
-	cp rootfs/etc/pkg/repos.conf $(BUILD)/rootfs/etc/pkg/repos.conf
-	cp -a $(BUILD)/universe/. $(BUILD)/rootfs/usr/share/pkg/repos/universe/
-	$(HOSTPY) tools/install_required_packages.py $(BUILD)/rootfs $(BUILD)/universe required-packages
+	cp $(BUILD)/user/nano $(BUILD)/rootfs/bin/nano
+	cp $(BUILD)/user/doom $(BUILD)/rootfs/usr/games/doom
 	cp -a $(BUILD)/firmware/iwlwifi/. $(BUILD)/rootfs/lib/firmware/iwlwifi/
 
 $(ROOTFS): rootfs tools/mktfs.py

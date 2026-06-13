@@ -22,7 +22,9 @@ Working today:
   and basic redirection.
 - Executable `#!/bin/tsh` scripts with arguments and simple variable expansion.
 - `/bin` applets for common Unix-like commands.
-- `pkg`, with a local `universe` mirror for installable Doom and Nano packages.
+- GNU nano (real upstream, compiled from source during `make all`).
+- DOOM via doomgeneric (compiled from source during `make all`), selectable WAD via `doom --version=N`.
+- Intel Wi-Fi (iwlwifi MVM/DVM) driver with WPA2-PSK association and ping.
 - Read-only probe foundations for ext2, ext4, and FAT32 metadata.
 - Ring-3 ELF execution for the current static userspace model.
 
@@ -92,15 +94,41 @@ behavior.
 ## Layout
 
 ```text
-boot/          GRUB configuration
-kernel/        monolithic kernel source
-kernel/arch/   x86_64-specific code
-kernel/fs/     TFS, VFS, procfs, devfs, and filesystem probes
-rootfs/        files packed into the boot TFS image
-tools/         host-side image builders
-userspace/     freestanding libc, shell, init, sbin tools, and applets
-universe/      default package repository metadata for pkg
+boot/                    GRUB configuration
+kernel/                  monolithic kernel source
+kernel/arch/             x86_64-specific code
+kernel/fs/               TFS, VFS, procfs, devfs, and filesystem probes
+ports/                   first-party ports (compiled from source at build time)
+ports/nano/              GNU nano port (downloads madnight/nano via git clone)
+ports/doom/              DOOM port via doomgeneric (downloads ozkl/doomgeneric via git clone)
+rootfs/                  files packed into the boot TFS image
+rootfs/usr/share/games/doom/  place your DOOM WAD files here before building
+tools/                   host-side image builders
+userspace/               freestanding libc, shell, init, sbin tools, and applets
 ```
+
+## DOOM WAD files
+
+DOOM WAD data files are **not distributed with this project** — they are
+copyrighted by id Software / Bethesda. You must supply your own legally
+obtained copies.
+
+Place the following files in `rootfs/usr/share/games/doom/` before running
+`make all`:
+
+| File        | Game                   |
+|-------------|------------------------|
+| `Doom1.WAD` | DOOM (1993)            |
+| `Doom2.wad` | DOOM II (1994)         |
+| `Doom3.WAD` | The Ultimate DOOM      |
+
+You can also use [FreeDOOM](https://freedoom.github.io/) as a free, open-source
+replacement. See
+[`rootfs/usr/share/games/doom/README.md`](rootfs/usr/share/games/doom/README.md)
+for full details.
+
+Once the WADs are in place, use `doom --version=1`, `doom --version=2`, or
+`doom --version=3` from the Tiramisù shell to select which game to launch.
 
 ## License
 

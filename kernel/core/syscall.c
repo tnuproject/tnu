@@ -238,7 +238,17 @@ static int tty_read_byte(struct process *proc)
             return (unsigned char)c;
         }
         int ch = console_getchar();
-        if (ch >= KEY_TTY1 && ch <= KEY_TTY3) {
+        /* CTRL+C while blocking in read: deliver as interrupt */
+        if (ch == KEY_CTRL_C) {
+            keyboard_ack_interrupt();
+            if (proc && proc->signal_disposition[SIGINT_NUMBER] == SIGNAL_DISPOSITION_DEFAULT) {
+                process_exit(proc, 130);
+                /* Return-to-kernel via syscall_encode */
+                return -130;
+            }
+            return 3; /* pass raw ^C byte if handler is registered */
+        }
+        if (ch >= KEY_TTY1 && ch <= KEY_TTY1 + 5) {
             console_switch_tty((size_t)(ch - KEY_TTY1));
             continue;
         }
@@ -256,7 +266,7 @@ static int tty_try_read_byte(struct process *proc)
     if (ch < 0) {
         return -1;
     }
-    if (ch >= KEY_TTY1 && ch <= KEY_TTY3) {
+    if (ch >= KEY_TTY1 && ch <= KEY_TTY6) {
         console_switch_tty((size_t)(ch - KEY_TTY1));
         return -1;
     }
@@ -270,7 +280,7 @@ static int input_try_read_raw_key(void)
         if (ch < 0) {
             return -1;
         }
-        if (ch >= KEY_TTY1 && ch <= KEY_TTY3) {
+        if (ch >= KEY_TTY1 && ch <= KEY_TTY6) {
             console_switch_tty((size_t)(ch - KEY_TTY1));
             continue;
         }
@@ -365,6 +375,10 @@ static long sys_read(int fd, void *buf, size_t count)
         char *cbuf = buf;
         for (size_t i = 0; i < count; i++) {
             int ch = tty_read_byte(proc);
+            if (ch < 0) {
+                /* CTRL+C killed the process — return to kernel */
+                return (long)syscall_encode_result(130, SYSCALL_RET_TO_KERNEL);
+            }
             cbuf[i] = (char)ch;
             if (cbuf[i] == '\n') {
                 return (long)i + 1;
@@ -391,6 +405,9 @@ static long sys_read(int fd, void *buf, size_t count)
             char *cbuf = buf;
             for (size_t i = 0; i < count; i++) {
                 int ch = tty_read_byte(proc);
+                if (ch < 0) {
+                    return (long)syscall_encode_result(130, SYSCALL_RET_TO_KERNEL);
+                }
                 cbuf[i] = (char)ch;
                 if (cbuf[i] == '\n') {
                     return (long)i + 1;

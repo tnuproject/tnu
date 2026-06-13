@@ -118,6 +118,34 @@ struct iwlwifi_state {
     bool tx_queue_ready;
     const char *family;
     const char *firmware_name;
+    /* actual FH queue IDs — set at attach */
+    uint8_t  cmd_queue_id;    /* DVM=4, MVM=9 */
+    uint8_t  mgmt_queue_id;   /* DVM=0, MVM=0 (data queue) */
+    /* MVM phase-tracking flags */
+    bool     mvm_init_alive_seen;
+    bool     mvm_rt_alive_seen;
+    bool     mvm_alive;
+    bool     mvm_fw_ready;
+    /* MVM context IDs */
+    uint32_t mvm_phy_id;
+    uint32_t mvm_mac_id;
+    uint32_t mvm_sta_id;
+    uint32_t mvm_te_uid;      /* time event unique id */
+    bool     mvm_te_active;
+    /* MVM scan state */
+    bool     mvm_scan_running;
+    bool     mvm_scan_done;
+    /* PHY_DB sections captured during INIT phase, replayed at RT */
+    uint8_t  phy_db_cfg[512];
+    uint16_t phy_db_cfg_size;
+    uint8_t  phy_db_calib_nch[512];
+    uint16_t phy_db_calib_nch_size;
+    uint8_t  phy_db_papd[16][512];
+    uint16_t phy_db_papd_size[16];
+    uint8_t  phy_db_txp[16][512];
+    uint16_t phy_db_txp_size[16];
+    uint8_t  phy_db_n_papd;
+    uint8_t  phy_db_n_txp;
 };
 
 bool iwlwifi_is_supported(const struct pci_device *dev);

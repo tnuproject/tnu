@@ -16,6 +16,14 @@
 /downloads/
 /cache/
 
+# Port upstream sources (fetched at build time, not committed)
+/ports/doom/src/doomgeneric/
+/ports/nano/src/upstream/
+
+# DOOM WAD files — not distributed with this project (see rootfs/usr/share/games/doom/README.md)
+*.WAD
+*.wad
+
 # Local AI/IDE/session state
 /.continue/
 /.codex/

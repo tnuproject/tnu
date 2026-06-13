@@ -126,7 +126,14 @@ arch_enter_user:
     pushq %r13
     pushq %r14
     pushq %r15
+    /*
+     * Save the exec-caller kernel RSP in BOTH saved_kernel_rsp (used by the
+     * syscall return-to-kernel path) AND saved_exec_rsp (used by
+     * arch_abort_user from exception context, where saved_kernel_rsp may
+     * have been overwritten by a syscall that was in progress).
+     */
     movq %rsp, saved_kernel_rsp(%rip)
+    movq %rsp, saved_exec_rsp(%rip)
 
     movq $0x1b, %rdx
     movw %dx, %ds
@@ -144,9 +151,12 @@ arch_enter_user:
 arch_abort_user:
     /*
      * Abort a faulting ring-3 image and return to the kernel caller that
-     * entered it through arch_enter_user().  This mirrors the SYS_EXIT
-     * return-to-kernel path, but can be used from exception context where
-     * SYSRET/IRET back to the faulting instruction would be unsafe.
+     * entered it through arch_enter_user().
+     *
+     * Use saved_exec_rsp — NOT saved_kernel_rsp — because saved_kernel_rsp
+     * may have been overwritten by a syscall that was in progress when the
+     * exception occurred (syscall_entry overwrites it with syscall_stack_top).
+     * saved_exec_rsp is written only by arch_enter_user and is stable.
      *
      * rdi = process exit code to return from arch_enter_user()
      */
@@ -154,7 +164,7 @@ arch_abort_user:
     movq $0x10, %rdx
     movw %dx, %ds
     movw %dx, %es
-    movq saved_kernel_rsp(%rip), %rsp
+    movq saved_exec_rsp(%rip), %rsp
     popq %r15
     popq %r14
     popq %r13
@@ -166,6 +176,8 @@ arch_abort_user:
 .section .bss
 .align 16
 saved_kernel_rsp:
+    .quad 0
+saved_exec_rsp:
     .quad 0
 saved_user_rsp:
     .quad 0

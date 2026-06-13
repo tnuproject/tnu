@@ -484,6 +484,97 @@ int mkstemps(char *template_name, int suffixlen)
     return -1;
 }
 
+int mkstemp(char *template_name)
+{
+    return mkstemps(template_name, 0);
+}
+
+void qsort(void *base, size_t nmemb, size_t size,
+           int (*compar)(const void *, const void *))
+{
+    /* insertion sort — sufficient for nano's small arrays */
+    char *b = base;
+    char *tmp = malloc(size);
+    if (!tmp) return;
+    for (size_t i = 1; i < nmemb; i++) {
+        memcpy(tmp, b + i * size, size);
+        size_t j = i;
+        while (j > 0 && compar(b + (j - 1) * size, tmp) > 0) {
+            memcpy(b + j * size, b + (j - 1) * size, size);
+            j--;
+        }
+        memcpy(b + j * size, tmp, size);
+    }
+    free(tmp);
+}
+
+void *bsearch(const void *key, const void *base, size_t nmemb, size_t size,
+              int (*compar)(const void *, const void *))
+{
+    size_t lo = 0, hi = nmemb;
+    const char *b = base;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        int c = compar(key, b + mid * size);
+        if (c == 0) return (void *)(b + mid * size);
+        if (c < 0) hi = mid; else lo = mid + 1;
+    }
+    return NULL;
+}
+
+long long atoll(const char *s)
+{
+    long long v = 0;
+    int neg = 0;
+    while (*s == ' ' || *s == '\t') s++;
+    if (*s == '-') { neg = 1; s++; } else if (*s == '+') s++;
+    while (*s >= '0' && *s <= '9') { v = v * 10 + (*s++ - '0'); }
+    return neg ? -v : v;
+}
+
+static char env_buf[256][128];
+static size_t env_count;
+
+char *getenv(const char *name);  /* forward — defined in posix_stubs.c */
+
+int setenv(const char *name, const char *value, int overwrite)
+{
+    if (!name) return -1;
+    for (size_t i = 0; i < env_count; i++) {
+        if (strncmp(env_buf[i], name, strlen(name)) == 0 &&
+            env_buf[i][strlen(name)] == '=') {
+            if (!overwrite) return 0;
+            snprintf(env_buf[i], sizeof(env_buf[i]), "%s=%s", name, value ? value : "");
+            return 0;
+        }
+    }
+    if (env_count < 256) {
+        snprintf(env_buf[env_count++], sizeof(env_buf[0]), "%s=%s", name, value ? value : "");
+    }
+    return 0;
+}
+
+int unsetenv(const char *name)
+{
+    if (!name) return -1;
+    for (size_t i = 0; i < env_count; i++) {
+        if (strncmp(env_buf[i], name, strlen(name)) == 0 &&
+            env_buf[i][strlen(name)] == '=') {
+            memmove(env_buf[i], env_buf[i + 1], (env_count - i - 1) * sizeof(env_buf[0]));
+            env_count--;
+            return 0;
+        }
+    }
+    return 0;
+}
+
+int futimens(int fd, const struct timespec times[2])
+{
+    (void)fd;
+    (void)times;
+    return 0;
+}
+
 int glob(const char *pattern, int flags, int (*errfunc)(const char *, int), glob_t *pglob)
 {
     (void)pattern;

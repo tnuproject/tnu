@@ -99,6 +99,31 @@ int putc(int c, FILE *stream)
     return ch;
 }
 
+int fputc(int c, FILE *stream)
+{
+    return putc(c, stream);
+}
+
+char *fgets(char *s, int size, FILE *stream)
+{
+    if (!s || size <= 0 || !stream) {
+        return NULL;
+    }
+    int i = 0;
+    while (i < size - 1) {
+        unsigned char ch;
+        ssize_t n = read(stream->fd, &ch, 1);
+        if (n <= 0) {
+            if (i == 0) return NULL;
+            break;
+        }
+        s[i++] = (char)ch;
+        if (ch == '\n') break;
+    }
+    s[i] = '\0';
+    return s;
+}
+
 int puts(const char *s)
 {
     int n = 0;
