@@ -82,7 +82,7 @@ userspace: $(USER_LIB) $(BUILD)/user/init $(BUILD)/user/tsh \
 iso: $(ISO)
 
 run: $(ISO)
-	$(QEMU) -m 256M -cdrom $(ISO) -vga std -serial stdio -no-reboot -no-shutdown
+	$(QEMU) -m 512M -cdrom $(ISO) -vga std -serial stdio -no-reboot -no-shutdown
 
 clean:
 	rm -rf $(BUILD)
@@ -167,12 +167,14 @@ $(BUILD)/user/sysinstall: $(BUILD)/obj/userspace/sbin/sysinstall.o $(USER_LIB) $
 	@mkdir -p $(dir $@)
 	$(CC) $(USER_CFLAGS) $(USER_LDFLAGS) -o $@ $(USER_CRT) $< $(USER_LIB) -lgcc
 
-$(BUILD)/user/nano: $(USER_LIB) $(USER_CRT) userspace/linker.ld
+$(BUILD)/user/nano: $(USER_LIB) $(USER_CRT) userspace/linker.ld \
+	$(shell find ports/nano/src -type f 2>/dev/null)
 	$(MAKE) -C ports/nano CC="$(CC)" \
 		USER_CRT="$(abspath $(USER_CRT))" \
 		USER_LIB="$(abspath $(USER_LIB))"
 
-$(BUILD)/user/doom: $(USER_LIB) $(USER_CRT) userspace/linker.ld
+$(BUILD)/user/doom: $(USER_LIB) $(USER_CRT) userspace/linker.ld \
+	$(shell find ports/doom/src -type f 2>/dev/null)
 	$(MAKE) -C ports/doom CC="$(CC)" \
 		USER_CRT="$(abspath $(USER_CRT))" \
 		USER_LIB="$(abspath $(USER_LIB))"

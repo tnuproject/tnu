@@ -3,6 +3,7 @@
 #include <tnu/framebuffer.h>
 #include <tnu/log.h>
 #include <tnu/memory.h>
+#include <tnu/multiboot2.h>
 #include <tnu/printf.h>
 #include <tnu/process.h>
 #include <tnu/string.h>
@@ -147,8 +148,94 @@ static bool can_create_in_parent(const struct process *proc, const char *normal)
            has_perm(proc, parent, 2) && has_perm(proc, parent, 1);
 }
 
+static uintptr_t user_brk_floor_current = 0x5000000;
 static uintptr_t user_brk_current = 0x5000000;
 static uintptr_t user_heap_limit_current = 0x7000000;
+
+static uintptr_t page_align_up(uintptr_t value)
+{
+    return (value + PAGE_SIZE - 1) & ~(uintptr_t)(PAGE_SIZE - 1);
+}
+
+static bool module_overlaps_range(const struct boot_module *module,
+                                  uintptr_t start, uintptr_t end,
+                                  uintptr_t *overlap_start,
+                                  uintptr_t *overlap_end)
+{
+    if (!module || !module->start || module->end <= module->start ||
+        module->end <= start || module->start >= end) {
+        return false;
+    }
+    uintptr_t s = module->start > start ? module->start : start;
+    uintptr_t e = module->end < end ? module->end : end;
+    if (s >= e) {
+        return false;
+    }
+    if (overlap_start) {
+        *overlap_start = s;
+    }
+    if (overlap_end) {
+        *overlap_end = e;
+    }
+    return true;
+}
+
+static bool boot_module_range_overlap(uintptr_t start, uintptr_t end)
+{
+    const struct boot_info *boot = boot_info_get();
+    uintptr_t s, e;
+    return boot &&
+           (module_overlaps_range(&boot->rootfs, start, end, &s, &e) ||
+            module_overlaps_range(&boot->install_image, start, end, &s, &e));
+}
+
+static uintptr_t boot_modules_end_in_range(uintptr_t start, uintptr_t end)
+{
+    const struct boot_info *boot = boot_info_get();
+    uintptr_t max_end = 0;
+    uintptr_t s, e;
+    if (!boot) {
+        return 0;
+    }
+    if (module_overlaps_range(&boot->rootfs, start, end, &s, &e) && e > max_end) {
+        max_end = e;
+    }
+    if (module_overlaps_range(&boot->install_image, start, end, &s, &e) && e > max_end) {
+        max_end = e;
+    }
+    return max_end;
+}
+
+static void clear_user_range_preserving_boot_modules(uintptr_t start, uintptr_t end)
+{
+    const struct boot_info *boot = boot_info_get();
+    uintptr_t cur = start;
+    while (cur < end) {
+        uintptr_t next_skip_start = end;
+        uintptr_t next_skip_end = end;
+        uintptr_t s, e;
+
+        if (boot && module_overlaps_range(&boot->rootfs, cur, end, &s, &e) &&
+            s < next_skip_start) {
+            next_skip_start = s;
+            next_skip_end = e;
+        }
+        if (boot && module_overlaps_range(&boot->install_image, cur, end, &s, &e) &&
+            s < next_skip_start) {
+            next_skip_start = s;
+            next_skip_end = e;
+        }
+
+        if (next_skip_start == end) {
+            memset((void *)cur, 0, end - cur);
+            break;
+        }
+        if (cur < next_skip_start) {
+            memset((void *)cur, 0, next_skip_start - cur);
+        }
+        cur = next_skip_end > cur ? next_skip_end : cur + 1;
+    }
+}
 static bool user_exec_active;
 static char tty_pending[8];
 static size_t tty_pending_len;
@@ -647,12 +734,9 @@ static long sys_exec_image(const char *path, int argc, char **argv)
 {
     enum {
         USER_BASE = 0x4000000,
-        USER_LIMIT = 0x8000000,
         USER_HEAP_BASE = 0x8000000,
-        USER_HEAP_LIMIT_SMALL = 0x10000000,
         USER_STACK_BOTTOM_SMALL = 0x17c00000,
         USER_STACK_TOP_SMALL = 0x18000000,
-        USER_HEAP_LIMIT_LARGE = 0x20000000,
         USER_STACK_BOTTOM_LARGE = 0x2fc00000,
         USER_STACK_TOP_LARGE = 0x30000000,
         MAX_ARGS = 16,
@@ -686,15 +770,14 @@ static long sys_exec_image(const char *path, int argc, char **argv)
             arg_values[arg_count++] = arg_storage[i];
         }
     }
-    log_debug("exec", "path=%s argc=%d argv0=%s argv1=%s",
-              path_copy, arg_count,
-              arg_count > 0 ? arg_values[0] : "",
-              arg_count > 1 ? arg_values[1] : "");
-
     struct vfs_node *node = resolve_exec_node(path_copy, resolved, sizeof(resolved));
     if (!node || node->type != VFS_NODE_FILE || !node->data) {
         return -1;
     }
+    log_info("exec", "path=%s argc=%d argv0=%s argv1=%s",
+             resolved, arg_count,
+             arg_count > 0 ? arg_values[0] : "",
+             arg_count > 1 ? arg_values[1] : "");
     if (!has_perm(process_current(), node, 1)) {
         return -1;
     }
@@ -703,19 +786,27 @@ static long sys_exec_image(const char *path, int argc, char **argv)
     if (elf64_validate(node->data, (size_t)node->size, &info) < 0) {
         return -1;
     }
-    uintptr_t user_heap_limit = USER_HEAP_LIMIT_SMALL;
     uintptr_t user_stack_bottom = USER_STACK_BOTTOM_SMALL;
     uintptr_t user_stack_top = USER_STACK_TOP_SMALL;
     const struct memory_stats *mem = memory_stats_get();
     if (mem && mem->usable_bytes >= USER_STACK_TOP_LARGE + 0x1000000) {
-        user_heap_limit = USER_HEAP_LIMIT_LARGE;
         user_stack_bottom = USER_STACK_BOTTOM_LARGE;
         user_stack_top = USER_STACK_TOP_LARGE;
     }
     if (mem && user_stack_top > mem->usable_bytes) {
-        user_heap_limit = USER_HEAP_LIMIT_SMALL;
         user_stack_bottom = USER_STACK_BOTTOM_SMALL;
         user_stack_top = USER_STACK_TOP_SMALL;
+    }
+    uintptr_t user_heap_base = USER_HEAP_BASE;
+    uintptr_t user_heap_limit = user_stack_bottom;
+    uintptr_t protected_end = boot_modules_end_in_range(USER_BASE, user_stack_bottom);
+    if (protected_end > user_heap_base) {
+        user_heap_base = page_align_up(protected_end);
+    }
+    if (user_heap_base >= user_heap_limit || user_heap_limit - user_heap_base < PAGE_SIZE) {
+        log_warn("exec", "no userspace heap window path=%s heap_base=%p heap_limit=%p",
+                 resolved, (void *)user_heap_base, (void *)user_heap_limit);
+        return -1;
     }
 
     /*
@@ -724,7 +815,11 @@ static long sys_exec_image(const char *path, int argc, char **argv)
      * We allow it as long as it stays below user_heap_limit.
      */
     if (info.lowest_vaddr < USER_BASE ||
-        info.highest_vaddr > user_heap_limit) {
+        info.highest_vaddr > user_heap_base ||
+        boot_module_range_overlap((uintptr_t)info.lowest_vaddr, (uintptr_t)info.highest_vaddr)) {
+        log_warn("exec", "ELF image overlaps reserved boot area path=%s low=%p high=%p heap_base=%p",
+                 resolved, (void *)(uintptr_t)info.lowest_vaddr,
+                 (void *)(uintptr_t)info.highest_vaddr, (void *)user_heap_base);
         return -1;
     }
 
@@ -736,13 +831,14 @@ static long sys_exec_image(const char *path, int argc, char **argv)
         return -1;
     }
 
-    memset((void *)(uintptr_t)USER_BASE, 0, user_heap_limit - USER_BASE);
+    clear_user_range_preserving_boot_modules(USER_BASE, user_heap_limit);
     memset((void *)user_stack_bottom, 0, user_stack_top - user_stack_bottom);
     /* brk starts just after the highest ELF segment, page-aligned */
-    uintptr_t elf_end = (uintptr_t)((info.highest_vaddr + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1));
-    if (elf_end < (uintptr_t)USER_HEAP_BASE) {
-        elf_end = USER_HEAP_BASE;
+    uintptr_t elf_end = page_align_up((uintptr_t)info.highest_vaddr);
+    if (elf_end < user_heap_base) {
+        elf_end = user_heap_base;
     }
+    user_brk_floor_current = elf_end;
     user_brk_current = elf_end;
     user_heap_limit_current = user_heap_limit;
     if (elf64_load(node->data, (size_t)node->size) < 0) {
@@ -829,6 +925,9 @@ static long sys_sigaction(int sig, const struct user_sigaction_abi *act,
 static long sys_brk(uintptr_t next)
 {
     if (next == 0) {
+        return (long)user_brk_current;
+    }
+    if (next < user_brk_floor_current) {
         return (long)user_brk_current;
     }
     /* Allow any value in [initial_brk, heap_limit]; shrink is always ok */

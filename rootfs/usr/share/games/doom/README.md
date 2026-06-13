@@ -9,7 +9,7 @@ legally obtained copies.
 | File       | Game           | Source                                   |
 |------------|----------------|------------------------------------------|
 | `Doom1.WAD`| DOOM (1993)    | Buy on Steam / GOG, or use the shareware |
-| `Doom2.wad`| DOOM II (1994) | Buy on Steam / GOG                       |
+| `Doom2.WAD`| DOOM II (1994) | Buy on Steam / GOG                       |
 | `Doom3.WAD`| Ultimate DOOM  | Buy on Steam / GOG                       |
 
 ## Where to get them legally
@@ -31,7 +31,7 @@ Launch DOOM from the Tiramisù shell:
 
 ```sh
 doom --version=1   # Doom1.WAD
-doom --version=2   # Doom2.wad
+doom --version=2   # Doom2.WAD
 doom --version=3   # Doom3.WAD
 doom               # auto-detect first available WAD
 ```

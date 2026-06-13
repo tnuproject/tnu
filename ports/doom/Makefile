@@ -43,8 +43,14 @@ all: fetch ../../build/user/doom
 
 fetch: $(UPSTREAM)/doomgeneric.h
 $(UPSTREAM)/doomgeneric.h:
-	@echo "doom: cloning ozkl/doomgeneric..."
-	git clone --depth 1 https://github.com/ozkl/doomgeneric.git src/doomgeneric
+	@if [ ! -f "$@" ]; then \
+		if [ -d "src/doomgeneric" ] && [ -n "$$(ls -A src/doomgeneric 2>/dev/null)" ]; then \
+			echo "doom: src/doomgeneric exists but $@ is missing"; \
+			exit 1; \
+		fi; \
+		echo "doom: cloning ozkl/doomgeneric..."; \
+		git clone --depth 1 https://github.com/ozkl/doomgeneric.git src/doomgeneric; \
+	fi
 
 ../../build/user/doom: $(DOOM_OBJS) $(TNU_OBJ) $(USER_LIB) $(USER_CRT)
 	@mkdir -p $(dir $@)

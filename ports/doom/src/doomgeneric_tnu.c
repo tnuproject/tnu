@@ -2,7 +2,7 @@
  * doomgeneric_tnu.c — TNU platform backend for doomgeneric
  *
  * Based on doomgeneric_linuxvt.c by Techflash (GPL-2.0+)
- * Adapted for TNU: uses /dev/fb0 (write-only, TNU ioctl) and /dev/kbd
+ * Adapted for TNU: uses /dev/fb0 (write-only, TNU ioctl) and /dev/input/kbd
  */
 
 #include "doomgeneric.h"
@@ -90,8 +90,10 @@ static void checkKeys(void)
 {
     if (kbd_fd < 0) return;
 
-    /* /dev/kbd returns uint16_t entries:
-       bit15=release, bits14:0=key code */
+    /* /dev/input/kbd returns uint16_t TNU key codes.  The current kernel
+       interface reports make events; synthesize a release so Doom never sees
+       permanently held menu/action keys.  Holding a key still repeats through
+       the PS/2 repeat path. */
     uint16_t buf[32];
     ssize_t n = read(kbd_fd, buf, sizeof(buf));
     if (n <= 0) return;
@@ -103,8 +105,14 @@ static void checkKeys(void)
         uint16_t code = raw & 0x7fff;
         int valid;
         unsigned char dk = tnu_to_doom(code, &valid);
-        if (valid)
-            addKeyToQueue(released ? 0 : 1, dk);
+        if (valid) {
+            if (released) {
+                addKeyToQueue(0, dk);
+            } else {
+                addKeyToQueue(1, dk);
+                addKeyToQueue(0, dk);
+            }
+        }
     }
 }
 
@@ -115,7 +123,7 @@ static void checkKeys(void)
 void DG_Init(void)
 {
     fb_fd  = open("/dev/fb0", O_WRONLY);
-    kbd_fd = open("/dev/kbd",  O_RDONLY);
+    kbd_fd = open("/dev/input/kbd", O_RDONLY);
 
     if (fb_fd >= 0) {
         struct syscall_fb_info info;
@@ -134,7 +142,7 @@ void DG_Init(void)
     }
 
     if (kbd_fd < 0)
-        fprintf(stderr, "doom: warning: /dev/kbd not available\n");
+        fprintf(stderr, "doom: warning: /dev/input/kbd not available\n");
 }
 
 void DG_DrawFrame(void)
@@ -201,16 +209,28 @@ static const char *wad_for_version(int ver)
 {
     switch (ver) {
     case 1: return "/usr/share/games/doom/Doom1.WAD";
-    case 2: return "/usr/share/games/doom/Doom2.wad";
+    case 2: return "/usr/share/games/doom/Doom2.WAD";
     case 3: return "/usr/share/games/doom/Doom3.WAD";
     default: return NULL;
     }
 }
 
+static int has_iwad_argument(int argc, char **argv)
+{
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-iwad") == 0 || strncmp(argv[i], "-iwad=", 6) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
-    /* Scan argv for --version=N; strip it and inject -iwad <path> */
-    const char *wad_path = NULL;
+    /* Scan argv for --version=N; strip it and inject -iwad <path>.  If the
+       user does not provide an IWAD, boot the preinstalled shareware WAD. */
+    const char *wad_path = has_iwad_argument(argc, argv) ? NULL
+                                                         : "/usr/share/games/doom/Doom1.WAD";
     static char *new_argv[64];
     int new_argc = 0;
 

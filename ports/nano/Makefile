@@ -42,8 +42,14 @@ all: fetch ../../build/user/nano
 
 fetch: $(UPSTREAM)/src/nano.c
 $(UPSTREAM)/src/nano.c:
-	@echo "nano: cloning madnight/nano..."
-	git clone --depth 1 https://github.com/madnight/nano.git $(UPSTREAM)
+	@if [ ! -f "$@" ]; then \
+		if [ -d "$(UPSTREAM)" ] && [ -n "$$(ls -A "$(UPSTREAM)" 2>/dev/null)" ]; then \
+			echo "nano: $(UPSTREAM) exists but $@ is missing"; \
+			exit 1; \
+		fi; \
+		echo "nano: cloning madnight/nano..."; \
+		git clone --depth 1 https://github.com/madnight/nano.git $(UPSTREAM); \
+	fi
 
 ../../build/user/nano: $(NANO_OBJS) $(SHIM_OBJ) $(USER_LIB) $(USER_CRT)
 	@mkdir -p $(dir $@)
