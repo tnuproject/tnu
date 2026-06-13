@@ -1,0 +1,63 @@
+set timeout=3
+set default=0
+
+insmod all_video
+insmod boot
+insmod echo
+insmod iso9660
+insmod font
+insmod gfxterm
+insmod multiboot2
+insmod search
+insmod search_fs_file
+insmod test
+
+terminal_input console
+terminal_output console
+
+set gfxmode=1024x768x32,800x600x32,auto
+if loadfont /boot/grub/fonts/unicode.pf2; then
+    terminal_output gfxterm console
+fi
+set gfxpayload=keep
+
+function tnu_find_root {
+    search --no-floppy --file --set=root /boot/kernel.elf
+}
+
+menuentry "@TNU_NAME@ @TNU_VERSION@" {
+    tnu_find_root
+    echo "[bootloader] OK"
+    echo "[bootd] Launching from $root"
+
+    if [ -f ($root)/boot/kernel.elf ]; then
+        if multiboot2 ($root)/boot/kernel.elf boot=iso root=/boot/root.tfs; then
+            echo "[bootd] OK"
+
+            if [ -f ($root)/boot/root.tfs ]; then
+                if module2 ($root)/boot/root.tfs root.tfs; then
+                    echo "[bootd] RootFS OK"
+                    if [ -f ($root)/boot/install.img ]; then
+                        if module2 ($root)/boot/install.img tnu-install-image install.img; then
+                            echo "INSTALL IMAGE LOADED"
+                        else
+                            echo "warning: failed to load optional install image"
+                        fi
+                    fi
+                    boot
+                else
+                    echo "boot error: failed to load /boot/root.tfs"
+                fi
+            else
+                echo "boot error: /boot/root.tfs not found on ($root)"
+            fi
+        else
+            echo "boot error: GRUB could not load /boot/kernel.elf as Multiboot2"
+        fi
+    else
+        echo "boot error: /boot/kernel.elf not found"
+    fi
+
+    echo "Boot did not start; press a key to return to the menu."
+    sleep --interruptible 30
+}

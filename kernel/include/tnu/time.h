@@ -13,5 +13,8 @@ struct rtc_time {
 };
 
 int rtc_read_time(struct rtc_time *out);
+void time_init(void);
+uint64_t time_now_seconds(void);
+uint64_t time_uptime_seconds(void);
 
 #endif

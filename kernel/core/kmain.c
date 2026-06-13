@@ -19,6 +19,7 @@
 #include <tnu/scheduler.h>
 #include <tnu/shell.h>
 #include <tnu/tfs.h>
+#include <tnu/time.h>
 #include <tnu/user.h>
 #include <tnu/version.h>
 #include <tnu/vfs.h>
@@ -29,7 +30,7 @@ static void early_vga_stage(const char *stage)
     volatile uint16_t *vga = (volatile uint16_t *)0xb8000;
     size_t row = line++ % 25;
     size_t col = 0;
-    const char *prefix = "[TNU] ";
+    const char *prefix = "[TIRAMISU] ";
 
     while (*prefix && col < 80) {
         vga[row * 80 + col++] = (uint16_t)*prefix++ | 0x0f00;
@@ -44,7 +45,7 @@ static void early_vga_stage(const char *stage)
 
 static void boot_stage(const char *stage)
 {
-    serial_write("[TNU] ");
+    serial_write("[Tiramisu] ");
     serial_write(stage);
     serial_write("\n");
     early_vga_stage(stage);
@@ -63,21 +64,24 @@ void arch_entry(uint32_t magic, uintptr_t mbi_addr)
     heap_init();
     pmm_init(boot);
     vmm_init();
+    cpu_init_fpu();
     boot_stage("MEMORY INITIALIZED");
 
     framebuffer_init();
     console_init();
     console_banner();
-    kprintf("KERNEL STARTED\n");
 
     vfs_init();
     if (boot->rootfs.start && boot->rootfs.end > boot->rootfs.start) {
         size_t size = (size_t)(boot->rootfs.end - boot->rootfs.start);
+        log_info("rootfs", "module root.tfs at %p-%p (%llu KiB)",
+                 (void *)boot->rootfs.start, (void *)boot->rootfs.end,
+                 (unsigned long long)(size / 1024));
         if (tfs_mount_image((const void *)boot->rootfs.start, size) < 0) {
-            log_warn("tfs", "rootfs module was present but not a valid TFS image");
+            log_warn("rootfs", "root.tfs module was present but not a valid TFS image");
         }
     } else {
-        log_warn("tfs", "no root.tfs module supplied; using built-in empty root");
+        log_warn("rootfs", "no root.tfs module supplied; using built-in empty root");
     }
     devfs_init();
     users_init();
@@ -87,6 +91,8 @@ void arch_entry(uint32_t magic, uintptr_t mbi_addr)
     idt_init();
     keyboard_init();
     pit_init(100);
+    time_init();
+    syscall_init();
     scheduler_init();
 
     pci_init();

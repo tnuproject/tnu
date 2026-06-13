@@ -16,6 +16,12 @@
 #ifndef O_TRUNC
 #define O_TRUNC  0x200
 #endif
+#ifndef O_APPEND
+#define O_APPEND 0x400
+#endif
+#ifndef O_EXCL
+#define O_EXCL   0x800
+#endif
 
 int open(const char *path, int flags, ...);
 

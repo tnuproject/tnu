@@ -22,6 +22,9 @@ struct termios {
 #define ECHO   0000010
 #define ICANON 0000002
 #define ISIG   0000001
+#define IEXTEN 0000100
+#define IXON   0000200
+#define OPOST  0000001
 
 int tcgetattr(int fd, struct termios *termios_p);
 int tcsetattr(int fd, int optional_actions, const struct termios *termios_p);

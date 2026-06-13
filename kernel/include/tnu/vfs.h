@@ -12,6 +12,8 @@
 #define VFS_O_RDWR   0x2
 #define VFS_O_CREAT  0x40
 #define VFS_O_TRUNC  0x200
+#define VFS_O_APPEND 0x400
+#define VFS_O_EXCL   0x800
 
 #define VFS_S_IFDIR  0040000
 #define VFS_S_IFREG  0100000
@@ -35,6 +37,7 @@ struct vfs_node {
     uint64_t created;
     uint64_t modified;
     uint8_t *data;
+    bool data_borrowed;
     struct vfs_node *parent;
     struct vfs_node *first_child;
     struct vfs_node *next_sibling;

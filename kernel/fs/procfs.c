@@ -8,6 +8,7 @@
 #include <tnu/process.h>
 #include <tnu/procfs.h>
 #include <tnu/string.h>
+#include <tnu/time.h>
 #include <tnu/usb.h>
 #include <tnu/version.h>
 #include <tnu/vfs.h>
@@ -49,7 +50,7 @@ void procfs_refresh(void)
               mem->allocated_frames, mem->heap_used, mem->heap_size);
     vfs_write_file("/proc/meminfo", "/", buf, strlen(buf));
 
-    ksnprintf(buf, sizeof(buf), "%llu\n", pit_uptime_seconds());
+    ksnprintf(buf, sizeof(buf), "%llu\n", time_uptime_seconds());
     vfs_write_file("/proc/uptime", "/", buf, strlen(buf));
 
     char cpu[128];

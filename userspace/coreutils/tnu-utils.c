@@ -1,4 +1,13 @@
 #include <tnu/libc.h>
+#include <sys/stat.h>
+
+static const char sysfetch_default_logo[] =
+    "___________           \n"
+    "\\__    ___/___  __ __ \n"
+    "  |    | /    \\|  |  \\\n"
+    "  |    ||   |  \\  |  /\n"
+    "  |____||___|  /____/ \n"
+    "             \\/       \n";
 
 static const char *basename(const char *path)
 {
@@ -9,6 +18,49 @@ static const char *basename(const char *path)
         }
     }
     return last;
+}
+
+struct util_help {
+    const char *name;
+    const char *usage;
+    const char *help;
+};
+
+static const struct util_help help_topics[] = {
+    { "echo", "echo [-n] [ARG...]", "Print arguments separated by spaces." },
+    { "pwd", "pwd", "Print the current working directory." },
+    { "cat", "cat FILE...", "Print files to standard output." },
+    { "touch", "touch FILE...", "Create files if they do not exist." },
+    { "mkdir", "mkdir DIR...", "Create directories." },
+    { "rm", "rm FILE...", "Remove files through the kernel unlink syscall." },
+    { "uname", "uname", "Print kernel version information." },
+    { "whoami", "whoami", "Print the current username." },
+    { "id", "id", "Print current uid and gid." },
+    { "sysfetch", "sysfetch", "Print OS identity and machine summary." },
+    { "hostname", "hostname [NAME]", "Show or set hostname; setting requires root." },
+    { "uptime", "uptime", "Print uptime from procfs." },
+    { "timezone", "timezone [ZONE]", "Show or set /etc/timezone; setting requires root." },
+    { "keymap", "keymap [LAYOUT]", "Show or set /etc/keymap; setting requires root." },
+    { "layout", "layout [LAYOUT]", "Alias for keymap." },
+    { "ping", "ping IPv4", "Send a minimal ICMP test when networking is available." },
+    { "chmod", "chmod MODE FILE", "Change file permissions; supports octal and simple symbolic modes." },
+    { "stat", "stat FILE", "Print file metadata." },
+};
+
+static int show_help(const char *cmd)
+{
+    for (size_t i = 0; i < sizeof(help_topics) / sizeof(help_topics[0]); i++) {
+        if (strcmp(cmd, help_topics[i].name) == 0) {
+            print("Usage: ");
+            println(help_topics[i].usage);
+            print("\n");
+            println(help_topics[i].help);
+            return 0;
+        }
+    }
+    print(cmd);
+    println(": no detailed help available");
+    return 1;
 }
 
 static int read_file(const char *path, char *buf, size_t size)
@@ -31,18 +83,19 @@ static int read_file(const char *path, char *buf, size_t size)
     return (int)n;
 }
 
-static void print_file(const char *path)
+static int print_file(const char *path)
 {
     char buf[256];
     int fd = open(path, O_RDONLY, 0);
     if (fd < 0) {
-        return;
+        return -1;
     }
     ssize_t n;
     while ((n = read(fd, buf, sizeof(buf))) > 0) {
         write(1, buf, (size_t)n);
     }
     close(fd);
+    return 0;
 }
 
 static void strip_newline(char *s)
@@ -132,13 +185,21 @@ static void username_from_uid(int uid, char *out, size_t out_size)
 
 static int cmd_echo(int argc, char **argv)
 {
-    for (int i = 1; i < argc; i++) {
-        if (i > 1) {
+    int start = 1;
+    int newline = 1;
+    if (argc > 1 && strcmp(argv[1], "-n") == 0) {
+        newline = 0;
+        start = 2;
+    }
+    for (int i = start; i < argc; i++) {
+        if (i > start) {
             print(" ");
         }
         print(argv[i]);
     }
-    print("\n");
+    if (newline) {
+        print("\n");
+    }
     return 0;
 }
 
@@ -233,7 +294,9 @@ static int cmd_sysfetch(void)
 {
     char value[128];
     char host[64];
-    print_file("/etc/sysfetch-logo");
+    if (print_file("/etc/sysfetch-logo") < 0) {
+        print(sysfetch_default_logo);
+    }
     if (os_value("PRETTY_NAME", value, sizeof(value))) {
         print("OS: ");
         println(value);
@@ -345,9 +408,178 @@ static int cmd_ping(int argc, char **argv)
     return 1;
 }
 
+static int parse_octal_mode(const char *s, mode_t *out)
+{
+    if (!s || !*s || !out) {
+        return -1;
+    }
+    mode_t mode = 0;
+    for (const char *p = s; *p; p++) {
+        if (*p < '0' || *p > '7') {
+            return -1;
+        }
+        mode = (mode << 3) | (mode_t)(*p - '0');
+        if (mode > 07777) {
+            return -1;
+        }
+    }
+    *out = mode;
+    return 0;
+}
+
+static int parse_symbolic_mode(const char *spec, mode_t current, mode_t *out)
+{
+    const char *p = spec;
+    mode_t mode = current & 07777;
+
+    if (!spec || !*spec || !out) {
+        return -1;
+    }
+
+    while (*p) {
+        mode_t who = 0;
+        while (*p == 'u' || *p == 'g' || *p == 'o' || *p == 'a') {
+            if (*p == 'u') {
+                who |= 0700;
+            } else if (*p == 'g') {
+                who |= 0070;
+            } else if (*p == 'o') {
+                who |= 0007;
+            } else {
+                who |= 0777;
+            }
+            p++;
+        }
+        if (who == 0) {
+            who = 0777;
+        }
+
+        char op = *p++;
+        if (op != '+' && op != '-' && op != '=') {
+            return -1;
+        }
+
+        mode_t bits = 0;
+        while (*p == 'r' || *p == 'w' || *p == 'x') {
+            if (*p == 'r') {
+                bits |= 0444;
+            } else if (*p == 'w') {
+                bits |= 0222;
+            } else {
+                bits |= 0111;
+            }
+            p++;
+        }
+        bits &= who;
+
+        if (op == '+') {
+            mode |= bits;
+        } else if (op == '-') {
+            mode &= ~bits;
+        } else {
+            mode = (mode & ~who) | bits;
+        }
+
+        if (*p == ',') {
+            p++;
+            continue;
+        }
+        if (*p != '\0') {
+            return -1;
+        }
+    }
+
+    *out = mode;
+    return 0;
+}
+
+static int cmd_chmod(int argc, char **argv)
+{
+    if (argc != 3) {
+        println("usage: chmod MODE FILE");
+        return 1;
+    }
+
+    mode_t mode = 0;
+    if (parse_octal_mode(argv[1], &mode) < 0) {
+        struct stat st;
+        if (stat(argv[2], &st) < 0 ||
+            parse_symbolic_mode(argv[1], st.st_mode, &mode) < 0) {
+            print("chmod: invalid mode: ");
+            println(argv[1]);
+            return 1;
+        }
+    }
+
+    if (chmod(argv[2], mode) < 0) {
+        print("chmod: failed: ");
+        println(argv[2]);
+        return 1;
+    }
+    return 0;
+}
+
+static void print_octal_mode(mode_t mode)
+{
+    char buf[8];
+    for (int i = 6; i >= 0; i--) {
+        buf[i] = (char)('0' + (mode & 7));
+        mode >>= 3;
+    }
+    buf[7] = '\0';
+    print(buf);
+}
+
+static const char *stat_type_name(int type)
+{
+    switch (type) {
+    case TNU_DT_DIR:
+        return "directory";
+    case TNU_DT_FILE:
+        return "file";
+    case TNU_DT_DEV:
+        return "device";
+    case TNU_DT_PROC:
+        return "proc";
+    default:
+        return "unknown";
+    }
+}
+
+static int cmd_stat(int argc, char **argv)
+{
+    if (argc != 2) {
+        println("usage: stat FILE");
+        return 1;
+    }
+    struct stat st;
+    if (stat(argv[1], &st) < 0) {
+        print("stat: cannot stat ");
+        println(argv[1]);
+        return 1;
+    }
+    print("File: ");
+    println(argv[1]);
+    print("Type: ");
+    println(stat_type_name(st.st_type));
+    print("Mode: ");
+    print_octal_mode(st.st_mode & 07777);
+    print("\nUID: ");
+    print_int(st.st_uid);
+    print("  GID: ");
+    print_int(st.st_gid);
+    print("\nSize: ");
+    print_int(st.st_size);
+    println(" bytes");
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     const char *cmd = argc > 0 ? basename(argv[0]) : "";
+    if (argc >= 2 && (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0)) {
+        return show_help(cmd);
+    }
     if (strcmp(cmd, "echo") == 0) return cmd_echo(argc, argv);
     if (strcmp(cmd, "pwd") == 0) return cmd_pwd();
     if (strcmp(cmd, "cat") == 0) return cmd_cat(argc, argv);
@@ -377,13 +609,13 @@ int main(int argc, char **argv)
     if (strcmp(cmd, "date") == 0) { println("date: unavailable from userspace"); return 1; }
     if (strcmp(cmd, "ps") == 0) { print_file("/proc/processes"); return 0; }
     if (strcmp(cmd, "kill") == 0) { println("usage: kill PID"); return 1; }
-    if (strcmp(cmd, "chmod") == 0 && argc == 3) return chmod(argv[2], atoi(argv[1]));
+    if (strcmp(cmd, "chmod") == 0) return cmd_chmod(argc, argv);
+    if (strcmp(cmd, "stat") == 0) return cmd_stat(argc, argv);
     if (strcmp(cmd, "chown") == 0) { println("usage: chown USER FILE"); return 1; }
     if (strcmp(cmd, "cp") == 0 || strcmp(cmd, "mv") == 0 ||
         strcmp(cmd, "mount") == 0 ||
         strcmp(cmd, "dmesg") == 0 ||
-        strcmp(cmd, "reboot") == 0 || strcmp(cmd, "shutdown") == 0 ||
-        strcmp(cmd, "stat") == 0) {
+        strcmp(cmd, "reboot") == 0 || strcmp(cmd, "shutdown") == 0) {
         println("utility unavailable from userspace");
         return 1;
     }

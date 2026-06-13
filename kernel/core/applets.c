@@ -6,6 +6,7 @@
 #include <tnu/console.h>
 #include <tnu/log.h>
 #include <tnu/memory.h>
+#include <tnu/iwlwifi.h>
 #include <tnu/net.h>
 #include <tnu/printf.h>
 #include <tnu/process.h>
@@ -19,11 +20,21 @@
 
 #define APPLET_LINE_MAX 256
 
+static const char sysfetch_default_logo[] =
+    "___________           \n"
+    "\\__    ___/___  __ __ \n"
+    "  |    | /    \\|  |  \\\n"
+    "  |    ||   |  \\  |  /\n"
+    "  |____||___|  /____/ \n"
+    "             \\/       \n";
+
 static const char *applet_stdin;
 
 struct applet_command {
     const char *name;
     int (*fn)(int argc, char **argv);
+    const char *usage;
+    const char *help;
 };
 
 static const char *basename(const char *path)
@@ -110,6 +121,78 @@ static void write_hostname(const char *name)
     vfs_write_file("/etc/hostname", "/", buf, strlen(buf));
 }
 
+static bool require_root(const char *cmd)
+{
+    if (process_current() && process_current()->uid == 0) {
+        return true;
+    }
+    kprintf("%s: permission denied: requires root; try sudo %s\n", cmd, cmd);
+    return false;
+}
+
+static bool path_is_or_under(const char *path, const char *prefix)
+{
+    size_t len = strlen(prefix);
+    if (strcmp(path, prefix) == 0) {
+        return true;
+    }
+    return len > 1 && strncmp(path, prefix, len) == 0 && path[len] == '/';
+}
+
+static bool applet_path_requires_root_for_mutation(const char *path)
+{
+    char normal[VFS_PATH_MAX];
+    static const char *const protected_prefixes[] = {
+        "/",
+        "/bin",
+        "/boot",
+        "/dev",
+        "/etc",
+        "/lib",
+        "/proc",
+        "/root",
+        "/sbin",
+        "/usr",
+        "/var/cache",
+        "/var/db",
+        "/var/log",
+        "/var/run",
+    };
+
+    if (vfs_normalize(path, process_current() ? process_current()->cwd : "/",
+                      normal, sizeof(normal)) < 0) {
+        return false;
+    }
+    for (size_t i = 0; i < sizeof(protected_prefixes) / sizeof(protected_prefixes[0]); i++) {
+        if (path_is_or_under(normal, protected_prefixes[i])) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool report_permission_denied_if_protected(const char *cmd, const char *path)
+{
+    if (process_current() && process_current()->uid == 0) {
+        return false;
+    }
+    if (!applet_path_requires_root_for_mutation(path)) {
+        return false;
+    }
+    kprintf("%s: permission denied: requires root: %s\n", cmd, path);
+    return true;
+}
+
+static bool applet_interrupted(void)
+{
+    int ch = keyboard_try_getchar();
+    if (ch == KEY_CTRL_C) {
+        kprintf("^C\n");
+        return true;
+    }
+    return false;
+}
+
 static void mode_string(uint32_t mode, enum vfs_node_type type, char out[11])
 {
     out[0] = type == VFS_NODE_DIR ? 'd' : type == VFS_NODE_DEV ? 'c' : type == VFS_NODE_PROC ? 'p' : '-';
@@ -120,9 +203,88 @@ static void mode_string(uint32_t mode, enum vfs_node_type type, char out[11])
     out[10] = '\0';
 }
 
+static int parse_mode_octal(const char *text, uint32_t *out)
+{
+    if (!text || !*text || !out) {
+        return -1;
+    }
+    uint32_t mode = 0;
+    for (const char *p = text; *p; p++) {
+        if (*p < '0' || *p > '7') {
+            return -1;
+        }
+        mode = (mode << 3) | (uint32_t)(*p - '0');
+        if (mode > 07777) {
+            return -1;
+        }
+    }
+    *out = mode;
+    return 0;
+}
+
+static int mkdir_p_path(const char *path, uint32_t mode)
+{
+    char normal[VFS_PATH_MAX];
+    char partial[VFS_PATH_MAX];
+    if (vfs_normalize(path, process_current()->cwd, normal, sizeof(normal)) < 0) {
+        return -1;
+    }
+    if (strcmp(normal, "/") == 0) {
+        return 0;
+    }
+
+    partial[0] = '/';
+    partial[1] = '\0';
+    const char *p = normal + 1;
+    while (*p) {
+        char comp[VFS_NAME_MAX + 1];
+        size_t n = 0;
+        while (*p && *p != '/' && n < VFS_NAME_MAX) {
+            comp[n++] = *p++;
+        }
+        comp[n] = '\0';
+        while (*p == '/') {
+            p++;
+        }
+        if (n == 0) {
+            continue;
+        }
+        if (strcmp(partial, "/") != 0) {
+            strcat(partial, "/");
+        }
+        if (strlen(partial) + strlen(comp) + 1 >= sizeof(partial)) {
+            return -1;
+        }
+        strcat(partial, comp);
+        struct vfs_node *node = vfs_lookup(partial, "/");
+        if (node) {
+            if (node->type != VFS_NODE_DIR) {
+                return -1;
+            }
+            continue;
+        }
+        if (syscall_dispatch(SYS_MKDIR, (uint64_t)partial, mode, 0, 0, 0, 0) < 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+struct ls_context {
+    bool long_format;
+    bool all;
+};
+
 static void ls_emit(struct vfs_node *node, void *ctx)
 {
-    (void)ctx;
+    struct ls_context *ls = ctx;
+    if (!node || (!ls->all && node->name[0] == '.')) {
+        return;
+    }
+    if (!ls->long_format) {
+        kprintf("%s%s  ", node->name, node->type == VFS_NODE_DIR ? "/" : "");
+        return;
+    }
     char mode[11];
     mode_string(node->mode, node->type, mode);
     kprintf("%s %4u:%-4u %8llu %s%s\n", mode, node->uid, node->gid,
@@ -142,7 +304,7 @@ static int cmd_uname(int argc, char **argv)
     (void)argc;
     (void)argv;
     char version[128];
-    proc_first_line("/proc/version", version, sizeof(version), "TNU unknown x86_64");
+    proc_first_line("/proc/version", version, sizeof(version), "Tiramisù unknown x86_64");
     kprintf("%s\n", version);
     return 0;
 }
@@ -161,14 +323,14 @@ static int cmd_sysfetch(int argc, char **argv)
     char kernel[128];
     char uptime[64];
     const struct memory_stats *mem = memory_stats_get();
-    read_file_text("/etc/hostname", host, sizeof(host), "tnu");
+    read_file_text("/etc/hostname", host, sizeof(host), "tiramisu");
     strip_first_newline(host);
-    read_file_text("/etc/sysfetch-logo", logo, sizeof(logo), "TNU\n");
+    read_file_text("/etc/sysfetch-logo", logo, sizeof(logo), sysfetch_default_logo);
     os_release_value("PRETTY_NAME", pretty, sizeof(pretty));
     os_release_value("NAME", name, sizeof(name));
     os_release_value("VERSION_ID", version_id, sizeof(version_id));
     os_release_value("VERSION_CODENAME", codename, sizeof(codename));
-    proc_first_line("/proc/version", kernel, sizeof(kernel), "TNU unknown x86_64");
+    proc_first_line("/proc/version", kernel, sizeof(kernel), "Tiramisù unknown x86_64");
     proc_first_line("/proc/uptime", uptime, sizeof(uptime), "0");
     cpu_get_brand(cpu, sizeof(cpu));
     kprintf("%s", logo);
@@ -183,8 +345,22 @@ static int cmd_sysfetch(int argc, char **argv)
     kprintf("Architecture: %s\n", TNU_ARCH);
     kprintf("Hostname: %s\n", host);
     kprintf("Uptime: %s seconds\n", uptime);
-    kprintf("Memory: %llu KiB usable / %llu KiB total\n",
-            mem->usable_bytes / 1024, mem->total_bytes / 1024);
+    const uint64_t gib = 1024ULL * 1024ULL * 1024ULL;
+    uint64_t usable_tenths = (mem->usable_bytes * 10 + gib / 2) / gib;
+    uint64_t total_tenths = (mem->total_bytes * 10 + gib / 2) / gib;
+    kprintf("Memory: ");
+    if (usable_tenths % 10 == 0) {
+        kprintf("%lluGB", usable_tenths / 10);
+    } else {
+        kprintf("%llu.%lluGB", usable_tenths / 10, usable_tenths % 10);
+    }
+    kprintf(" usable out of ");
+    if (total_tenths % 10 == 0) {
+        kprintf("%lluGB", total_tenths / 10);
+    } else {
+        kprintf("%llu.%lluGB", total_tenths / 10, total_tenths % 10);
+    }
+    kprintf("\n");
     kprintf("Shell: /bin/tsh\n");
     kprintf("CPU: %s\n", cpu);
     return 0;
@@ -201,7 +377,29 @@ static int cmd_dmesg(int argc, char **argv)
 static int cmd_ls(int argc, char **argv)
 {
     procfs_refresh();
-    const char *path = argc > 1 ? argv[1] : ".";
+    struct ls_context ctx = { .long_format = false, .all = false };
+    int first_path = 1;
+    for (; first_path < argc; first_path++) {
+        if (strcmp(argv[first_path], "--") == 0) {
+            first_path++;
+            break;
+        }
+        if (argv[first_path][0] != '-' || argv[first_path][1] == '\0') {
+            break;
+        }
+        for (const char *p = argv[first_path] + 1; *p; p++) {
+            if (*p == 'l') {
+                ctx.long_format = true;
+            } else if (*p == 'a') {
+                ctx.all = true;
+            } else {
+                kprintf("ls: invalid option -- %c\n", *p);
+                kprintf("usage: ls [-la] [FILE...]\n");
+                return 1;
+            }
+        }
+    }
+    const char *path = first_path < argc ? argv[first_path] : ".";
     struct process *proc = process_current();
     struct vfs_node *node = vfs_lookup(path, proc->cwd);
     if (!node) {
@@ -209,9 +407,36 @@ static int cmd_ls(int argc, char **argv)
         return 1;
     }
     if (node->type == VFS_NODE_DIR) {
-        vfs_list(node, ls_emit, NULL);
+        vfs_list(node, ls_emit, &ctx);
+        if (!ctx.long_format) {
+            kprintf("\n");
+        }
     } else {
-        ls_emit(node, NULL);
+        ls_emit(node, &ctx);
+        if (!ctx.long_format) {
+            kprintf("\n");
+        }
+    }
+    for (int i = first_path + 1; i < argc; i++) {
+        node = vfs_lookup(argv[i], proc->cwd);
+        if (!node) {
+            kprintf("ls: not found: %s\n", argv[i]);
+            continue;
+        }
+        if (argc - first_path > 1) {
+            kprintf("%s:\n", argv[i]);
+        }
+        if (node->type == VFS_NODE_DIR) {
+            vfs_list(node, ls_emit, &ctx);
+            if (!ctx.long_format) {
+                kprintf("\n");
+            }
+        } else {
+            ls_emit(node, &ctx);
+            if (!ctx.long_format) {
+                kprintf("\n");
+            }
+        }
     }
     return 0;
 }
@@ -253,23 +478,122 @@ static int cmd_cat(int argc, char **argv)
 
 static int cmd_echo(int argc, char **argv)
 {
-    for (int i = 1; i < argc; i++) {
-        kprintf("%s%s", i == 1 ? "" : " ", argv[i]);
+    bool newline = true;
+    int start = 1;
+    if (argc > 1 && strcmp(argv[1], "-n") == 0) {
+        newline = false;
+        start = 2;
     }
-    kprintf("\n");
+    for (int i = start; i < argc; i++) {
+        kprintf("%s%s", i == start ? "" : " ", argv[i]);
+    }
+    if (newline) {
+        kprintf("\n");
+    }
     return 0;
 }
 
 static int cmd_mkdir(int argc, char **argv)
 {
-    if (argc < 2) {
-        kprintf("usage: mkdir DIR...\n");
+    bool parents = false;
+    uint32_t mode = 0755;
+    int first_path = 1;
+    for (; first_path < argc; first_path++) {
+        if (strcmp(argv[first_path], "--") == 0) {
+            first_path++;
+            break;
+        }
+        if (strcmp(argv[first_path], "-p") == 0) {
+            parents = true;
+            continue;
+        }
+        if (strcmp(argv[first_path], "-m") == 0) {
+            if (first_path + 1 >= argc ||
+                parse_mode_octal(argv[first_path + 1], &mode) < 0) {
+                kprintf("mkdir: invalid mode\n");
+                return 1;
+            }
+            first_path++;
+            continue;
+        }
+        if (argv[first_path][0] == '-' && argv[first_path][1] != '\0') {
+            kprintf("mkdir: invalid option: %s\n", argv[first_path]);
+            return 1;
+        }
+        break;
+    }
+    if (first_path >= argc) {
+        kprintf("usage: mkdir [-p] [-m MODE] DIR...\n");
         return 1;
     }
-    for (int i = 1; i < argc; i++) {
-        if (syscall_dispatch(SYS_MKDIR, (uint64_t)argv[i], 0755, 0, 0, 0, 0) < 0) {
-            kprintf("mkdir: failed: %s\n", argv[i]);
+    int status = 0;
+    for (int i = first_path; i < argc; i++) {
+        int rc = parents
+                     ? mkdir_p_path(argv[i], mode)
+                     : (int)syscall_dispatch(SYS_MKDIR, (uint64_t)argv[i], mode, 0, 0, 0, 0);
+        if (rc < 0) {
+            if (!report_permission_denied_if_protected("mkdir", argv[i])) {
+                kprintf("mkdir: failed: %s\n", argv[i]);
+            }
+            status = 1;
         }
+    }
+    return status;
+}
+
+static int rm_recursive_path(const char *path, bool recursive, bool force)
+{
+    char normal[VFS_PATH_MAX];
+    if (vfs_normalize(path, process_current()->cwd, normal, sizeof(normal)) < 0) {
+        if (!force) {
+            kprintf("rm: invalid path: %s\n", path);
+        }
+        return force ? 0 : 1;
+    }
+    if (report_permission_denied_if_protected("rm", normal)) {
+        return 1;
+    }
+
+    struct vfs_node *node = vfs_lookup(normal, "/");
+    if (!node) {
+        if (!force) {
+            kprintf("rm: not found: %s\n", path);
+        }
+        return force ? 0 : 1;
+    }
+
+    if (node->type == VFS_NODE_DIR) {
+        if (!recursive) {
+            kprintf("rm: %s: is a directory\n", path);
+            return 1;
+        }
+        while (node->first_child) {
+            char child[VFS_PATH_MAX];
+            if (strcmp(normal, "/") == 0) {
+                ksnprintf(child, sizeof(child), "/%s", node->first_child->name);
+            } else {
+                ksnprintf(child, sizeof(child), "%s/%s", normal, node->first_child->name);
+            }
+            if (rm_recursive_path(child, true, force) != 0 && !force) {
+                return 1;
+            }
+            node = vfs_lookup(normal, "/");
+            if (!node) {
+                return 0;
+            }
+        }
+        if (strcmp(normal, "/") == 0) {
+            return 0;
+        }
+    }
+
+    if (syscall_dispatch(SYS_UNLINK, (uint64_t)normal, 0, 0, 0, 0, 0) < 0) {
+        if (!force) {
+            if (!report_permission_denied_if_protected("rm", normal)) {
+                kprintf("rm: failed: %s\n", path);
+            }
+        }
+        return force ? 0 : 1;
     }
     return 0;
 }
@@ -277,15 +601,41 @@ static int cmd_mkdir(int argc, char **argv)
 static int cmd_rm(int argc, char **argv)
 {
     if (argc < 2) {
-        kprintf("usage: rm FILE...\n");
+        kprintf("usage: rm [-r] [-f] FILE...\n");
         return 1;
     }
-    for (int i = 1; i < argc; i++) {
-        if (syscall_dispatch(SYS_UNLINK, (uint64_t)argv[i], 0, 0, 0, 0, 0) < 0) {
-            kprintf("rm: failed: %s\n", argv[i]);
+    bool recursive = false;
+    bool force = false;
+    int first_path = 1;
+    for (; first_path < argc; first_path++) {
+        if (argv[first_path][0] != '-' || argv[first_path][1] == '\0') {
+            break;
+        }
+        for (const char *p = argv[first_path] + 1; *p; p++) {
+            if (*p == 'r' || *p == 'R') {
+                recursive = true;
+            } else if (*p == 'f') {
+                force = true;
+            } else {
+                kprintf("rm: unknown option -- %c\n", *p);
+                return 1;
+            }
         }
     }
-    return 0;
+    if (first_path >= argc) {
+        if (!force) {
+            kprintf("rm: missing operand\n");
+            return 1;
+        }
+        return 0;
+    }
+    int status = 0;
+    for (int i = first_path; i < argc; i++) {
+        if (rm_recursive_path(argv[i], recursive, force) != 0) {
+            status = 1;
+        }
+    }
+    return status;
 }
 
 static int cmd_touch(int argc, char **argv)
@@ -299,6 +649,8 @@ static int cmd_touch(int argc, char **argv)
             int fd = (int)syscall_dispatch(SYS_OPEN, (uint64_t)argv[i], VFS_O_CREAT | VFS_O_RDWR, 0644, 0, 0, 0);
             if (fd >= 0) {
                 syscall_dispatch(SYS_CLOSE, (uint64_t)fd, 0, 0, 0, 0, 0);
+            } else if (!report_permission_denied_if_protected("touch", argv[i])) {
+                kprintf("touch: failed: %s\n", argv[i]);
             }
         }
     }
@@ -311,12 +663,34 @@ static int copy_file(const char *src, const char *dst)
     if (!node || node->type != VFS_NODE_FILE) {
         return -1;
     }
-    return vfs_write_file(dst, process_current()->cwd, node->data, (size_t)node->size);
+    int src_fd = (int)syscall_dispatch(SYS_OPEN, (uint64_t)src, VFS_O_RDONLY, 0, 0, 0, 0);
+    if (src_fd < 0) {
+        return -1;
+    }
+    syscall_dispatch(SYS_CLOSE, (uint64_t)src_fd, 0, 0, 0, 0, 0);
+
+    int dst_fd = (int)syscall_dispatch(SYS_OPEN, (uint64_t)dst,
+                                       VFS_O_CREAT | VFS_O_RDWR | VFS_O_TRUNC,
+                                       node->mode & 0777, 0, 0, 0);
+    if (dst_fd < 0) {
+        return -1;
+    }
+    if (node->size == 0) {
+        syscall_dispatch(SYS_CLOSE, (uint64_t)dst_fd, 0, 0, 0, 0, 0);
+        return 0;
+    }
+    long written = syscall_dispatch(SYS_WRITE, (uint64_t)dst_fd, (uint64_t)node->data,
+                                    (size_t)node->size, 0, 0, 0);
+    syscall_dispatch(SYS_CLOSE, (uint64_t)dst_fd, 0, 0, 0, 0, 0);
+    return written == (long)node->size ? 0 : -1;
 }
 
 static int cmd_cp(int argc, char **argv)
 {
     if (argc != 3 || copy_file(argv[1], argv[2]) < 0) {
+        if (argc == 3 && report_permission_denied_if_protected("cp", argv[2])) {
+            return 1;
+        }
         kprintf("usage: cp SRC DST\n");
         return 1;
     }
@@ -326,7 +700,12 @@ static int cmd_cp(int argc, char **argv)
 static int cmd_mv(int argc, char **argv)
 {
     if (argc != 3 || copy_file(argv[1], argv[2]) < 0 ||
-        vfs_unlink(argv[1], process_current()->cwd) < 0) {
+        syscall_dispatch(SYS_UNLINK, (uint64_t)argv[1], 0, 0, 0, 0, 0) < 0) {
+        if (argc == 3 &&
+            (report_permission_denied_if_protected("mv", argv[1]) ||
+             report_permission_denied_if_protected("mv", argv[2]))) {
+            return 1;
+        }
         kprintf("usage: mv SRC DST\n");
         return 1;
     }
@@ -341,13 +720,19 @@ static int cmd_chmod(int argc, char **argv)
     }
     uint32_t mode = (uint32_t)strtol(argv[1], NULL, 8);
     if (syscall_dispatch(SYS_CHMOD, (uint64_t)argv[2], mode, 0, 0, 0, 0) < 0) {
-        kprintf("chmod: failed\n");
+        if (!report_permission_denied_if_protected("chmod", argv[2])) {
+            kprintf("chmod: failed: %s\n", argv[2]);
+        }
+        return 1;
     }
     return 0;
 }
 
 static int cmd_chown(int argc, char **argv)
 {
+    if (!require_root("chown")) {
+        return 1;
+    }
     if (argc != 3) {
         kprintf("usage: chown USER FILE\n");
         return 1;
@@ -358,7 +743,8 @@ static int cmd_chown(int argc, char **argv)
         return 1;
     }
     if (syscall_dispatch(SYS_CHOWN, (uint64_t)argv[2], u->uid, u->gid, 0, 0, 0) < 0) {
-        kprintf("chown: failed\n");
+        kprintf("chown: failed: %s\n", argv[2]);
+        return 1;
     }
     return 0;
 }
@@ -426,6 +812,9 @@ static int cmd_id(int argc, char **argv)
 static int cmd_hostname(int argc, char **argv)
 {
     if (argc > 1) {
+        if (!require_root("hostname")) {
+            return 1;
+        }
         write_hostname(argv[1]);
     }
     char host[64];
@@ -604,7 +993,7 @@ static int cmd_uptime(int argc, char **argv)
 {
     (void)argc;
     (void)argv;
-    uint64_t seconds = pit_uptime_seconds();
+    uint64_t seconds = time_uptime_seconds();
     kprintf("%llu days, %02llu:%02llu:%02llu\n",
             seconds / 86400,
             (seconds / 3600) % 24,
@@ -625,6 +1014,9 @@ static int cmd_timezone(int argc, char **argv)
         kprintf("usage: timezone UTC|UTC+H|UTC-H|UTC+HH:MM\n");
         return 1;
     }
+    if (!require_root("timezone")) {
+        return 1;
+    }
     char buf[40];
     ksnprintf(buf, sizeof(buf), "%s\n", argv[1]);
     vfs_write_file("/etc/timezone", "/", buf, strlen(buf));
@@ -643,6 +1035,9 @@ static int cmd_keymap(int argc, char **argv)
         kprintf("usage: keymap {%s}\n", keyboard_available_layouts());
         return 1;
     }
+    if (!require_root("keymap")) {
+        return 1;
+    }
     char buf[32];
     ksnprintf(buf, sizeof(buf), "%s\n", argv[1]);
     vfs_write_file("/etc/keymap", "/", buf, strlen(buf));
@@ -654,10 +1049,20 @@ static int cmd_reboot(int argc, char **argv)
 {
     (void)argc;
     (void)argv;
+    if (!require_root("reboot")) {
+        return 1;
+    }
     kprintf("rebooting...\n");
+    cpu_cli();
     while (inb(0x64) & 0x02) {
     }
     outb(0x64, 0xfe);
+    for (volatile size_t i = 0; i < 1000000; i++) {
+        cpu_pause();
+    }
+    outb(0xcf9, 0x02);
+    io_wait();
+    outb(0xcf9, 0x06);
     for (;;) {
         cpu_halt();
     }
@@ -668,9 +1073,16 @@ static int cmd_shutdown(int argc, char **argv)
 {
     (void)argc;
     (void)argv;
-    kprintf("requesting ACPI/QEMU poweroff...\n");
+    if (!require_root("shutdown")) {
+        return 1;
+    }
+    kprintf("requesting poweroff...\n");
+    cpu_cli();
     outw(0x604, 0x2000);
     outw(0xb004, 0x2000);
+    outw(0x4004, 0x3400);
+    outw(0x600, 0x34);
+    kprintf("shutdown: firmware did not power off; halting CPU\n");
     for (;;) {
         cpu_halt();
     }
@@ -679,8 +1091,14 @@ static int cmd_shutdown(int argc, char **argv)
 
 static int cmd_mount(int argc, char **argv)
 {
-    (void)argc;
     (void)argv;
+    if (argc > 1 && !require_root("mount")) {
+        return 1;
+    }
+    if (argc > 1) {
+        kprintf("mount: mounting additional filesystems is not available in this build\n");
+        return 1;
+    }
     kprintf("rootfs on / type tfs (memory)\n");
     kprintf("devfs on /dev type devfs\n");
     kprintf("procfs on /proc type procfs\n");
@@ -691,6 +1109,9 @@ static int cmd_mount(int argc, char **argv)
 static int cmd_ifconfig(int argc, char **argv)
 {
     if (argc >= 3) {
+        if (!require_root("ifconfig")) {
+            return 1;
+        }
         if (strcmp(argv[2], "up") == 0 || strcmp(argv[2], "down") == 0) {
             if (net_iface_set_up(argv[1], strcmp(argv[2], "up") == 0) < 0) {
                 kprintf("ifconfig: cannot change %s\n", argv[1]);
@@ -729,6 +1150,9 @@ static int cmd_ifconfig(int argc, char **argv)
 static int cmd_route(int argc, char **argv)
 {
     if (argc == 5 && strcmp(argv[1], "add") == 0 && strcmp(argv[2], "default") == 0) {
+        if (!require_root("route")) {
+            return 1;
+        }
         uint32_t gateway = net_parse_ipv4(argv[3]);
         const struct net_iface *iface = net_iface_find(argv[4]);
         if (!gateway || !iface || !iface->ipv4 || !iface->netmask ||
@@ -748,6 +1172,24 @@ static int cmd_route(int argc, char **argv)
     if (node && node->data) {
         console_write_n((const char *)node->data, (size_t)node->size);
     }
+    return 0;
+}
+
+static int cmd_dhcp(int argc, char **argv)
+{
+    if (argc != 2) {
+        kprintf("usage: dhcp IFACE\n");
+        return 1;
+    }
+    if (!require_root("dhcp")) {
+        return 1;
+    }
+    int rc = net_iface_dhcp(argv[1]);
+    if (rc < 0) {
+        kprintf("dhcp: failed on %s (%d)\n", argv[1], rc);
+        return 1;
+    }
+    procfs_refresh();
     return 0;
 }
 
@@ -794,6 +1236,9 @@ static int cmd_ping(int argc, char **argv)
         kprintf("PING %s (%s)\n", argv[1], ip_text);
     }
     for (uint16_t seq = 1; seq <= 4; seq++) {
+        if (applet_interrupted()) {
+            return 130;
+        }
         uint32_t latency = 0;
         if (net_ping4(ip, seq, &latency) == 0) {
             kprintf("64 bytes from %s: icmp_seq=%u ttl=64 time=%u ms\n",
@@ -815,8 +1260,58 @@ static int cmd_wifi(int argc, char **argv)
             const struct net_iface *iface = net_iface_get(i);
             if (iface->type == NET_IFACE_WIFI) {
                 found = true;
-                kprintf("%s: Intel Wi-Fi device detected; association is not online yet\n",
-                        iface->name);
+                kprintf("%s: Wi-Fi hardware detected (%04x:%04x), driver=%s\n",
+                        iface->name, iface->pci_vendor, iface->pci_device, iface->driver);
+                if (strcmp(iface->driver, "iwlwifi") == 0) {
+                    const struct iwlwifi_state *st = iwlwifi_state_for(iface);
+                    if (st && st->firmware_loaded) {
+                        kprintf("%s: firmware %s loaded (%llu KiB, %s, version=%u)\n",
+                                iface->name, st->firmware_name,
+                                (unsigned long long)(st->firmware_size / 1024),
+                                st->firmware_tlv ? "TLV" : "legacy",
+                                st->firmware_version);
+                        kprintf("%s: parsed=%s staged=%s runtime=%u+%u init=%u+%u\n",
+                                iface->name,
+                                st->firmware_parsed ? "yes" : "no",
+                                st->firmware_staged ? "yes" : "no",
+                                st->runtime_ucode.text_size,
+                                st->runtime_ucode.data_size,
+                                st->init_ucode.text_size,
+                                st->init_ucode.data_size);
+                        kprintf("%s: running=%s alive=%s; scan engine and WPA are next\n",
+                                iface->name,
+                                st->firmware_running ? "yes" : "no",
+                                st->firmware_alive ? "yes" : "no");
+                        if (st->modern_transport) {
+                            kprintf("%s: transport=modern Intel iwm/iwlwifi (command/RX/TX bring-up pending)\n",
+                                    iface->name);
+                        } else {
+                            kprintf("%s: transport=legacy Intel iwn\n", iface->name);
+                        }
+                        if (st->ap_count) {
+                            kprintf("%s: last scan found %u AP(s)\n",
+                                    iface->name, (uint32_t)st->ap_count);
+                            for (size_t ap_i = 0; ap_i < IWLWIFI_AP_CACHE_MAX; ap_i++) {
+                                const struct iwlwifi_ap *ap = &st->aps[ap_i];
+                                if (!ap->valid) {
+                                    continue;
+                                }
+                                kprintf("  %-32s %02x:%02x:%02x:%02x:%02x:%02x ch=%u %s\n",
+                                        ap->ssid,
+                                        ap->bssid[0], ap->bssid[1], ap->bssid[2],
+                                        ap->bssid[3], ap->bssid[4], ap->bssid[5],
+                                        ap->channel,
+                                        ap->privacy ? "wpa/wep" : "open");
+                            }
+                        }
+                    } else {
+                        kprintf("%s: firmware %s missing; install it under /lib/firmware/iwlwifi\n",
+                                iface->name, st && st->firmware_name ? st->firmware_name : "unknown");
+                    }
+                } else {
+                    kprintf("%s: association offline; Wi-Fi needs firmware and 802.11 MAC support\n",
+                            iface->name);
+                }
             }
         }
         if (!found) {
@@ -828,15 +1323,78 @@ static int cmd_wifi(int argc, char **argv)
         int rc = net_wifi_scan();
         if (rc == -1) {
             kprintf("wifi: no Wi-Fi device detected\n");
+        } else if (rc == 0 || rc == -4) {
+            kprintf("wifi: scan completed\n");
+        } else if (rc == -3) {
+            kprintf("wifi: iwlwifi attached, but command transport is not ready\n");
+        } else if (rc == -6) {
+            kprintf("wifi: modern Intel scan command queue is not complete yet\n");
+        } else if (rc == -7) {
+            kprintf("wifi: legacy Intel scan command/RX parser is not complete yet\n");
+        } else if (rc == -9) {
+            kprintf("wifi: firmware command queue did not answer yet\n");
+        } else if (rc == -10) {
+            kprintf("wifi: scan completed but no APs were decoded\n");
         } else {
             kprintf("wifi: Wi-Fi hardware found, but scan requires the 802.11 firmware/MAC layer\n");
         }
         return rc == 0 ? 0 : 1;
     }
+    if (argc >= 2 && strcmp(argv[1], "start") == 0) {
+        if (!require_root("wifi")) {
+            return 1;
+        }
+        const char *name = argc >= 3 ? argv[2] : "wlan0";
+        for (size_t i = 0; i < net_iface_count(); i++) {
+            const struct net_iface *iface = net_iface_get(i);
+            if (iface->type == NET_IFACE_WIFI && strcmp(iface->name, name) == 0 &&
+                strcmp(iface->driver, "iwlwifi") == 0) {
+                struct net_iface *mutable_iface = (struct net_iface *)iface;
+                int rc = iwlwifi_start(mutable_iface);
+                if (rc == 0) {
+                    kprintf("wifi: %s firmware is alive\n", name);
+                    return 0;
+                }
+                kprintf("wifi: %s firmware start failed (%d)\n", name, rc);
+                return 1;
+            }
+        }
+        kprintf("wifi: no iwlwifi interface named %s\n", name);
+        return 1;
+    }
     if (argc >= 4 && strcmp(argv[1], "connect") == 0) {
+        if (!require_root("wifi")) {
+            return 1;
+        }
         int rc = net_wifi_connect(argv[2], argv[3], argc > 4 ? argv[4] : "");
         if (rc == -1) {
             kprintf("wifi: no such Wi-Fi interface: %s\n", argv[2]);
+        } else if (rc == -3) {
+            kprintf("wifi: iwlwifi attach is online, but firmware/scan/WPA association is not complete yet\n");
+        } else if (rc == -4) {
+            kprintf("wifi: associated, but DHCP failed\n");
+        } else if (rc == -6) {
+            kprintf("wifi: modern Intel command/RX/TX transport is not complete yet\n");
+        } else if (rc == -7) {
+            kprintf("wifi: legacy Intel scan/association commands are not complete yet\n");
+        } else if (rc == -8) {
+            kprintf("wifi: WPA passphrase support is not complete yet\n");
+        } else if (rc == -10) {
+            kprintf("wifi: SSID not found during scan\n");
+        } else if (rc == -11) {
+            kprintf("wifi: 802.11 authentication failed or timed out\n");
+        } else if (rc == -12) {
+            kprintf("wifi: 802.11 association failed or timed out\n");
+        } else if (rc == -13) {
+            kprintf("wifi: associated, but Ethernet-over-802.11 data path is not complete yet\n");
+        } else if (rc == -14) {
+            kprintf("wifi: WPA timed out waiting for message 1\n");
+        } else if (rc == -15) {
+            kprintf("wifi: WPA timed out waiting for message 3\n");
+        } else if (rc == -16) {
+            kprintf("wifi: WPA pairwise CCMP key install failed\n");
+        } else if (rc == -17) {
+            kprintf("wifi: WPA PTK installed; GTK/msg4/data path still pending\n");
         } else {
             kprintf("wifi: connect needs the Intel Wi-Fi firmware/MAC layer before association can work\n");
         }
@@ -928,10 +1486,19 @@ static int cmd_xedit(int argc, char **argv)
         strcat(content, line);
         strcat(content, "\n");
     }
-    if (vfs_write_file(argv[1], process_current()->cwd, content, strlen(content)) < 0) {
+    int fd = (int)syscall_dispatch(SYS_OPEN, (uint64_t)argv[1],
+                                   VFS_O_CREAT | VFS_O_RDWR | VFS_O_TRUNC,
+                                   0644, 0, 0, 0);
+    if (fd < 0 ||
+        syscall_dispatch(SYS_WRITE, (uint64_t)fd, (uint64_t)content,
+                         strlen(content), 0, 0, 0) < 0) {
+        if (fd >= 0) {
+            syscall_dispatch(SYS_CLOSE, (uint64_t)fd, 0, 0, 0, 0, 0);
+        }
         kprintf("xedit: failed to write %s\n", argv[1]);
         return 1;
     }
+    syscall_dispatch(SYS_CLOSE, (uint64_t)fd, 0, 0, 0, 0, 0);
     kprintf("wrote %s (%llu bytes)\n", argv[1], (uint64_t)strlen(content));
     return 0;
 }
@@ -984,6 +1551,9 @@ static int cmd_passwd(int argc, char **argv)
 
 static int cmd_useradd(int argc, char **argv)
 {
+    if (!require_root("useradd")) {
+        return 1;
+    }
     if (argc != 2) {
         kprintf("usage: useradd NAME\n");
         return 1;
@@ -1000,6 +1570,9 @@ static int cmd_useradd(int argc, char **argv)
 
 static int cmd_userdel(int argc, char **argv)
 {
+    if (!require_root("userdel")) {
+        return 1;
+    }
     if (argc != 2 || user_del(argv[1]) < 0) {
         kprintf("usage: userdel NAME\n");
         return 1;
@@ -1008,29 +1581,95 @@ static int cmd_userdel(int argc, char **argv)
 }
 
 static const struct applet_command applets[] = {
-    { "clear", cmd_clear },     { "uname", cmd_uname },     { "sysfetch", cmd_sysfetch },
-    { "dmesg", cmd_dmesg },     { "ls", cmd_ls },           { "pwd", cmd_pwd },
-    { "cat", cmd_cat },         { "echo", cmd_echo },       { "mkdir", cmd_mkdir },
-    { "rm", cmd_rm },           { "touch", cmd_touch },     { "cp", cmd_cp },
-    { "mv", cmd_mv },           { "chmod", cmd_chmod },     { "chown", cmd_chown },
-    { "stat", cmd_stat },       { "ps", cmd_ps },           { "kill", cmd_kill },
-    { "whoami", cmd_whoami },   { "id", cmd_id },           { "hostname", cmd_hostname },
-    { "date", cmd_date },       { "time", cmd_time },       { "uptime", cmd_uptime },
-    { "timezone", cmd_timezone }, { "keymap", cmd_keymap }, { "layout", cmd_keymap },
-    { "reboot", cmd_reboot },   { "shutdown", cmd_shutdown }, { "mount", cmd_mount },
-    { "ifconfig", cmd_ifconfig }, { "route", cmd_route },
-    { "netstat", cmd_netstat }, { "usb", cmd_usb },         { "ping", cmd_ping },
-    { "wifi", cmd_wifi },
-    { "xedit", cmd_xedit },
-    { "passwd", cmd_passwd },   { "useradd", cmd_useradd },
-    { "userdel", cmd_userdel },
+    { "clear", cmd_clear, "clear",
+      "Clear the active console." },
+    { "uname", cmd_uname, "uname",
+      "Print kernel and machine information from /proc/version." },
+    { "sysfetch", cmd_sysfetch, "sysfetch",
+      "Show OS identity, kernel, uptime, memory and CPU information." },
+    { "dmesg", cmd_dmesg, "dmesg",
+      "Print the kernel log buffer." },
+    { "ls", cmd_ls, "ls [-la] [FILE...]",
+      "List files. -l prints long metadata; -a includes dot files." },
+    { "pwd", cmd_pwd, "pwd",
+      "Print the current working directory." },
+    { "cat", cmd_cat, "cat FILE...",
+      "Concatenate files to standard output." },
+    { "echo", cmd_echo, "echo [-n] [ARG...]",
+      "Print arguments separated by spaces; -n suppresses the trailing newline." },
+    { "mkdir", cmd_mkdir, "mkdir [-p] [-m MODE] DIR...",
+      "Create directories. -p creates parents; -m sets an octal mode." },
+    { "rm", cmd_rm, "rm [-r] [-f] FILE...",
+      "Remove files or, with -r, directory trees. Protected paths require root." },
+    { "touch", cmd_touch, "touch FILE...",
+      "Create files if they do not exist." },
+    { "cp", cmd_cp, "cp SRC DST",
+      "Copy one regular file to another path." },
+    { "mv", cmd_mv, "mv SRC DST",
+      "Move or rename a file using copy plus checked unlink." },
+    { "chmod", cmd_chmod, "chmod MODE FILE",
+      "Change file mode using an octal mode; protected paths require root." },
+    { "chown", cmd_chown, "chown USER FILE",
+      "Change file owner and group to USER; requires root." },
+    { "stat", cmd_stat, "stat FILE",
+      "Print file type, mode, owner and size." },
+    { "ps", cmd_ps, "ps",
+      "List kernel process table entries." },
+    { "kill", cmd_kill, "kill PID",
+      "Terminate a process. Non-root can only kill owned processes." },
+    { "whoami", cmd_whoami, "whoami",
+      "Print the current user name." },
+    { "id", cmd_id, "id",
+      "Print current uid and gid." },
+    { "hostname", cmd_hostname, "hostname [NAME]",
+      "Show or set hostname. Setting the hostname requires root." },
+    { "date", cmd_date, "date [-u]",
+      "Print RTC date, adjusted by /etc/timezone unless -u is used." },
+    { "time", cmd_time, "time [-u]",
+      "Print RTC time, adjusted by /etc/timezone unless -u is used." },
+    { "uptime", cmd_uptime, "uptime",
+      "Print kernel uptime." },
+    { "timezone", cmd_timezone, "timezone [UTC|UTC+H|UTC-H|UTC+HH:MM]",
+      "Show or set the system timezone; setting requires root." },
+    { "keymap", cmd_keymap, "keymap [LAYOUT]",
+      "Show or set keyboard layout; setting requires root." },
+    { "layout", cmd_keymap, "layout [LAYOUT]",
+      "Alias for keymap." },
+    { "reboot", cmd_reboot, "reboot",
+      "Reboot the machine; requires root." },
+    { "shutdown", cmd_shutdown, "shutdown",
+      "Power off or halt the machine; requires root." },
+    { "mount", cmd_mount, "mount [DEVICE TARGET]",
+      "Show mounted filesystems. Additional mounts require root and driver support." },
+    { "ifconfig", cmd_ifconfig, "ifconfig [IFACE up|down|inet IPv4 NETMASK [GATEWAY]]",
+      "Show or configure network interfaces; mutations require root." },
+    { "route", cmd_route, "route [add default GATEWAY IFACE]",
+      "Show or update the default IPv4 route; updates require root." },
+    { "dhcp", cmd_dhcp, "dhcp IFACE",
+      "Request DHCP configuration for an interface; requires root." },
+    { "netstat", cmd_netstat, "netstat",
+      "Print network stack summary from procfs." },
+    { "usb", cmd_usb, "usb",
+      "Print detected USB controller/device information." },
+    { "ping", cmd_ping, "ping HOST|IPv4",
+      "Send ICMP echo requests through the kernel network stack." },
+    { "wifi", cmd_wifi, "wifi [status|scan|start IFACE|connect IFACE SSID [PASSPHRASE]]",
+      "Inspect and manage Wi-Fi. Starting and connecting require root." },
+    { "xedit", cmd_xedit, "xedit FILE",
+      "Open the simple line editor and save replacement text." },
+    { "passwd", cmd_passwd, "passwd [USER]",
+      "Change a password. Root may change any user." },
+    { "useradd", cmd_useradd, "useradd NAME",
+      "Create a user and home directory; requires root." },
+    { "userdel", cmd_userdel, "userdel NAME",
+      "Delete a non-root user; requires root." },
 };
 
 const char *tnu_applet_list(void)
 {
     return "clear uname sysfetch dmesg ls pwd cat echo mkdir rm touch cp mv chmod chown stat "
            "ps kill whoami id hostname date time uptime timezone keymap layout reboot shutdown "
-           "mount ifconfig route netstat usb ping wifi xedit passwd useradd userdel";
+           "mount ifconfig route dhcp netstat usb ping wifi xedit passwd useradd userdel";
 }
 
 bool tnu_applet_is_command(const char *name)
@@ -1043,6 +1682,18 @@ bool tnu_applet_is_command(const char *name)
     return false;
 }
 
+int tnu_applet_help(const char *name)
+{
+    const char *base = basename(name ? name : "");
+    for (size_t i = 0; i < sizeof(applets) / sizeof(applets[0]); i++) {
+        if (strcmp(base, applets[i].name) == 0) {
+            kprintf("Usage: %s\n\n%s\n", applets[i].usage, applets[i].help);
+            return 0;
+        }
+    }
+    return -1;
+}
+
 int tnu_applet_run(int argc, char **argv, const char *stdin_data)
 {
     if (argc == 0) {
@@ -1052,6 +1703,12 @@ int tnu_applet_run(int argc, char **argv, const char *stdin_data)
     applet_stdin = stdin_data;
     for (size_t i = 0; i < sizeof(applets) / sizeof(applets[0]); i++) {
         if (strcmp(name, applets[i].name) == 0) {
+            if (argc >= 2 && (strcmp(argv[1], "--help") == 0 ||
+                              strcmp(argv[1], "-h") == 0)) {
+                int rc = tnu_applet_help(name);
+                applet_stdin = NULL;
+                return rc;
+            }
             int rc = applets[i].fn(argc, argv);
             applet_stdin = NULL;
             return rc;

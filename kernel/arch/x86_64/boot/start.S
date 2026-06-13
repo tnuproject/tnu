@@ -1,4 +1,4 @@
-.section .multiboot,"a"
+.section .multiboot,"ax"
 .align 8
 mb_header_start:
     .long 0xe85250d6
@@ -37,7 +37,7 @@ mb_header_start:
     .long 8
 mb_header_end:
 
-.section .text
+.section .text.boot,"ax"
 .global _start
 .extern arch_entry
 
@@ -119,6 +119,8 @@ gdt64:
     .quad 0x0000000000000000
     .quad 0x00af9a000000ffff
     .quad 0x00af92000000ffff
+    .quad 0x00aff2000000ffff
+    .quad 0x00affa000000ffff
 gdt64_end:
 gdt64_ptr:
     .word gdt64_end - gdt64 - 1

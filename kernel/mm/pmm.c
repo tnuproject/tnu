@@ -22,16 +22,19 @@ void pmm_init(const struct boot_info *boot)
 
     uintptr_t best_start = 0;
     uint64_t best_len = 0;
+    uint64_t highest_usable_limit = 0;
 
     if (boot->mmap) {
         const uint8_t *entry = (const uint8_t *)boot->mmap->entries;
         const uint8_t *end = (const uint8_t *)boot->mmap + boot->mmap->size;
         while (entry < end) {
             const struct multiboot_mmap_entry *m = (const struct multiboot_mmap_entry *)entry;
-            stats.total_bytes += m->len;
             if (m->type == 1) {
                 uintptr_t start = (uintptr_t)m->addr;
                 uintptr_t limit = (uintptr_t)(m->addr + m->len);
+                if (limit > highest_usable_limit) {
+                    highest_usable_limit = limit;
+                }
                 if (limit > 0x100000) {
                     if (start < 0x100000) {
                         start = 0x100000;
@@ -45,6 +48,7 @@ void pmm_init(const struct boot_info *boot)
             }
             entry += boot->mmap->entry_size;
         }
+        stats.total_bytes = highest_usable_limit;
     } else {
         stats.total_bytes = (boot->mem_lower_kib + boot->mem_upper_kib) * 1024;
         stats.usable_bytes = boot->mem_upper_kib * 1024;

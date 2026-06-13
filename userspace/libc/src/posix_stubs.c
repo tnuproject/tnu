@@ -5,12 +5,16 @@
 #include <poll.h>
 #include <signal.h>
 #include <stdarg.h>
+#include <fcntl.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/select.h>
 #include <sys/socket.h>
+#include <tnu/syscall.h>
 #include <termios.h>
+#include <unistd.h>
 
 int raise(int sig)
 {
@@ -19,12 +23,53 @@ int raise(int sig)
     return -1;
 }
 
+int system(const char *command)
+{
+    (void)command;
+    errno = ENOSYS;
+    return -1;
+}
+
 void (*signal(int sig, void (*handler)(int)))(int)
 {
-    (void)sig;
-    (void)handler;
-    errno = ENOSYS;
-    return SIG_ERR;
+    struct sigaction act;
+    struct sigaction old;
+    memset(&act, 0, sizeof(act));
+    act.sa_handler = handler;
+    if (sigaction(sig, &act, &old) < 0) {
+        return SIG_ERR;
+    }
+    return old.sa_handler;
+}
+
+int sigemptyset(sigset_t *set)
+{
+    if (!set) {
+        errno = EINVAL;
+        return -1;
+    }
+    *set = 0;
+    return 0;
+}
+
+int sigaction(int sig, const struct sigaction *act, struct sigaction *oldact)
+{
+    static struct sigaction actions[32];
+    if (sig < 0 || sig >= (int)(sizeof(actions) / sizeof(actions[0]))) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (tnu_syscall(SYS_SIGACTION, sig, (long)act, (long)oldact, 0, 0, 0) < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (oldact) {
+        *oldact = actions[sig];
+    }
+    if (act) {
+        actions[sig] = *act;
+    }
+    return 0;
 }
 
 int tcgetattr(int fd, struct termios *termios_p)
@@ -35,7 +80,9 @@ int tcgetattr(int fd, struct termios *termios_p)
         return -1;
     }
     memset(termios_p, 0, sizeof(*termios_p));
-    termios_p->c_lflag = ECHO | ICANON | ISIG;
+    termios_p->c_lflag = ECHO | ICANON | ISIG | IEXTEN;
+    termios_p->c_iflag = IXON;
+    termios_p->c_oflag = OPOST;
     return 0;
 }
 
@@ -47,24 +94,58 @@ int tcsetattr(int fd, int optional_actions, const struct termios *termios_p)
     return 0;
 }
 
+struct DIR {
+    int fd;
+    struct dirent entry;
+};
+
 DIR *opendir(const char *name)
 {
-    (void)name;
-    errno = ENOSYS;
-    return 0;
+    int fd = open(name, O_RDONLY);
+    if (fd < 0) {
+        errno = ENOENT;
+        return 0;
+    }
+    DIR *dir = malloc(sizeof(*dir));
+    if (!dir) {
+        close(fd);
+        errno = ENOMEM;
+        return 0;
+    }
+    dir->fd = fd;
+    return dir;
 }
 
 struct dirent *readdir(DIR *dirp)
 {
-    (void)dirp;
-    errno = ENOSYS;
-    return 0;
+    if (!dirp) {
+        errno = EBADF;
+        return 0;
+    }
+    struct syscall_dirent kdent;
+    int rc = readdir_fd(dirp->fd, &kdent);
+    if (rc <= 0) {
+        if (rc < 0) {
+            errno = ENOTDIR;
+        }
+        return 0;
+    }
+    dirp->entry.d_ino = kdent.d_ino;
+    dirp->entry.d_type = kdent.d_type;
+    strncpy(dirp->entry.d_name, kdent.d_name, sizeof(dirp->entry.d_name) - 1);
+    dirp->entry.d_name[sizeof(dirp->entry.d_name) - 1] = '\0';
+    return &dirp->entry;
 }
 
 int closedir(DIR *dirp)
 {
-    (void)dirp;
-    return 0;
+    if (!dirp) {
+        errno = EBADF;
+        return -1;
+    }
+    int rc = close(dirp->fd);
+    free(dirp);
+    return rc;
 }
 
 char *setlocale(int category, const char *locale)
@@ -281,26 +362,64 @@ int poll(struct pollfd *fds, nfds_t nfds, int timeout)
 void *mmap(void *addr, size_t length, int prot, int flags, int fd, long offset)
 {
     (void)addr;
-    (void)length;
     (void)prot;
-    (void)flags;
-    (void)fd;
-    (void)offset;
-    errno = ENOSYS;
-    return MAP_FAILED;
+    if (length == 0 || (flags & MAP_SHARED)) {
+        errno = EINVAL;
+        return MAP_FAILED;
+    }
+    void *mem = malloc(length);
+    if (!mem) {
+        errno = ENOMEM;
+        return MAP_FAILED;
+    }
+    if ((flags & MAP_ANONYMOUS) || fd < 0) {
+        memset(mem, 0, length);
+        return mem;
+    }
+
+    off_t old = lseek(fd, 0, SEEK_CUR);
+    if (offset >= 0 && lseek(fd, offset, SEEK_SET) < 0) {
+        free(mem);
+        return MAP_FAILED;
+    }
+    ssize_t got = read(fd, mem, length);
+    if (got < 0) {
+        if (old >= 0) {
+            lseek(fd, old, SEEK_SET);
+        }
+        free(mem);
+        return MAP_FAILED;
+    }
+    if ((size_t)got < length) {
+        memset((char *)mem + got, 0, length - (size_t)got);
+    }
+    if (old >= 0) {
+        lseek(fd, old, SEEK_SET);
+    }
+    return mem;
 }
 
 int munmap(void *addr, size_t length)
 {
-    (void)addr;
     (void)length;
+    free(addr);
     return 0;
 }
 
 int ioctl(int fd, unsigned long request, ...)
 {
-    (void)fd;
-    (void)request;
-    errno = ENOSYS;
-    return -1;
+    va_list ap;
+    va_start(ap, request);
+    void *arg = va_arg(ap, void *);
+    va_end(ap);
+    int rc = (int)tnu_syscall(SYS_IOCTL, fd, (long)request, (long)arg, 0, 0, 0);
+    if (rc < 0) {
+        errno = ENOSYS;
+    }
+    return rc;
+}
+
+int isatty(int fd)
+{
+    return fd >= 0 && fd <= 2;
 }

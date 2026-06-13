@@ -62,6 +62,8 @@
 static int buffer[KBD_BUFFER];
 static volatile size_t read_pos;
 static volatile size_t write_pos;
+static volatile uint64_t interrupt_generation;
+static volatile uint64_t interrupt_consumed_generation;
 
 static bool key_down[128];
 static bool ext_key_down[128];
@@ -102,7 +104,7 @@ static const char normal_map[128] = {
     [0x28] = '\'', [0x29] = '`', [0x2b] = '\\', [0x2c] = 'z',
     [0x2d] = 'x', [0x2e] = 'c', [0x2f] = 'v', [0x30] = 'b',
     [0x31] = 'n', [0x32] = 'm', [0x33] = ',', [0x34] = '.',
-    [0x35] = '/', [0x39] = ' ',
+    [0x35] = '/', [0x39] = ' ', [0x56] = '<',
 };
 
 static const char shift_map[128] = {
@@ -118,7 +120,7 @@ static const char shift_map[128] = {
     [0x28] = '"', [0x29] = '~', [0x2b] = '|', [0x2c] = 'Z',
     [0x2d] = 'X', [0x2e] = 'C', [0x2f] = 'V', [0x30] = 'B',
     [0x31] = 'N', [0x32] = 'M', [0x33] = '<', [0x34] = '>',
-    [0x35] = '?', [0x39] = ' ',
+    [0x35] = '?', [0x39] = ' ', [0x56] = '>',
 };
 
 static const char it_normal_map[128] = {
@@ -134,7 +136,7 @@ static const char it_normal_map[128] = {
     [0x28] = 'a', [0x29] = '\\', [0x2b] = 'u', [0x2c] = 'z',
     [0x2d] = 'x', [0x2e] = 'c', [0x2f] = 'v', [0x30] = 'b',
     [0x31] = 'n', [0x32] = 'm', [0x33] = ',', [0x34] = '.',
-    [0x35] = '-', [0x39] = ' ',
+    [0x35] = '-', [0x39] = ' ', [0x56] = '<',
 };
 
 static const char it_shift_map[128] = {
@@ -150,7 +152,7 @@ static const char it_shift_map[128] = {
     [0x28] = 'A', [0x29] = '|', [0x2b] = 'U', [0x2c] = 'Z',
     [0x2d] = 'X', [0x2e] = 'C', [0x2f] = 'V', [0x30] = 'B',
     [0x31] = 'N', [0x32] = 'M', [0x33] = ';', [0x34] = ':',
-    [0x35] = '_', [0x39] = ' ',
+    [0x35] = '_', [0x39] = ' ', [0x56] = '>',
 };
 
 static const char it_altgr_map[128] = {
@@ -195,7 +197,7 @@ static const uint8_t set2_to_set1[128] = {
     [0x22] = 0x2d, [0x21] = 0x2e, [0x2a] = 0x2f, [0x32] = 0x30,
     [0x31] = 0x31, [0x3a] = 0x32, [0x41] = 0x33, [0x49] = 0x34,
     [0x4a] = 0x35, [0x59] = 0x36, [0x11] = 0x38, [0x29] = 0x39,
-    [0x58] = 0x3a,
+    [0x58] = 0x3a, [0x61] = 0x56,
 };
 
 static const uint8_t set2_ext_to_set1[128] = {
@@ -437,7 +439,9 @@ static void keyboard_controller_setup(void)
     ps2_write_ignore_ack(PS2_CMD_DISABLE_SCANNING);
     ps2_write_ignore_ack(PS2_CMD_SET_DEFAULTS);
 
-    scancode_set = 1;
+    if (!raw_set2_mode) {
+        scancode_set = 1;
+    }
 
     ps2_write_ignore_ack(PS2_CMD_ENABLE_SCANNING);
     drain_output();
@@ -596,10 +600,10 @@ static void process_extended_scancode(uint8_t scancode)
         push_key(KEY_UP);
         break;
     case 0x4b:
-        push_key(KEY_LEFT);
+        push_key(shift_down ? KEY_SHIFT_LEFT : KEY_LEFT);
         break;
     case 0x4d:
-        push_key(KEY_RIGHT);
+        push_key(shift_down ? KEY_SHIFT_RIGHT : KEY_RIGHT);
         break;
     case 0x4f:
         push_key(KEY_END);
@@ -636,14 +640,14 @@ static void process_set1_scancode(uint8_t scancode)
         } else if (code == 0x1d) {
             ctrl_down = 0;
         } else if (code == 0x38) {
-    alt_down = 0;
-    altgr_down = 0;
+            alt_down = 0;
+            altgr_down = 0;
         }
 
         return;
     }
 
-    if (key_down[code]) {
+    if (key_down[code] && code != 0x0e) {
         return;
     }
 
@@ -669,6 +673,48 @@ static void process_set1_scancode(uint8_t scancode)
     if (code == 0x38) {
         alt_down = 1;
         return;
+    }
+
+    if (ctrl_down && alt_down) {
+        if (code == 0x3b) {
+            push_key(KEY_TTY1);
+            return;
+        }
+        if (code == 0x3c) {
+            push_key(KEY_TTY2);
+            return;
+        }
+        if (code == 0x3d) {
+            push_key(KEY_TTY3);
+            return;
+        }
+    }
+
+    if (ctrl_down && shift_down && code == 0x2e) {
+        push_key(KEY_COPY);
+        return;
+    }
+
+    if (ctrl_down && shift_down && code == 0x2f) {
+        push_key(KEY_PASTE);
+        return;
+    }
+
+    if (ctrl_down && code == 0x2e) {
+        interrupt_generation++;
+        push_key(KEY_CTRL_C);
+        return;
+    }
+
+    if (ctrl_down) {
+        char c = layout_char(code);
+        if (c >= 'A' && c <= 'Z') {
+            c = (char)(c - 'A' + 'a');
+        }
+        if (c >= 'a' && c <= 'z') {
+            push_key((int)(c - 'a' + 1));
+            return;
+        }
     }
 
     if (code == 0x3a) {
@@ -702,6 +748,18 @@ static void process_scancode(uint8_t scancode)
 
     if (scancode == 0xe0) {
         extended_prefix = 1;
+        return;
+    }
+
+    /*
+     * Some bare-metal i8042 controllers report a translated config byte but
+     * still deliver raw set-2 make codes until the first break sequence is
+     * observed.  Backspace is especially visible on laptops: set 1 uses 0x0e,
+     * set 2 uses 0x66.  0x66 is not a normal set-1 key we use, so mapping it
+     * here is safe and keeps QEMU and real hardware behavior identical.
+     */
+    if (!raw_set2_mode && scancode == 0x66) {
+        process_set1_scancode(0x0e);
         return;
     }
 
@@ -814,4 +872,22 @@ const char *keyboard_current_layout(void)
 const char *keyboard_available_layouts(void)
 {
     return "us uk de fr it es dvorak";
+}
+
+bool keyboard_consume_interrupt(void)
+{
+    keyboard_poll();
+    if (interrupt_consumed_generation == interrupt_generation) {
+        return false;
+    }
+    interrupt_consumed_generation = interrupt_generation;
+    if (read_pos != write_pos && buffer[read_pos] == KEY_CTRL_C) {
+        read_pos = (read_pos + 1) % KBD_BUFFER;
+    }
+    return true;
+}
+
+void keyboard_ack_interrupt(void)
+{
+    interrupt_consumed_generation = interrupt_generation;
 }

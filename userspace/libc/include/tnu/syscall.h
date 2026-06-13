@@ -31,6 +31,35 @@ enum {
     SYS_DUP = 20,
     SYS_DUP2 = 21,
     SYS_GETPPID = 22,
+    SYS_READDIR = 23,
+    SYS_IOCTL = 24,
+    SYS_UPTIME_MS = 25,
+    SYS_BRK = 26,
+    SYS_SIGACTION = 27,
+};
+
+#define TNU_IOCTL_FB_GETINFO 0x544e4601u
+#define TNU_IOCTL_TTY_GETSIZE 0x544e5401u
+#define TNU_IOCTL_TIOCGWINSZ 0x5413u
+
+struct syscall_dirent {
+    uint64_t d_ino;
+    unsigned char d_type;
+    char d_name[256];
+};
+
+struct syscall_fb_info {
+    uint32_t width;
+    uint32_t height;
+    uint32_t pitch;
+    uint8_t bpp;
+};
+
+struct syscall_winsize {
+    uint16_t ws_row;
+    uint16_t ws_col;
+    uint16_t ws_xpixel;
+    uint16_t ws_ypixel;
 };
 
 #define O_RDONLY 0x0
@@ -38,6 +67,8 @@ enum {
 #define O_RDWR   0x2
 #define O_CREAT  0x40
 #define O_TRUNC  0x200
+#define O_APPEND 0x400
+#define O_EXCL   0x800
 
 long tnu_syscall(long n, long a0, long a1, long a2, long a3, long a4, long a5);
 ssize_t read(int fd, void *buf, size_t count);
@@ -46,6 +77,8 @@ int open(const char *path, int flags, ...);
 int close(int fd);
 int spawn(const char *path);
 int exec(const char *path);
+int execv(const char *path, char *const argv[]);
+int execvp(const char *file, char *const argv[]);
 int wait(int pid);
 void exit(int code) __attribute__((noreturn));
 int getpid(void);
@@ -63,5 +96,10 @@ off_t lseek(int fd, off_t offset, int whence);
 int access(const char *path, int mode);
 int dup(int oldfd);
 int dup2(int oldfd, int newfd);
+int readdir_fd(int fd, struct syscall_dirent *out);
+int ioctl(int fd, unsigned long request, ...);
+uint64_t uptime_ms(void);
+void *sbrk(intptr_t increment);
+int brk(void *addr);
 
 #endif

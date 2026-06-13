@@ -23,6 +23,7 @@
 #define ATA_SR_BSY 0x80
 
 #define ATA_CMD_IDENTIFY 0xec
+#define ATA_CMD_READ_SECTORS 0x20
 #define ATA_CMD_WRITE_SECTORS 0x30
 #define ATA_CMD_CACHE_FLUSH 0xe7
 
@@ -103,6 +104,7 @@ static int ata_select_identify(const struct ata_device *dev)
 
 static bool ata_identify(struct ata_device *dev)
 {
+    uint16_t identify[256];
     if (ata_select_identify(dev) < 0) {
         return false;
     }
@@ -137,8 +139,13 @@ static bool ata_identify(struct ata_device *dev)
     }
 
     for (size_t i = 0; i < 256; i++) {
-        (void)inw(dev->io + ATA_REG_DATA);
+        identify[i] = inw(dev->io + ATA_REG_DATA);
     }
+    uint32_t lba28 = ((uint32_t)identify[61] << 16) | identify[60];
+    dev->info.sector_count = lba28;
+    dev->info.sector_size = 512;
+    dev->info.removable = false;
+    dev->info.transport = "ata";
     return true;
 }
 
@@ -188,6 +195,36 @@ static int ata_write_one_sector(const struct ata_device *dev, uint32_t lba,
         outw(dev->io + ATA_REG_DATA, word);
     }
     return ata_wait_not_busy(dev) >= 0 ? 0 : -1;
+}
+
+static int ata_read_one_sector(const struct ata_device *dev, uint32_t lba, uint8_t *dst)
+{
+    if (!dev || !dev->present || !dst || lba >= 0x10000000u) {
+        return -1;
+    }
+    if (ata_select(dev, lba) < 0) {
+        return -1;
+    }
+
+    outb(dev->io + ATA_REG_FEATURES, 0);
+    outb(dev->io + ATA_REG_SECCOUNT, 1);
+    outb(dev->io + ATA_REG_LBA0, (uint8_t)(lba & 0xff));
+    outb(dev->io + ATA_REG_LBA1, (uint8_t)((lba >> 8) & 0xff));
+    outb(dev->io + ATA_REG_LBA2, (uint8_t)((lba >> 16) & 0xff));
+    outb(dev->io + ATA_REG_HDDEVSEL,
+         (uint8_t)(0xe0 | (dev->drive << 4) | ((lba >> 24) & 0x0f)));
+    outb(dev->io + ATA_REG_COMMAND, ATA_CMD_READ_SECTORS);
+
+    if (ata_wait_drq(dev) < 0) {
+        return -1;
+    }
+
+    for (size_t i = 0; i < 256; i++) {
+        uint16_t word = inw(dev->io + ATA_REG_DATA);
+        dst[i * 2] = (uint8_t)(word & 0xff);
+        dst[i * 2 + 1] = (uint8_t)(word >> 8);
+    }
+    return 0;
 }
 
 static struct ata_device *ata_by_name(const char *name)
@@ -271,6 +308,38 @@ int block_write_lba28(const char *name, uint32_t lba, const void *data, size_t b
             return -1;
         }
         offset += chunk;
+    }
+    return ata_flush(dev);
+}
+
+int block_read(const char *name, uint64_t lba, void *data, size_t bytes)
+{
+    struct ata_device *dev = ata_by_name(name);
+    if (!dev || (!data && bytes) || lba >= 0x10000000ull) {
+        return -1;
+    }
+    uint8_t sector[512];
+    uint8_t *out = data;
+    size_t offset = 0;
+    while (offset < bytes) {
+        if (ata_read_one_sector(dev, (uint32_t)lba++, sector) < 0) {
+            return -1;
+        }
+        size_t chunk = bytes - offset;
+        if (chunk > sizeof(sector)) {
+            chunk = sizeof(sector);
+        }
+        memcpy(out + offset, sector, chunk);
+        offset += chunk;
+    }
+    return 0;
+}
+
+int block_sync(const char *name)
+{
+    struct ata_device *dev = ata_by_name(name);
+    if (!dev) {
+        return -1;
     }
     return ata_flush(dev);
 }

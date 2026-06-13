@@ -2,6 +2,7 @@
 #include <arch/pit.h>
 #include <tnu/log.h>
 #include <tnu/memory.h>
+#include <tnu/iwlwifi.h>
 #include <tnu/net.h>
 #include <tnu/printf.h>
 #include <tnu/string.h>
@@ -12,6 +13,9 @@
 #define IP_PROTO_UDP  17
 #define DNS_PORT 53
 #define DNS_SOURCE_PORT 49153
+#define DHCP_SERVER_PORT 67
+#define DHCP_CLIENT_PORT 68
+#define DHCP_MAGIC 0x63825363u
 
 #define E1000_MAX 4
 #define E1000_RX_COUNT 32
@@ -79,9 +83,6 @@ struct e1000_state {
     uint8_t tx_buf[E1000_TX_COUNT][E1000_TX_BUF_SIZE] __attribute__((aligned(16)));
     uint16_t rx_index;
     uint16_t tx_index;
-    uint32_t arp_ip;
-    uint8_t arp_mac[6];
-    bool arp_valid;
 };
 
 struct ping_wait {
@@ -99,10 +100,29 @@ struct dns_wait {
     bool complete;
 };
 
+struct dhcp_wait {
+    uint32_t xid;
+    uint8_t expected_type;
+    uint32_t offered_ip;
+    uint32_t server_id;
+    uint32_t netmask;
+    uint32_t gateway;
+    uint32_t dns_server;
+    bool complete;
+};
+
+struct poll_ctx {
+    struct ping_wait *ping;
+    struct dns_wait *dns;
+    struct dhcp_wait *dhcp;
+};
+
 static struct net_iface ifaces[NET_IFACE_MAX];
 static size_t iface_count;
 static struct e1000_state e1000_states[E1000_MAX];
 static size_t e1000_count;
+
+static struct net_iface *net_iface_find_mut(const char *name);
 
 static uint16_t be16(const uint8_t *p)
 {
@@ -168,6 +188,16 @@ static struct net_iface *add_iface(const char *name, enum net_iface_type type)
 static bool is_wifi(const struct pci_device *dev)
 {
     return dev->class_code == 0x02 && dev->subclass == 0x80;
+}
+
+static bool is_intel_wifi(const struct pci_device *dev)
+{
+    return is_wifi(dev) && dev->vendor_id == 0x8086;
+}
+
+static bool is_realtek_wifi(const struct pci_device *dev)
+{
+    return is_wifi(dev) && dev->vendor_id == 0x10ec;
 }
 
 static bool is_ethernet(const struct pci_device *dev)
@@ -289,6 +319,34 @@ static int e1000_transmit(struct net_iface *iface, const void *data, size_t len)
     return (desc->status & E1000_TX_STATUS_DD) ? 0 : -1;
 }
 
+static void e1000_poll(struct net_iface *iface, net_rx_callback_t callback, void *ctx)
+{
+    struct e1000_state *st = iface->driver_data;
+    if (!st || !callback) {
+        return;
+    }
+    for (size_t count = 0; count < E1000_RX_COUNT; count++) {
+        struct e1000_rx_desc *desc = &st->rx[st->rx_index];
+        if (!(desc->status & E1000_RX_STATUS_DD)) {
+            break;
+        }
+        size_t len = desc->length;
+        if (len <= E1000_RX_BUF_SIZE) {
+            iface->rx_packets++;
+            iface->rx_bytes += len;
+            callback(iface, st->rx_buf[st->rx_index], len, ctx);
+        }
+        desc->status = 0;
+        e1000_write(st, E1000_REG_RDT, st->rx_index);
+        st->rx_index = (uint16_t)((st->rx_index + 1) % E1000_RX_COUNT);
+    }
+}
+
+static const struct net_driver_ops e1000_ops = {
+    .transmit = e1000_transmit,
+    .poll = e1000_poll,
+};
+
 static void build_eth(uint8_t *frame, const uint8_t dst[6],
                       const uint8_t src[6], uint16_t type)
 {
@@ -315,7 +373,10 @@ static int send_arp(struct net_iface *iface, uint32_t target_ip,
         memcpy(frame + 32, target_mac, 6);
     }
     put32(frame + 38, target_ip);
-    return e1000_transmit(iface, frame, sizeof(frame));
+    if (!iface->ops || !iface->ops->transmit) {
+        return -1;
+    }
+    return iface->ops->transmit(iface, frame, sizeof(frame));
 }
 
 static void send_arp_reply(struct net_iface *iface, const uint8_t *arp)
@@ -354,12 +415,16 @@ static int send_icmp_echo(struct net_iface *iface, const uint8_t dst_mac[6],
         icmp[8 + i] = (uint8_t)('A' + (i % 26));
     }
     put16(icmp + 2, inet_checksum(icmp, 8 + 32));
-    return e1000_transmit(iface, frame, sizeof(frame));
+    if (!iface->ops || !iface->ops->transmit) {
+        return -1;
+    }
+    return iface->ops->transmit(iface, frame, sizeof(frame));
 }
 
-static int send_udp4(struct net_iface *iface, const uint8_t dst_mac[6],
-                     uint32_t target_ip, uint16_t src_port, uint16_t dst_port,
-                     const uint8_t *payload, size_t payload_len)
+static int send_udp4_from(struct net_iface *iface, const uint8_t dst_mac[6],
+                          uint32_t source_ip, uint32_t target_ip,
+                          uint16_t src_port, uint16_t dst_port,
+                          const uint8_t *payload, size_t payload_len)
 {
     if (!payload || payload_len > 512) {
         return -1;
@@ -378,7 +443,7 @@ static int send_udp4(struct net_iface *iface, const uint8_t dst_mac[6],
     put16(ip + 6, 0);
     ip[8] = 64;
     ip[9] = IP_PROTO_UDP;
-    put32(ip + 12, iface->ipv4);
+    put32(ip + 12, source_ip);
     put32(ip + 16, target_ip);
     put16(ip + 10, inet_checksum(ip, 20));
 
@@ -388,7 +453,18 @@ static int send_udp4(struct net_iface *iface, const uint8_t dst_mac[6],
     put16(udp + 4, (uint16_t)(8 + payload_len));
     put16(udp + 6, 0);
     memcpy(udp + 8, payload, payload_len);
-    return e1000_transmit(iface, frame, frame_len);
+    if (!iface->ops || !iface->ops->transmit) {
+        return -1;
+    }
+    return iface->ops->transmit(iface, frame, frame_len);
+}
+
+static int send_udp4(struct net_iface *iface, const uint8_t dst_mac[6],
+                     uint32_t target_ip, uint16_t src_port, uint16_t dst_port,
+                     const uint8_t *payload, size_t payload_len)
+{
+    return send_udp4_from(iface, dst_mac, iface->ipv4, target_ip,
+                          src_port, dst_port, payload, payload_len);
 }
 
 static void process_arp(struct net_iface *iface, const uint8_t *payload, size_t len)
@@ -402,12 +478,9 @@ static void process_arp(struct net_iface *iface, const uint8_t *payload, size_t 
     uint32_t target_ip = be32(payload + 24);
 
     if (op == 2 && target_ip == iface->ipv4) {
-        struct e1000_state *st = iface->driver_data;
-        if (st) {
-            st->arp_ip = sender_ip;
-            memcpy(st->arp_mac, payload + 8, 6);
-            st->arp_valid = true;
-        }
+        iface->arp_ip = sender_ip;
+        memcpy(iface->arp_mac, payload + 8, 6);
+        iface->arp_valid = true;
     } else if (op == 1 && target_ip == iface->ipv4) {
         send_arp_reply(iface, payload);
     }
@@ -484,22 +557,100 @@ static void process_dns(struct dns_wait *dns, const uint8_t *payload, size_t len
     }
 }
 
+static void process_dhcp(struct dhcp_wait *dhcp, const uint8_t *payload, size_t len,
+                         uint16_t src_port, uint16_t dst_port)
+{
+    if (!dhcp || dhcp->complete || src_port != DHCP_SERVER_PORT ||
+        dst_port != DHCP_CLIENT_PORT || len < 240) {
+        return;
+    }
+    if (payload[0] != 2 || payload[1] != 1 || payload[2] != 6 ||
+        be32(payload + 4) != dhcp->xid || be32(payload + 236) != DHCP_MAGIC) {
+        return;
+    }
+
+    uint8_t msg_type = 0;
+    uint32_t server_id = 0;
+    uint32_t netmask = 0;
+    uint32_t gateway = 0;
+    uint32_t dns_server = 0;
+    size_t off = 240;
+    while (off < len) {
+        uint8_t opt = payload[off++];
+        if (opt == 0) {
+            continue;
+        }
+        if (opt == 255) {
+            break;
+        }
+        if (off >= len) {
+            return;
+        }
+        uint8_t opt_len = payload[off++];
+        if (off + opt_len > len) {
+            return;
+        }
+        switch (opt) {
+        case 1:
+            if (opt_len >= 4) {
+                netmask = be32(payload + off);
+            }
+            break;
+        case 3:
+            if (opt_len >= 4) {
+                gateway = be32(payload + off);
+            }
+            break;
+        case 6:
+            if (opt_len >= 4) {
+                dns_server = be32(payload + off);
+            }
+            break;
+        case 53:
+            if (opt_len >= 1) {
+                msg_type = payload[off];
+            }
+            break;
+        case 54:
+            if (opt_len >= 4) {
+                server_id = be32(payload + off);
+            }
+            break;
+        default:
+            break;
+        }
+        off += opt_len;
+    }
+
+    if (msg_type != dhcp->expected_type) {
+        return;
+    }
+    dhcp->offered_ip = be32(payload + 16);
+    dhcp->server_id = server_id;
+    dhcp->netmask = netmask ? netmask : ipv4_make(255, 255, 255, 0);
+    dhcp->gateway = gateway;
+    dhcp->dns_server = dns_server ? dns_server : gateway;
+    dhcp->complete = dhcp->offered_ip != 0;
+}
+
 static void process_ipv4(struct net_iface *iface, const uint8_t *payload, size_t len,
-                         struct ping_wait *ping, struct dns_wait *dns)
+                         struct poll_ctx *ctx)
 {
     if (len < 20 || (payload[0] >> 4) != 4) {
         return;
     }
     size_t ihl = (payload[0] & 0x0f) * 4;
-    if (ihl < 20 || len < ihl + 8 || be32(payload + 16) != iface->ipv4) {
+    uint32_t dst_ip = be32(payload + 16);
+    if (ihl < 20 || len < ihl + 8 ||
+        (dst_ip != iface->ipv4 && dst_ip != ipv4_make(255, 255, 255, 255))) {
         return;
     }
     uint32_t src_ip = be32(payload + 12);
     if (payload[9] == IP_PROTO_ICMP) {
         const uint8_t *icmp = payload + ihl;
-        if (ping && icmp[0] == 0 && be16(icmp + 4) == ping->id &&
-            be16(icmp + 6) == ping->sequence && src_ip == ping->target) {
-            ping->complete = true;
+        if (ctx && ctx->ping && icmp[0] == 0 && be16(icmp + 4) == ctx->ping->id &&
+            be16(icmp + 6) == ctx->ping->sequence && src_ip == ctx->ping->target) {
+            ctx->ping->complete = true;
         }
     } else if (payload[9] == IP_PROTO_UDP) {
         const uint8_t *udp = payload + ihl;
@@ -507,14 +658,18 @@ static void process_ipv4(struct net_iface *iface, const uint8_t *payload, size_t
         uint16_t dst_port = be16(udp + 2);
         uint16_t udp_len = be16(udp + 4);
         if (udp_len >= 8 && ihl + udp_len <= len) {
-            process_dns(dns, udp + 8, udp_len - 8, src_ip, src_port, dst_port);
+            process_dhcp(ctx ? ctx->dhcp : NULL, udp + 8, udp_len - 8,
+                         src_port, dst_port);
+            process_dns(ctx ? ctx->dns : NULL, udp + 8, udp_len - 8,
+                        src_ip, src_port, dst_port);
         }
     }
 }
 
-static void process_frame(struct net_iface *iface, const uint8_t *frame, size_t len,
-                          struct ping_wait *ping, struct dns_wait *dns)
+static void process_frame_ctx(struct net_iface *iface, const uint8_t *frame,
+                              size_t len, void *opaque)
 {
+    struct poll_ctx *ctx = opaque;
     if (len < 14) {
         return;
     }
@@ -522,31 +677,22 @@ static void process_frame(struct net_iface *iface, const uint8_t *frame, size_t 
     if (type == ETH_TYPE_ARP) {
         process_arp(iface, frame + 14, len - 14);
     } else if (type == ETH_TYPE_IPV4) {
-        process_ipv4(iface, frame + 14, len - 14, ping, dns);
+        process_ipv4(iface, frame + 14, len - 14, ctx);
     }
 }
 
-static void net_poll_iface(struct net_iface *iface, struct ping_wait *ping, struct dns_wait *dns)
+static void net_poll_iface(struct net_iface *iface, struct ping_wait *ping,
+                           struct dns_wait *dns, struct dhcp_wait *dhcp)
 {
-    struct e1000_state *st = iface->driver_data;
-    if (!st) {
+    if (!iface->ops || !iface->ops->poll) {
         return;
     }
-    for (size_t count = 0; count < E1000_RX_COUNT; count++) {
-        struct e1000_rx_desc *desc = &st->rx[st->rx_index];
-        if (!(desc->status & E1000_RX_STATUS_DD)) {
-            break;
-        }
-        size_t len = desc->length;
-        if (len <= E1000_RX_BUF_SIZE) {
-            iface->rx_packets++;
-            iface->rx_bytes += len;
-            process_frame(iface, st->rx_buf[st->rx_index], len, ping, dns);
-        }
-        desc->status = 0;
-        e1000_write(st, E1000_REG_RDT, st->rx_index);
-        st->rx_index = (uint16_t)((st->rx_index + 1) % E1000_RX_COUNT);
-    }
+    struct poll_ctx ctx = {
+        .ping = ping,
+        .dns = dns,
+        .dhcp = dhcp,
+    };
+    iface->ops->poll(iface, process_frame_ctx, &ctx);
 }
 
 static bool same_subnet(uint32_t a, uint32_t b, uint32_t mask)
@@ -556,12 +702,11 @@ static bool same_subnet(uint32_t a, uint32_t b, uint32_t mask)
 
 static int resolve_mac(struct net_iface *iface, uint32_t ip, uint8_t out[6])
 {
-    struct e1000_state *st = iface->driver_data;
-    if (!st) {
+    if (!iface->ops || !iface->ops->transmit || !iface->ops->poll) {
         return -1;
     }
-    if (st->arp_valid && st->arp_ip == ip) {
-        memcpy(out, st->arp_mac, 6);
+    if (iface->arp_valid && iface->arp_ip == ip) {
+        memcpy(out, iface->arp_mac, 6);
         return 0;
     }
     if (send_arp(iface, ip, NULL, 1) < 0) {
@@ -569,14 +714,142 @@ static int resolve_mac(struct net_iface *iface, uint32_t ip, uint8_t out[6])
     }
     uint64_t start = pit_ticks();
     while (pit_ticks() - start < 200) {
-        net_poll_iface(iface, NULL, NULL);
-        if (st->arp_valid && st->arp_ip == ip) {
-            memcpy(out, st->arp_mac, 6);
+        net_poll_iface(iface, NULL, NULL, NULL);
+        if (iface->arp_valid && iface->arp_ip == ip) {
+            memcpy(out, iface->arp_mac, 6);
             return 0;
         }
         __asm__ volatile("pause");
     }
     return -1;
+}
+
+static void dhcp_put_option(uint8_t *buf, size_t *pos, uint8_t opt,
+                            const void *data, uint8_t len)
+{
+    buf[(*pos)++] = opt;
+    buf[(*pos)++] = len;
+    memcpy(buf + *pos, data, len);
+    *pos += len;
+}
+
+static int send_dhcp_message(struct net_iface *iface, uint8_t msg_type,
+                             uint32_t xid, uint32_t requested_ip,
+                             uint32_t server_id)
+{
+    static const uint8_t broadcast_mac[6] =
+        { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
+    uint8_t packet[300];
+    memset(packet, 0, sizeof(packet));
+    packet[0] = 1;
+    packet[1] = 1;
+    packet[2] = 6;
+    put32(packet + 4, xid);
+    put16(packet + 10, 0x8000);
+    memcpy(packet + 28, iface->mac, 6);
+    put32(packet + 236, DHCP_MAGIC);
+
+    size_t pos = 240;
+    dhcp_put_option(packet, &pos, 53, &msg_type, 1);
+
+    uint8_t client_id[7];
+    client_id[0] = 1;
+    memcpy(client_id + 1, iface->mac, 6);
+    dhcp_put_option(packet, &pos, 61, client_id, sizeof(client_id));
+
+    uint8_t params[] = { 1, 3, 6 };
+    dhcp_put_option(packet, &pos, 55, params, sizeof(params));
+
+    if (requested_ip) {
+        uint8_t ip_opt[4];
+        put32(ip_opt, requested_ip);
+        dhcp_put_option(packet, &pos, 50, ip_opt, sizeof(ip_opt));
+    }
+    if (server_id) {
+        uint8_t server_opt[4];
+        put32(server_opt, server_id);
+        dhcp_put_option(packet, &pos, 54, server_opt, sizeof(server_opt));
+    }
+
+    if (pos < sizeof(packet)) {
+        packet[pos++] = 255;
+    }
+    while (pos < sizeof(packet)) {
+        packet[pos++] = 0;
+    }
+
+    return send_udp4_from(iface, broadcast_mac, 0,
+                          ipv4_make(255, 255, 255, 255),
+                          DHCP_CLIENT_PORT, DHCP_SERVER_PORT,
+                          packet, sizeof(packet));
+}
+
+int net_iface_dhcp(const char *name)
+{
+    struct net_iface *iface = net_iface_find_mut(name);
+    if (!iface || !iface->up || !iface->link || !iface->ops ||
+        !iface->ops->transmit || !iface->ops->poll || !mac_is_usable(iface->mac)) {
+        return -1;
+    }
+
+    uint32_t xid = 0x544e0000u | ((uint32_t)pit_ticks() & 0xffffu);
+    struct dhcp_wait offer = {
+        .xid = xid,
+        .expected_type = 2,
+    };
+    iface->ipv4 = 0;
+    iface->gateway = 0;
+    iface->dns_server = 0;
+    iface->arp_valid = false;
+
+    if (send_dhcp_message(iface, 1, xid, 0, 0) < 0) {
+        return -2;
+    }
+    uint64_t start = pit_ticks();
+    while (pit_ticks() - start < 500) {
+        net_poll_iface(iface, NULL, NULL, &offer);
+        if (offer.complete) {
+            break;
+        }
+        __asm__ volatile("pause");
+    }
+    if (!offer.complete) {
+        return -3;
+    }
+
+    struct dhcp_wait ack = {
+        .xid = xid,
+        .expected_type = 5,
+    };
+    if (send_dhcp_message(iface, 3, xid, offer.offered_ip, offer.server_id) < 0) {
+        return -4;
+    }
+    start = pit_ticks();
+    while (pit_ticks() - start < 500) {
+        net_poll_iface(iface, NULL, NULL, &ack);
+        if (ack.complete) {
+            break;
+        }
+        __asm__ volatile("pause");
+    }
+    if (!ack.complete) {
+        return -5;
+    }
+
+    iface->ipv4 = ack.offered_ip;
+    iface->netmask = ack.netmask;
+    iface->gateway = ack.gateway;
+    iface->dns_server = ack.dns_server;
+    iface->arp_valid = false;
+    log_info("dhcp", "%s lease ip=%u.%u.%u.%u gw=%u.%u.%u.%u dns=%u.%u.%u.%u",
+             iface->name,
+             (iface->ipv4 >> 24) & 0xff, (iface->ipv4 >> 16) & 0xff,
+             (iface->ipv4 >> 8) & 0xff, iface->ipv4 & 0xff,
+             (iface->gateway >> 24) & 0xff, (iface->gateway >> 16) & 0xff,
+             (iface->gateway >> 8) & 0xff, iface->gateway & 0xff,
+             (iface->dns_server >> 24) & 0xff, (iface->dns_server >> 16) & 0xff,
+             (iface->dns_server >> 8) & 0xff, iface->dns_server & 0xff);
+    return 0;
 }
 
 static int e1000_init_iface(struct net_iface *iface, const struct pci_device *dev)
@@ -600,6 +873,7 @@ static int e1000_init_iface(struct net_iface *iface, const struct pci_device *de
     iface->driver_data = st;
     iface->driver = "e1000";
     iface->configurable = true;
+    iface->ops = &e1000_ops;
 
     pci_enable_bus_mastering(dev);
     e1000_write(st, E1000_REG_IMC, 0xffffffffu);
@@ -695,15 +969,27 @@ void net_init(void)
             e1000_init_iface(iface, dev) == 0) {
             continue;
         }
+        if (type == NET_IFACE_WIFI && iwlwifi_is_supported(dev) &&
+            iwlwifi_attach(iface, dev) == 0) {
+            continue;
+        }
 
         iface->up = false;
         iface->link = false;
-        iface->driver = type == NET_IFACE_WIFI && dev->vendor_id == 0x8086
-                            ? "intel-wifi-detected"
-                            : "unsupported";
+        if (is_intel_wifi(dev)) {
+            iface->driver = "iwlwifi-pending";
+        } else if (is_realtek_wifi(dev)) {
+            iface->driver = "rtw-pending";
+        } else {
+            iface->driver = "unsupported";
+        }
         log_info("net", "%s %02x:%02x.%u vendor=%04x device=%04x driver=%s",
                  iface->name, dev->bus, dev->slot, dev->function,
                  dev->vendor_id, dev->device_id, iface->driver);
+        if (type == NET_IFACE_WIFI) {
+            log_warn("wifi", "%s detected, but firmware loading, 802.11 MAC, and WPA association are not complete",
+                     iface->name);
+        }
     }
     if (iface_count == 1) {
         log_info("net", "no Ethernet or Wi-Fi PCI devices detected");
@@ -780,8 +1066,8 @@ static struct net_iface *route_for(uint32_t ip)
 {
     for (size_t i = 0; i < iface_count; i++) {
         struct net_iface *iface = &ifaces[i];
-        if (iface->type == NET_IFACE_ETHERNET && iface->up && iface->link &&
-            iface->ipv4 && iface->driver_data) {
+        if (iface->up && iface->link && iface->ipv4 &&
+            iface->ops && iface->ops->transmit && iface->ops->poll) {
             if (same_subnet(ip, iface->ipv4, iface->netmask) || iface->gateway) {
                 return iface;
             }
@@ -825,7 +1111,7 @@ int net_ping4(uint32_t ipv4, uint16_t sequence, uint32_t *latency_ms)
         return -1;
     }
     while (pit_ticks() - start < 300) {
-        net_poll_iface(iface, &ping, NULL);
+        net_poll_iface(iface, &ping, NULL, NULL);
         if (ping.complete) {
             if (latency_ms) {
                 *latency_ms = (uint32_t)((pit_ticks() - start) * 10);
@@ -920,7 +1206,7 @@ int net_resolve4(const char *host, uint32_t *out_ipv4)
         return -1;
     }
     while (pit_ticks() - start < 300) {
-        net_poll_iface(iface, NULL, &dns);
+        net_poll_iface(iface, NULL, &dns, NULL);
         if (dns.complete && dns.answer) {
             *out_ipv4 = dns.answer;
             return 0;
@@ -970,6 +1256,26 @@ bool net_has_external_transport(void)
 
 int net_wifi_scan(void)
 {
+    bool saw_iwlwifi = false;
+    bool iwl_transport_ready = false;
+    int last_iwl_rc = -3;
+    for (size_t i = 0; i < iface_count; i++) {
+        if (ifaces[i].type == NET_IFACE_WIFI) {
+            if (strcmp(ifaces[i].driver, "iwlwifi") == 0) {
+                saw_iwlwifi = true;
+                last_iwl_rc = iwlwifi_scan(&ifaces[i]);
+                if (last_iwl_rc == 0) {
+                    iwl_transport_ready = true;
+                }
+            }
+        }
+    }
+    if (iwl_transport_ready) {
+        return 0;
+    }
+    if (saw_iwlwifi) {
+        return last_iwl_rc;
+    }
     for (size_t i = 0; i < iface_count; i++) {
         if (ifaces[i].type == NET_IFACE_WIFI) {
             return -2;
@@ -980,11 +1286,34 @@ int net_wifi_scan(void)
 
 int net_wifi_connect(const char *iface_name, const char *ssid, const char *passphrase)
 {
-    (void)ssid;
-    (void)passphrase;
     struct net_iface *iface = net_iface_find_mut(iface_name);
     if (!iface || iface->type != NET_IFACE_WIFI) {
         return -1;
     }
+    if (strcmp(iface->driver, "iwlwifi") == 0) {
+        const struct iwlwifi_state *st = iwlwifi_state_for(iface);
+        int rc = iwlwifi_associate(iface, ssid, passphrase);
+        if (rc == 0) {
+            iface->up = true;
+            iface->link = true;
+            iface->ssid = ssid;
+            int dhcp = net_iface_dhcp(iface_name);
+            if (dhcp < 0) {
+                log_warn("iwlwifi", "%s associated with '%s' but DHCP failed (%d)",
+                         iface_name, ssid, dhcp);
+                return -4;
+            }
+            return 0;
+        } else if (st && st->firmware_loaded) {
+            log_warn("iwlwifi", "%s association blocked (%d)",
+                     iface_name, rc);
+        } else {
+            log_warn("iwlwifi", "%s association blocked: firmware %s is not loaded",
+                     iface_name, st && st->firmware_name ? st->firmware_name : "unknown");
+        }
+        return rc;
+    }
+    log_warn("wifi", "%s cannot associate with '%s': firmware/MAC/WPA layer unavailable",
+             iface_name, ssid ? ssid : "");
     return -2;
 }

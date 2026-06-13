@@ -1,5 +1,7 @@
 #include <tnu/syscall.h>
 #include <stdarg.h>
+#include <string.h>
+#include <unistd.h>
 
 long tnu_syscall(long n, long a0, long a1, long a2, long a3, long a4, long a5)
 {
@@ -48,7 +50,46 @@ int spawn(const char *path)
 
 int exec(const char *path)
 {
-    return (int)tnu_syscall(SYS_EXEC, (long)path, 0, 0, 0, 0, 0);
+    char *argv[] = { (char *)path, 0 };
+    return execv(path, argv);
+}
+
+int execv(const char *path, char *const argv[])
+{
+    int argc = 0;
+    if (!path) {
+        return -1;
+    }
+    if (argv) {
+        while (argv[argc]) {
+            argc++;
+        }
+    }
+    return (int)tnu_syscall(SYS_EXEC, (long)path, argc, (long)argv, 0, 0, 0);
+}
+
+int execvp(const char *file, char *const argv[])
+{
+    if (!file || !*file) {
+        return -1;
+    }
+    if (file[0] == '/' || file[0] == '.') {
+        return execv(file, argv);
+    }
+    char path[128];
+    const char *prefixes[] = { "/bin/", "/usr/bin/", "/usr/games/" };
+    for (size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); i++) {
+        size_t need = strlen(prefixes[i]) + strlen(file) + 1;
+        if (need > sizeof(path)) {
+            continue;
+        }
+        strcpy(path, prefixes[i]);
+        strcat(path, file);
+        if (access(path, X_OK) == 0) {
+            return execv(path, argv);
+        }
+    }
+    return execv(file, argv);
 }
 
 int wait(int pid)
@@ -136,4 +177,33 @@ int dup(int oldfd)
 int dup2(int oldfd, int newfd)
 {
     return (int)tnu_syscall(SYS_DUP2, oldfd, newfd, 0, 0, 0, 0);
+}
+
+int readdir_fd(int fd, struct syscall_dirent *out)
+{
+    return (int)tnu_syscall(SYS_READDIR, fd, (long)out, 0, 0, 0, 0);
+}
+
+uint64_t uptime_ms(void)
+{
+    return (uint64_t)tnu_syscall(SYS_UPTIME_MS, 0, 0, 0, 0, 0, 0);
+}
+
+int brk(void *addr)
+{
+    long ret = tnu_syscall(SYS_BRK, (long)addr, 0, 0, 0, 0, 0);
+    return ret == (long)addr ? 0 : -1;
+}
+
+void *sbrk(intptr_t increment)
+{
+    uintptr_t current = (uintptr_t)tnu_syscall(SYS_BRK, 0, 0, 0, 0, 0, 0);
+    uintptr_t next = current + (uintptr_t)increment;
+    if (increment < 0 && next > current) {
+        return (void *)-1;
+    }
+    if (tnu_syscall(SYS_BRK, (long)next, 0, 0, 0, 0, 0) != (long)next) {
+        return (void *)-1;
+    }
+    return (void *)current;
 }

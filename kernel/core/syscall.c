@@ -1,9 +1,19 @@
 #include <tnu/console.h>
+#include <tnu/elf.h>
+#include <tnu/framebuffer.h>
+#include <tnu/log.h>
+#include <tnu/memory.h>
+#include <tnu/printf.h>
 #include <tnu/process.h>
 #include <tnu/string.h>
 #include <tnu/syscall.h>
+#include <tnu/syscall_disposition.h>
 #include <tnu/user.h>
 #include <tnu/vfs.h>
+
+#include <arch/cpu.h>
+#include <arch/keyboard.h>
+#include <arch/pit.h>
 
 static bool has_perm(const struct process *proc, const struct vfs_node *node, uint32_t perm)
 {
@@ -22,24 +32,292 @@ static bool has_perm(const struct process *proc, const struct vfs_node *node, ui
     return ((node->mode >> shift) & perm) == perm;
 }
 
+static bool is_root(const struct process *proc)
+{
+    return proc && proc->uid == 0;
+}
+
+static bool path_is_or_under(const char *path, const char *prefix)
+{
+    size_t len = strlen(prefix);
+    if (strcmp(path, prefix) == 0) {
+        return true;
+    }
+    return len > 1 && strncmp(path, prefix, len) == 0 && path[len] == '/';
+}
+
+static bool path_requires_root_for_mutation(const char *normal)
+{
+    static const char *const protected_prefixes[] = {
+        "/",
+        "/bin",
+        "/boot",
+        "/dev",
+        "/etc",
+        "/lib",
+        "/proc",
+        "/root",
+        "/sbin",
+        "/usr",
+        "/var/cache",
+        "/var/db",
+        "/var/log",
+        "/var/run",
+    };
+
+    for (size_t i = 0; i < sizeof(protected_prefixes) / sizeof(protected_prefixes[0]); i++) {
+        if (path_is_or_under(normal, protected_prefixes[i])) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool path_is_public_device(const char *normal)
+{
+    return strcmp(normal, "/dev/null") == 0 ||
+           strcmp(normal, "/dev/zero") == 0 ||
+           strcmp(normal, "/dev/tty") == 0 ||
+           strcmp(normal, "/dev/console") == 0;
+}
+
+static int normalize_for_process(const struct process *proc, const char *path,
+                                 char *normal, size_t normal_size)
+{
+    if (!proc || !path || !normal || normal_size == 0) {
+        return -1;
+    }
+    return vfs_normalize(path, proc->cwd, normal, normal_size);
+}
+
+static struct vfs_node *lookup_parent_from_normal(const char *normal)
+{
+    char parent[VFS_PATH_MAX];
+    if (!normal || strcmp(normal, "/") == 0) {
+        return NULL;
+    }
+    strncpy(parent, normal, sizeof(parent) - 1);
+    parent[sizeof(parent) - 1] = '\0';
+    char *slash = strrchr(parent, '/');
+    if (!slash) {
+        return NULL;
+    }
+    if (slash == parent) {
+        parent[1] = '\0';
+    } else {
+        *slash = '\0';
+    }
+    return vfs_lookup(parent, "/");
+}
+
+static bool can_create_in_parent(const struct process *proc, const char *normal)
+{
+    struct vfs_node *parent = lookup_parent_from_normal(normal);
+    return parent && parent->type == VFS_NODE_DIR &&
+           has_perm(proc, parent, 2) && has_perm(proc, parent, 1);
+}
+
+static uintptr_t user_brk_current = 0x5000000;
+static uintptr_t user_heap_limit_current = 0x7000000;
+static bool user_exec_active;
+static char tty_pending[8];
+static size_t tty_pending_len;
+static size_t tty_pending_pos;
+
+enum {
+    SIGINT_NUMBER = 2,
+    SIGNAL_DISPOSITION_DEFAULT = 0,
+    SIGNAL_DISPOSITION_IGNORED = 1,
+    SIGNAL_DISPOSITION_HANDLED = 2,
+};
+
+struct user_sigaction_abi {
+    uintptr_t handler;
+    uint64_t mask;
+    int flags;
+};
+
+static bool tty_pending_pop(char *out)
+{
+    if (tty_pending_pos >= tty_pending_len) {
+        tty_pending_pos = 0;
+        tty_pending_len = 0;
+        return false;
+    }
+    *out = tty_pending[tty_pending_pos++];
+    if (tty_pending_pos >= tty_pending_len) {
+        tty_pending_pos = 0;
+        tty_pending_len = 0;
+    }
+    return true;
+}
+
+static void tty_pending_set(const char *seq)
+{
+    tty_pending_len = 0;
+    tty_pending_pos = 0;
+    while (seq[tty_pending_len] && tty_pending_len < sizeof(tty_pending)) {
+        tty_pending[tty_pending_len] = seq[tty_pending_len];
+        tty_pending_len++;
+    }
+}
+
+static int tty_encode_key(int ch, struct process *proc)
+{
+    if (ch == KEY_CTRL_C &&
+        proc && proc->signal_disposition[SIGINT_NUMBER] != SIGNAL_DISPOSITION_DEFAULT) {
+        return 3;
+    }
+
+    switch (ch) {
+    case KEY_UP:
+        tty_pending_set("\x1b[A");
+        break;
+    case KEY_DOWN:
+        tty_pending_set("\x1b[B");
+        break;
+    case KEY_RIGHT:
+        tty_pending_set("\x1b[C");
+        break;
+    case KEY_LEFT:
+        tty_pending_set("\x1b[D");
+        break;
+    case KEY_HOME:
+        tty_pending_set("\x1b[H");
+        break;
+    case KEY_END:
+        tty_pending_set("\x1b[F");
+        break;
+    case KEY_DELETE:
+        tty_pending_set("\x1b[3~");
+        break;
+    default:
+        return ch;
+    }
+
+    char first = 0;
+    tty_pending_pop(&first);
+    return (unsigned char)first;
+}
+
+static int tty_read_byte(struct process *proc)
+{
+    for (;;) {
+        char c;
+        if (tty_pending_pop(&c)) {
+            return (unsigned char)c;
+        }
+        int ch = console_getchar();
+        if (ch >= KEY_TTY1 && ch <= KEY_TTY3) {
+            console_switch_tty((size_t)(ch - KEY_TTY1));
+            continue;
+        }
+        return tty_encode_key(ch, proc);
+    }
+}
+
+static int tty_try_read_byte(struct process *proc)
+{
+    char c;
+    if (tty_pending_pop(&c)) {
+        return (unsigned char)c;
+    }
+    int ch = keyboard_try_getchar();
+    if (ch < 0) {
+        return -1;
+    }
+    if (ch >= KEY_TTY1 && ch <= KEY_TTY3) {
+        console_switch_tty((size_t)(ch - KEY_TTY1));
+        return -1;
+    }
+    return tty_encode_key(ch, proc);
+}
+
+static int input_try_read_raw_key(void)
+{
+    for (;;) {
+        int ch = keyboard_try_getchar();
+        if (ch < 0) {
+            return -1;
+        }
+        if (ch >= KEY_TTY1 && ch <= KEY_TTY3) {
+            console_switch_tty((size_t)(ch - KEY_TTY1));
+            continue;
+        }
+        return ch;
+    }
+}
+
+static struct vfs_node *resolve_exec_node(const char *path, char *resolved, size_t resolved_size)
+{
+    struct process *proc = process_current();
+    if (!path || !path[0] || !resolved || resolved_size == 0) {
+        return NULL;
+    }
+    if (strchr(path, '/')) {
+        strncpy(resolved, path, resolved_size - 1);
+        resolved[resolved_size - 1] = '\0';
+        return vfs_lookup(resolved, proc ? proc->cwd : "/");
+    }
+
+    ksnprintf(resolved, resolved_size, "/bin/%s", path);
+    struct vfs_node *node = vfs_lookup(resolved, "/");
+    if (node) {
+        return node;
+    }
+    ksnprintf(resolved, resolved_size, "/sbin/%s", path);
+    return vfs_lookup(resolved, "/");
+}
+
 static long sys_open(const char *path, int flags, int mode)
 {
     struct process *proc = process_current();
-    struct vfs_node *node = vfs_lookup(path, proc->cwd);
+    char normal[VFS_PATH_MAX];
+    if (normalize_for_process(proc, path, normal, sizeof(normal)) < 0) {
+        return -1;
+    }
+
+    struct vfs_node *node = vfs_lookup(normal, "/");
+    bool wants_write = (flags & VFS_O_WRONLY) || (flags & VFS_O_RDWR) ||
+                       (flags & VFS_O_TRUNC) || (flags & VFS_O_APPEND);
+    bool wants_read = !wants_write || (flags & VFS_O_RDWR);
+
+    if (node && (flags & VFS_O_CREAT) && (flags & VFS_O_EXCL)) {
+        return -1;
+    }
     if (!node && (flags & VFS_O_CREAT)) {
-        if (vfs_create_file(path, proc->cwd, VFS_S_IFREG | (mode & 0777), proc->uid, proc->gid) < 0) {
+        if (!is_root(proc) && path_requires_root_for_mutation(normal)) {
             return -1;
         }
-        node = vfs_lookup(path, proc->cwd);
+        if (!can_create_in_parent(proc, normal)) {
+            return -1;
+        }
+        if (vfs_create_file(normal, "/", VFS_S_IFREG | (mode & 0777), proc->uid, proc->gid) < 0) {
+            return -1;
+        }
+        node = vfs_lookup(normal, "/");
     }
     if (!node) {
         return -1;
     }
-    bool wants_write = (flags & VFS_O_WRONLY) || (flags & VFS_O_RDWR) || (flags & VFS_O_TRUNC);
-    bool wants_read = !wants_write || (flags & VFS_O_RDWR);
+    if (node->type == VFS_NODE_DEV && !is_root(proc) && !path_is_public_device(normal)) {
+        return -1;
+    }
+    if (wants_write && !is_root(proc) && path_requires_root_for_mutation(normal)) {
+        return -1;
+    }
     if ((wants_read && !has_perm(proc, node, 4)) ||
         (wants_write && !has_perm(proc, node, 2))) {
         return -1;
+    }
+    if (wants_write && node->type == VFS_NODE_DIR) {
+        return -1;
+    }
+    if ((flags & VFS_O_TRUNC) && wants_write && node->type == VFS_NODE_FILE) {
+        node->data = NULL;
+        node->size = 0;
+        node->data_borrowed = false;
+        node->modified++;
     }
     return process_open_fd(proc, node, flags);
 }
@@ -50,7 +328,8 @@ static long sys_read(int fd, void *buf, size_t count)
     if (fd == 0) {
         char *cbuf = buf;
         for (size_t i = 0; i < count; i++) {
-            cbuf[i] = (char)console_getchar();
+            int ch = tty_read_byte(proc);
+            cbuf[i] = (char)ch;
             if (cbuf[i] == '\n') {
                 return (long)i + 1;
             }
@@ -62,6 +341,51 @@ static long sys_read(int fd, void *buf, size_t count)
         return -1;
     }
     if (file->flags & VFS_O_WRONLY) {
+        return -1;
+    }
+    if (file->node->type == VFS_NODE_DEV) {
+        if (strcmp(file->node->name, "null") == 0) {
+            return 0;
+        }
+        if (strcmp(file->node->name, "zero") == 0) {
+            memset(buf, 0, count);
+            return (long)count;
+        }
+        if (strcmp(file->node->name, "tty") == 0 || strcmp(file->node->name, "console") == 0) {
+            char *cbuf = buf;
+            for (size_t i = 0; i < count; i++) {
+                int ch = tty_read_byte(proc);
+                cbuf[i] = (char)ch;
+                if (cbuf[i] == '\n') {
+                    return (long)i + 1;
+                }
+            }
+            return (long)count;
+        }
+        if (strcmp(file->node->name, "kbd") == 0) {
+            unsigned char *cbuf = buf;
+            size_t n = 0;
+            if (count >= sizeof(uint16_t)) {
+                uint16_t *keys = buf;
+                size_t max_keys = count / sizeof(uint16_t);
+                while (n < max_keys) {
+                    int ch = input_try_read_raw_key();
+                    if (ch < 0) {
+                        break;
+                    }
+                    keys[n++] = (uint16_t)ch;
+                }
+                return (long)(n * sizeof(uint16_t));
+            }
+            while (n < count) {
+                int ch = tty_try_read_byte(proc);
+                if (ch < 0) {
+                    break;
+                }
+                cbuf[n++] = (unsigned char)ch;
+            }
+            return (long)n;
+        }
         return -1;
     }
     ssize_t ret = vfs_read_node(file->node, file->offset, buf, count);
@@ -84,6 +408,33 @@ static long sys_write(int fd, const void *buf, size_t count)
     }
     if (!(file->flags & VFS_O_WRONLY) && !(file->flags & VFS_O_RDWR)) {
         return -1;
+    }
+    if (file->node->type == VFS_NODE_DEV) {
+        if (strcmp(file->node->name, "null") == 0) {
+            return (long)count;
+        }
+        if (strcmp(file->node->name, "tty") == 0 || strcmp(file->node->name, "console") == 0) {
+            console_write_n(buf, count);
+            return (long)count;
+        }
+        if (strcmp(file->node->name, "fb0") == 0) {
+            const struct framebuffer_info *fb = framebuffer_info();
+            if (!framebuffer_is_graphics() || !buf) {
+                return -1;
+            }
+            size_t pixels = count / sizeof(uint32_t);
+            size_t max_pixels = (size_t)fb->width * fb->height;
+            if (pixels > max_pixels) {
+                pixels = max_pixels;
+            }
+            framebuffer_blit(0, 0, fb->width, (uint32_t)(pixels / fb->width),
+                             (const uint32_t *)buf, fb->width);
+            return (long)(pixels * sizeof(uint32_t));
+        }
+        return -1;
+    }
+    if (file->flags & VFS_O_APPEND) {
+        file->offset = file->node->size;
     }
     ssize_t ret = vfs_write_node(file->node, file->offset, buf, count);
     if (ret > 0) {
@@ -129,14 +480,281 @@ static long sys_access(const char *path, int mode)
     if (!proc || !path || (mode & ~(1 | 2 | 4)) != 0) {
         return -1;
     }
-    struct vfs_node *node = vfs_lookup(path, proc->cwd);
+    char normal[VFS_PATH_MAX];
+    if (normalize_for_process(proc, path, normal, sizeof(normal)) < 0) {
+        return -1;
+    }
+    struct vfs_node *node = vfs_lookup(normal, "/");
     if (!node) {
         return -1;
     }
     if (mode == 0) {
         return 0;
     }
+    if ((mode & 2) && !is_root(proc) && path_requires_root_for_mutation(normal)) {
+        return -1;
+    }
+    if (node->type == VFS_NODE_DEV && !is_root(proc) && !path_is_public_device(normal)) {
+        return -1;
+    }
     return has_perm(proc, node, (uint32_t)mode) ? 0 : -1;
+}
+
+static long sys_readdir(int fd, struct syscall_dirent *out)
+{
+    struct process *proc = process_current();
+    struct file_descriptor *file = process_get_fd(proc, fd);
+    if (!file || !out || !file->node || file->node->type != VFS_NODE_DIR) {
+        return -1;
+    }
+
+    uint64_t index = 0;
+    for (struct vfs_node *node = file->node->first_child; node; node = node->next_sibling) {
+        if (index++ != file->offset) {
+            continue;
+        }
+        out->d_ino = file->offset + 1;
+        switch (node->type) {
+        case VFS_NODE_DIR:
+            out->d_type = 4;
+            break;
+        case VFS_NODE_FILE:
+            out->d_type = 8;
+            break;
+        default:
+            out->d_type = 0;
+            break;
+        }
+        strncpy(out->d_name, node->name, sizeof(out->d_name) - 1);
+        out->d_name[sizeof(out->d_name) - 1] = '\0';
+        file->offset++;
+        return 1;
+    }
+    return 0;
+}
+
+static long sys_ioctl(int fd, unsigned long request, void *arg)
+{
+    struct process *proc = process_current();
+    struct file_descriptor *file = process_get_fd(proc, fd);
+    if (!file || !file->node || file->node->type != VFS_NODE_DEV) {
+        return -1;
+    }
+    if (strcmp(file->node->name, "fb0") == 0 && request == TNU_IOCTL_FB_GETINFO) {
+        if (!arg || !framebuffer_is_graphics()) {
+            return -1;
+        }
+        const struct framebuffer_info *fb = framebuffer_info();
+        struct syscall_fb_info *out = arg;
+        out->width = fb->width;
+        out->height = fb->height;
+        out->pitch = fb->pitch;
+        out->bpp = fb->bpp;
+        return 0;
+    }
+    if ((strcmp(file->node->name, "tty") == 0 || strcmp(file->node->name, "console") == 0) &&
+        (request == TNU_IOCTL_TTY_GETSIZE || request == TNU_IOCTL_TIOCGWINSZ)) {
+        if (!arg) {
+            return -1;
+        }
+        struct syscall_winsize *ws = arg;
+        ws->ws_row = (uint16_t)console_rows();
+        ws->ws_col = (uint16_t)console_columns();
+        ws->ws_xpixel = (uint16_t)console_pixel_width();
+        ws->ws_ypixel = (uint16_t)console_pixel_height();
+        return 0;
+    }
+    return -1;
+}
+
+static long sys_exec_image(const char *path, int argc, char **argv)
+{
+    enum {
+        USER_BASE = 0x4000000,
+        USER_LIMIT = 0x5000000,
+        USER_HEAP_BASE = 0x5000000,
+        USER_HEAP_LIMIT_SMALL = 0x7000000,
+        USER_STACK_BOTTOM_SMALL = 0x7fc0000,
+        USER_STACK_TOP_SMALL = 0x8000000,
+        USER_HEAP_LIMIT_LARGE = 0xe000000,
+        USER_STACK_BOTTOM_LARGE = 0xefc0000,
+        USER_STACK_TOP_LARGE = 0xf000000,
+        MAX_ARGS = 16,
+        MAX_ARG_LEN = 127,
+    };
+
+    char path_copy[VFS_PATH_MAX];
+    char resolved[VFS_PATH_MAX];
+    char arg_storage[MAX_ARGS][MAX_ARG_LEN + 1];
+    const char *arg_values[MAX_ARGS];
+    int arg_count = 0;
+
+    if (!path) {
+        return -1;
+    }
+    strncpy(path_copy, path, sizeof(path_copy) - 1);
+    path_copy[sizeof(path_copy) - 1] = '\0';
+
+    if (argc > MAX_ARGS) {
+        argc = MAX_ARGS;
+    }
+    if (argc <= 0 || !argv) {
+        strncpy(arg_storage[0], path_copy, MAX_ARG_LEN);
+        arg_storage[0][MAX_ARG_LEN] = '\0';
+        arg_values[arg_count++] = arg_storage[0];
+    } else {
+        for (int i = 0; i < argc; i++) {
+            const char *src = argv[i] ? argv[i] : "";
+            strncpy(arg_storage[i], src, MAX_ARG_LEN);
+            arg_storage[i][MAX_ARG_LEN] = '\0';
+            arg_values[arg_count++] = arg_storage[i];
+        }
+    }
+
+    struct vfs_node *node = resolve_exec_node(path_copy, resolved, sizeof(resolved));
+    if (!node || node->type != VFS_NODE_FILE || !node->data) {
+        return -1;
+    }
+    if (!has_perm(process_current(), node, 1)) {
+        return -1;
+    }
+
+    struct elf_image_info info;
+    if (elf64_validate(node->data, (size_t)node->size, &info) < 0) {
+        return -1;
+    }
+    uintptr_t user_heap_limit = USER_HEAP_LIMIT_SMALL;
+    uintptr_t user_stack_bottom = USER_STACK_BOTTOM_SMALL;
+    uintptr_t user_stack_top = USER_STACK_TOP_SMALL;
+    const struct memory_stats *mem = memory_stats_get();
+    if (mem && mem->usable_bytes >= USER_STACK_TOP_LARGE + 0x100000) {
+        user_heap_limit = USER_HEAP_LIMIT_LARGE;
+        user_stack_bottom = USER_STACK_BOTTOM_LARGE;
+        user_stack_top = USER_STACK_TOP_LARGE;
+    }
+    if (mem && user_stack_top > mem->usable_bytes) {
+        user_heap_limit = USER_HEAP_LIMIT_SMALL;
+        user_stack_bottom = USER_STACK_BOTTOM_SMALL;
+        user_stack_top = USER_STACK_TOP_SMALL;
+    }
+
+    if (vmm_map_range_identity(USER_BASE, USER_LIMIT - USER_BASE,
+                               VMM_FLAG_WRITABLE | VMM_FLAG_USER) < 0 ||
+        vmm_map_range_identity(user_stack_bottom, user_stack_top - user_stack_bottom,
+                               VMM_FLAG_WRITABLE | VMM_FLAG_USER) < 0) {
+        return -1;
+    }
+
+    memset((void *)(uintptr_t)USER_BASE, 0, USER_LIMIT - USER_BASE);
+    memset((void *)user_stack_bottom, 0, user_stack_top - user_stack_bottom);
+    user_brk_current = USER_HEAP_BASE;
+    user_heap_limit_current = user_heap_limit;
+    if (elf64_load(node->data, (size_t)node->size) < 0) {
+        return -1;
+    }
+
+    uintptr_t sp = user_stack_top;
+    uint64_t user_argv[MAX_ARGS];
+    for (int i = arg_count - 1; i >= 0; i--) {
+        size_t len = strlen(arg_values[i]) + 1;
+        sp -= len;
+        memcpy((void *)sp, arg_values[i], len);
+        user_argv[i] = sp;
+    }
+    sp &= ~0xfULL;
+    uint64_t *stack = (uint64_t *)sp;
+    *--stack = 0;
+    for (int i = arg_count - 1; i >= 0; i--) {
+        *--stack = user_argv[i];
+    }
+    *--stack = (uint64_t)arg_count;
+
+    struct process *proc = process_current();
+    char saved_name[PROCESS_NAME_MAX + 1];
+    enum process_state saved_state = PROCESS_RUNNING;
+    uint8_t saved_signal_disposition[PROCESS_SIGNAL_MAX];
+    uintptr_t saved_signal_handler[PROCESS_SIGNAL_MAX];
+    if (proc) {
+        strncpy(saved_name, proc->name, sizeof(saved_name) - 1);
+        saved_name[sizeof(saved_name) - 1] = '\0';
+        saved_state = proc->state;
+        memcpy(saved_signal_disposition, proc->signal_disposition, sizeof(saved_signal_disposition));
+        memcpy(saved_signal_handler, proc->signal_handler, sizeof(saved_signal_handler));
+        memset(proc->signal_disposition, 0, sizeof(proc->signal_disposition));
+        memset(proc->signal_handler, 0, sizeof(proc->signal_handler));
+        strncpy(proc->name, resolved, PROCESS_NAME_MAX);
+        proc->name[PROCESS_NAME_MAX] = '\0';
+        proc->state = PROCESS_RUNNING;
+    }
+
+    user_exec_active = true;
+    int rc = arch_enter_user(info.entry, (uint64_t)(uintptr_t)stack);
+    user_exec_active = false;
+    if (proc) {
+        strncpy(proc->name, saved_name, PROCESS_NAME_MAX);
+        proc->name[PROCESS_NAME_MAX] = '\0';
+        proc->state = saved_state == PROCESS_UNUSED ? PROCESS_RUNNING : saved_state;
+        if (proc->state == PROCESS_ZOMBIE) {
+            proc->state = PROCESS_RUNNING;
+        }
+        proc->exit_code = rc;
+        memcpy(proc->signal_disposition, saved_signal_disposition, sizeof(saved_signal_disposition));
+        memcpy(proc->signal_handler, saved_signal_handler, sizeof(saved_signal_handler));
+    }
+    cpu_sti();
+    return rc;
+}
+
+static long sys_sigaction(int sig, const struct user_sigaction_abi *act,
+                          struct user_sigaction_abi *oldact)
+{
+    struct process *proc = process_current();
+    if (!proc || sig <= 0 || sig >= PROCESS_SIGNAL_MAX) {
+        return -1;
+    }
+    if (oldact) {
+        oldact->handler = proc->signal_handler[sig];
+        oldact->mask = 0;
+        oldact->flags = 0;
+    }
+    if (act) {
+        proc->signal_handler[sig] = act->handler;
+        if (act->handler == 0) {
+            proc->signal_disposition[sig] = SIGNAL_DISPOSITION_DEFAULT;
+        } else if (act->handler == 1) {
+            proc->signal_disposition[sig] = SIGNAL_DISPOSITION_IGNORED;
+        } else {
+            proc->signal_disposition[sig] = SIGNAL_DISPOSITION_HANDLED;
+        }
+    }
+    return 0;
+}
+
+static long sys_brk(uintptr_t next)
+{
+    enum {
+        USER_HEAP_BASE = 0x5000000,
+    };
+    if (next == 0) {
+        return (long)user_brk_current;
+    }
+    if (next < USER_HEAP_BASE || next > user_heap_limit_current) {
+        log_warn("syscall", "brk out of range next=%p current=%p limit=%p",
+                 (void *)next, (void *)user_brk_current, (void *)user_heap_limit_current);
+        return -1;
+    }
+    if (next > user_brk_current) {
+        if (vmm_map_range_identity(user_brk_current, next - user_brk_current,
+                                   VMM_FLAG_WRITABLE | VMM_FLAG_USER) < 0) {
+            log_warn("syscall", "brk map failed start=%p len=%llu next=%p limit=%p",
+                     (void *)user_brk_current,
+                     (uint64_t)(next - user_brk_current),
+                     (void *)next, (void *)user_heap_limit_current);
+            return -1;
+        }
+    }
+    user_brk_current = next;
+    return (long)user_brk_current;
 }
 
 long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
@@ -145,9 +763,18 @@ long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
     (void)a3;
     (void)a4;
     (void)a5;
+
     struct process *proc = process_current();
 
+    if (user_exec_active && number != SYS_EXIT &&
+        (!proc || proc->signal_disposition[SIGINT_NUMBER] == SIGNAL_DISPOSITION_DEFAULT) &&
+        keyboard_consume_interrupt()) {
+        process_exit(proc, 130);
+        return (long)syscall_encode_result(130, SYSCALL_RET_TO_KERNEL);
+    }
+
     switch (number) {
+
     case SYS_READ:
         return sys_read((int)a0, (void *)a1, (size_t)a2);
     case SYS_WRITE:
@@ -173,6 +800,17 @@ long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
         return process_dup_fd(proc, (int)a0);
     case SYS_DUP2:
         return process_dup2_fd(proc, (int)a0, (int)a1);
+    case SYS_READDIR:
+        return sys_readdir((int)a0, (struct syscall_dirent *)a1);
+    case SYS_IOCTL:
+        return sys_ioctl((int)a0, (unsigned long)a1, (void *)a2);
+    case SYS_UPTIME_MS:
+        return (long)(pit_ticks() * 10);
+    case SYS_BRK:
+        return sys_brk((uintptr_t)a0);
+    case SYS_SIGACTION:
+        return sys_sigaction((int)a0, (const struct user_sigaction_abi *)a1,
+                             (struct user_sigaction_abi *)a2);
     case SYS_CHDIR: {
         struct vfs_node *node = vfs_lookup((const char *)a0, proc->cwd);
         if (!node || node->type != VFS_NODE_DIR || !has_perm(proc, node, 1)) {
@@ -184,43 +822,82 @@ long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
         strncpy((char *)a0, proc->cwd, (size_t)a1);
         return 0;
     case SYS_MKDIR:
-        return vfs_mkdir((const char *)a0, proc->cwd, VFS_S_IFDIR | ((uint32_t)a1 & 0777),
-                         proc->uid, proc->gid);
-    case SYS_UNLINK:
     {
-        struct vfs_node *node = vfs_lookup((const char *)a0, proc->cwd);
-        if (!node || (proc->uid != 0 && proc->uid != node->uid)) {
+        char normal[VFS_PATH_MAX];
+        if (normalize_for_process(proc, (const char *)a0, normal, sizeof(normal)) < 0) {
             return -1;
         }
-        return vfs_unlink((const char *)a0, proc->cwd);
+        if (!is_root(proc) && path_requires_root_for_mutation(normal)) {
+            return -1;
+        }
+        if (!can_create_in_parent(proc, normal)) {
+            return -1;
+        }
+        return vfs_mkdir(normal, "/", VFS_S_IFDIR | ((uint32_t)a1 & 0777),
+                         proc->uid, proc->gid);
+    }
+    case SYS_UNLINK:
+    {
+        char normal[VFS_PATH_MAX];
+        if (normalize_for_process(proc, (const char *)a0, normal, sizeof(normal)) < 0 ||
+            strcmp(normal, "/") == 0) {
+            return -1;
+        }
+        struct vfs_node *node = vfs_lookup(normal, "/");
+        struct vfs_node *parent = lookup_parent_from_normal(normal);
+        if (!node || !parent || parent->type != VFS_NODE_DIR) {
+            return -1;
+        }
+        if (!is_root(proc) && path_requires_root_for_mutation(normal)) {
+            return -1;
+        }
+        if (!has_perm(proc, parent, 2) || !has_perm(proc, parent, 1)) {
+            return -1;
+        }
+        return vfs_unlink(normal, "/");
     }
     case SYS_STAT:
         return vfs_stat((const char *)a0, proc->cwd, (struct vfs_stat *)a1);
     case SYS_CHMOD:
     {
-        struct vfs_node *node = vfs_lookup((const char *)a0, proc->cwd);
-        if (!node || (proc->uid != 0 && proc->uid != node->uid)) {
+        char normal[VFS_PATH_MAX];
+        if (normalize_for_process(proc, (const char *)a0, normal, sizeof(normal)) < 0) {
             return -1;
         }
-        return vfs_chmod((const char *)a0, proc->cwd, (uint32_t)a1);
+        struct vfs_node *node = vfs_lookup(normal, "/");
+        if (!node) {
+            return -1;
+        }
+        if (!is_root(proc) && path_requires_root_for_mutation(normal)) {
+            return -1;
+        }
+        if (!is_root(proc) && proc->uid != node->uid) {
+            return -1;
+        }
+        return vfs_chmod(normal, "/", (uint32_t)a1);
     }
     case SYS_CHOWN:
-        if (proc->uid != 0) {
+    {
+        char normal[VFS_PATH_MAX];
+        if (!is_root(proc) ||
+            normalize_for_process(proc, (const char *)a0, normal, sizeof(normal)) < 0) {
             return -1;
         }
-        return vfs_chown((const char *)a0, proc->cwd, (uint32_t)a1, (uint32_t)a2);
+        return vfs_chown(normal, "/", (uint32_t)a1, (uint32_t)a2);
+    }
     case SYS_SPAWN: {
         const struct user_record *u = user_current();
         struct process *child = process_create((const char *)a0, proc ? proc->pid : 0, u->uid, u->gid);
         return child ? child->pid : -1;
     }
     case SYS_EXEC:
-        return -1;
+        return sys_exec_image((const char *)a0, (int)a1, (char **)a2);
     case SYS_WAIT:
         return -1;
     case SYS_EXIT:
         process_exit(proc, (int)a0);
-        return 0;
+        return (long)syscall_encode_result((long)a0, SYSCALL_RET_TO_KERNEL);
+
     default:
         return -1;
     }

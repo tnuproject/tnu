@@ -118,10 +118,17 @@ void vfs_init(void)
     node_count = 0;
     vfs_clock = 0;
     root_node = alloc_node("", VFS_NODE_DIR, VFS_S_IFDIR | 0755, 0, 0);
-    const char *dirs[] = { "/bin", "/sbin", "/etc", "/dev", "/proc", "/home",
-                           "/root", "/tmp", "/usr", "/var" };
+    static const struct {
+        const char *path;
+        uint32_t mode;
+    } dirs[] = {
+        { "/bin", 0755 },  { "/sbin", 0755 }, { "/etc", 0755 },
+        { "/dev", 0755 },  { "/proc", 0755 }, { "/home", 0755 },
+        { "/root", 0700 }, { "/tmp", 01777 }, { "/usr", 0755 },
+        { "/var", 0755 },
+    };
     for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
-        vfs_mkdir(dirs[i], "/", VFS_S_IFDIR | 0755, 0, 0);
+        vfs_mkdir(dirs[i].path, "/", VFS_S_IFDIR | dirs[i].mode, 0, 0);
     }
     log_info("vfs", "created in-memory root filesystem");
 }
@@ -242,6 +249,7 @@ int vfs_write_file(const char *path, const char *cwd, const void *data, size_t s
         copy[size] = 0;
     }
     node->data = copy;
+    node->data_borrowed = false;
     node->size = size;
     node->modified = ++vfs_clock;
     return 0;
@@ -329,20 +337,22 @@ ssize_t vfs_write_node(struct vfs_node *node, uint64_t offset, const void *buf, 
         return -1;
     }
     uint64_t end = offset + count;
-    if (end > node->size) {
-        uint8_t *new_data = kmalloc((size_t)end + 1);
+    if (end > node->size || node->data_borrowed) {
+        uint64_t new_size = end > node->size ? end : node->size;
+        uint8_t *new_data = kmalloc((size_t)new_size + 1);
         if (!new_data) {
             return -1;
         }
         if (node->data && node->size) {
             memcpy(new_data, node->data, (size_t)node->size);
         }
-        if (end > node->size) {
+        if (new_size > node->size) {
             memset(new_data + node->size, 0, (size_t)(end - node->size));
         }
         node->data = new_data;
-        node->size = end;
+        node->size = new_size;
         node->data[node->size] = 0;
+        node->data_borrowed = false;
     }
     memcpy(node->data + offset, buf, count);
     node->modified = ++vfs_clock;

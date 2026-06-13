@@ -112,6 +112,43 @@ int framebuffer_fillrect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_
     if (y + h > fb.height) {
         h = fb.height - y;
     }
+    if (fb.bpp == 32) {
+        uint32_t pixel = rgb & 0x00ffffffu;
+        for (uint32_t yy = 0; yy < h; yy++) {
+            volatile uint32_t *row =
+                (volatile uint32_t *)((volatile uint8_t *)fb.address + (uint64_t)(y + yy) * fb.pitch);
+            for (uint32_t xx = 0; xx < w; xx++) {
+                row[x + xx] = pixel;
+            }
+        }
+        return 0;
+    }
+    if (fb.bpp == 16) {
+        uint16_t r = (uint16_t)((rgb >> 19) & 0x1f);
+        uint16_t g = (uint16_t)((rgb >> 10) & 0x3f);
+        uint16_t b = (uint16_t)((rgb >> 3) & 0x1f);
+        uint16_t pixel = (uint16_t)((r << 11) | (g << 5) | b);
+        for (uint32_t yy = 0; yy < h; yy++) {
+            volatile uint16_t *row =
+                (volatile uint16_t *)((volatile uint8_t *)fb.address + (uint64_t)(y + yy) * fb.pitch);
+            for (uint32_t xx = 0; xx < w; xx++) {
+                row[x + xx] = pixel;
+            }
+        }
+        return 0;
+    }
+    if (fb.bpp == 24) {
+        for (uint32_t yy = 0; yy < h; yy++) {
+            volatile uint8_t *row = (volatile uint8_t *)fb.address +
+                                    (uint64_t)(y + yy) * fb.pitch + x * 3;
+            for (uint32_t xx = 0; xx < w; xx++) {
+                row[xx * 3] = (uint8_t)(rgb & 0xff);
+                row[xx * 3 + 1] = (uint8_t)((rgb >> 8) & 0xff);
+                row[xx * 3 + 2] = (uint8_t)((rgb >> 16) & 0xff);
+            }
+        }
+        return 0;
+    }
     for (uint32_t yy = 0; yy < h; yy++) {
         for (uint32_t xx = 0; xx < w; xx++) {
             framebuffer_putpixel(x + xx, y + yy, rgb);
@@ -131,6 +168,46 @@ int framebuffer_blit(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
     }
     if (y + h > fb.height) {
         h = fb.height - y;
+    }
+    if (fb.bpp == 32) {
+        for (uint32_t yy = 0; yy < h; yy++) {
+            volatile uint32_t *dst =
+                (volatile uint32_t *)((volatile uint8_t *)fb.address + (uint64_t)(y + yy) * fb.pitch);
+            const uint32_t *src = &pixels[yy * src_pitch_pixels];
+            for (uint32_t xx = 0; xx < w; xx++) {
+                dst[x + xx] = src[xx] & 0x00ffffffu;
+            }
+        }
+        return 0;
+    }
+    if (fb.bpp == 16) {
+        for (uint32_t yy = 0; yy < h; yy++) {
+            volatile uint16_t *dst =
+                (volatile uint16_t *)((volatile uint8_t *)fb.address + (uint64_t)(y + yy) * fb.pitch);
+            const uint32_t *src = &pixels[yy * src_pitch_pixels];
+            for (uint32_t xx = 0; xx < w; xx++) {
+                uint32_t rgb = src[xx];
+                uint16_t r = (uint16_t)((rgb >> 19) & 0x1f);
+                uint16_t g = (uint16_t)((rgb >> 10) & 0x3f);
+                uint16_t b = (uint16_t)((rgb >> 3) & 0x1f);
+                dst[x + xx] = (uint16_t)((r << 11) | (g << 5) | b);
+            }
+        }
+        return 0;
+    }
+    if (fb.bpp == 24) {
+        for (uint32_t yy = 0; yy < h; yy++) {
+            volatile uint8_t *dst = (volatile uint8_t *)fb.address +
+                                    (uint64_t)(y + yy) * fb.pitch + x * 3;
+            const uint32_t *src = &pixels[yy * src_pitch_pixels];
+            for (uint32_t xx = 0; xx < w; xx++) {
+                uint32_t rgb = src[xx];
+                dst[xx * 3] = (uint8_t)(rgb & 0xff);
+                dst[xx * 3 + 1] = (uint8_t)((rgb >> 8) & 0xff);
+                dst[xx * 3 + 2] = (uint8_t)((rgb >> 16) & 0xff);
+            }
+        }
+        return 0;
     }
     for (uint32_t yy = 0; yy < h; yy++) {
         for (uint32_t xx = 0; xx < w; xx++) {

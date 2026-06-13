@@ -25,7 +25,7 @@ static void panic_header(const char *message)
     cpu_cli();
     console_set_color(CONSOLE_WHITE, CONSOLE_BLUE);
     console_clear();
-    kprintf("TNU KERNEL PANIC\n");
+    kprintf("KERNEL PANIC :c\n");
     kprintf("%s %s \"%s\" (%s)\n\n", TNU_NAME, TNU_VERSION, TNU_CODENAME, TNU_ARCH);
     kprintf("Debugging message: %s\n", message);
 }

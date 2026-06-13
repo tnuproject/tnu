@@ -27,7 +27,7 @@ make verify     # Re-check kernel and ISO bootability metadata
 make clean      # Remove build artifacts
 ```
 
-The ISO is written to `build/tnu.iso`.
+The ISO name is generated from `version.mk`.
 
 ## Boot Path
 

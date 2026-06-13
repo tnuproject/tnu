@@ -27,6 +27,7 @@
 #define ENV_MAX 16
 #define SCRIPT_MAX_DEPTH 4
 #define SCRIPT_BLOCK_MAX 4096
+#define DEFAULT_EXEC_PATH "/bin:/sbin:/usr/bin:/usr/games"
 
 struct env_pair {
     char key[32];
@@ -48,9 +49,41 @@ static char script_value_storage[SCRIPT_MAX_DEPTH][ARGV_MAX][VFS_PATH_MAX];
 static char *script_value_argv[SCRIPT_MAX_DEPTH][ARGV_MAX];
 static char script_arg_storage[ARGV_MAX][VFS_PATH_MAX];
 static char *script_arg_argv[ARGV_MAX];
+static char shell_clipboard[LINE_MAX];
 
-static const char *shell_builtin_names[] = {
-    "help", "cd", "login", "exec", "history", "env", "set", "sh", "sysinstall",
+static const char *env_get_value(const char *key);
+static bool shell_can_execute_node(struct vfs_node *node);
+static bool bin_entry_exists(const char *name);
+static struct vfs_node *resolve_command_node(const char *command, char *resolved, size_t resolved_size);
+static const char *command_basename(const char *path);
+
+struct shell_builtin_doc {
+    const char *name;
+    const char *usage;
+    const char *help;
+};
+
+static const struct shell_builtin_doc shell_builtin_docs[] = {
+    { "help", "help [COMMAND]",
+      "List commands or show documentation for a shell builtin, applet, or executable." },
+    { "cd", "cd [DIR]",
+      "Change the current directory. Without DIR, changes to the current user's home." },
+    { "login", "login USER",
+      "Authenticate and switch the current shell session to USER." },
+    { "exec", "exec PATH [ARG...]",
+      "Execute an ELF userspace program directly." },
+    { "history", "history",
+      "Print the shell command history." },
+    { "env", "env",
+      "Print shell environment variables." },
+    { "set", "set KEY VALUE",
+      "Set a shell environment variable." },
+    { "sh", "sh SCRIPT [ARG...]",
+      "Run a TSH script without requiring executable mode." },
+    { "sudo", "sudo COMMAND [ARG...]",
+      "Authenticate as root and run COMMAND with uid/gid 0, preserving argv." },
+    { "sysinstall", "sysinstall",
+      "Run the text installer. Requires root and a loaded install image." },
 };
 
 static void read_file_text(const char *path, char *out, size_t out_size, const char *fallback)
@@ -99,7 +132,7 @@ static void prompt(void)
     char host[64];
     char cwd[VFS_PATH_MAX];
     const struct user_record *u = user_current();
-    read_file_text("/etc/hostname", host, sizeof(host), "tnu");
+    read_file_text("/etc/hostname", host, sizeof(host), "tiramisu");
     strip_first_newline(host);
     display_cwd(cwd, sizeof(cwd));
     console_set_color(u->uid == 0 ? CONSOLE_LIGHT_RED : CONSOLE_LIGHT_GREEN, CONSOLE_BLACK);
@@ -169,6 +202,36 @@ static void insert_text(char *line, size_t size, size_t *len, size_t *cursor,
     redraw_line(old_len, old_cursor, line, *len, *cursor);
 }
 
+static void selection_bounds(bool active, size_t anchor, size_t cursor,
+                             size_t *start, size_t *end)
+{
+    if (!active) {
+        *start = *end = cursor;
+        return;
+    }
+    *start = anchor < cursor ? anchor : cursor;
+    *end = anchor < cursor ? cursor : anchor;
+}
+
+static void delete_selection(char *line, size_t *len, size_t *cursor,
+                             bool *sel_active, size_t sel_anchor)
+{
+    size_t start;
+    size_t end;
+    selection_bounds(*sel_active, sel_anchor, *cursor, &start, &end);
+    if (start == end) {
+        *sel_active = false;
+        return;
+    }
+    size_t old_len = *len;
+    size_t old_cursor = *cursor;
+    memmove(line + start, line + end, *len - end + 1);
+    *len -= end - start;
+    *cursor = start;
+    *sel_active = false;
+    redraw_line(old_len, old_cursor, line, *len, *cursor);
+}
+
 struct completion_ctx {
     const char *prefix;
     size_t prefix_len;
@@ -197,26 +260,6 @@ static void completion_consider(struct completion_ctx *ctx, const char *candidat
         ctx->display[ctx->count][sizeof(ctx->display[0]) - 1] = '\0';
     }
     ctx->count++;
-}
-
-static void completion_consider_list(struct completion_ctx *ctx, const char *list)
-{
-    char word[64];
-    size_t n = 0;
-    for (const char *p = list; ; p++) {
-        if (*p == ' ' || *p == '\0') {
-            if (n) {
-                word[n] = '\0';
-                completion_consider(ctx, word);
-                n = 0;
-            }
-            if (*p == '\0') {
-                break;
-            }
-        } else if (n + 1 < sizeof(word)) {
-            word[n++] = *p;
-        }
-    }
 }
 
 static bool completion_is_command_position(const char *line, size_t word_start)
@@ -262,6 +305,21 @@ static void path_completion_emit(struct vfs_node *node, void *ctx_ptr)
     completion_consider(ctx, candidate);
 }
 
+static void command_completion_emit(struct vfs_node *node, void *ctx_ptr)
+{
+    struct completion_ctx *ctx = ctx_ptr;
+    if (!node || node->type != VFS_NODE_FILE || !shell_can_execute_node(node)) {
+        return;
+    }
+    completion_consider(ctx, node->name);
+}
+
+static const char *shell_path(void)
+{
+    const char *path = env_get_value("PATH");
+    return path && path[0] ? path : DEFAULT_EXEC_PATH;
+}
+
 static void complete_path(struct completion_ctx *ctx)
 {
     char dir_path[VFS_PATH_MAX];
@@ -286,17 +344,26 @@ static void complete_path(struct completion_ctx *ctx)
 
 static void complete_command(struct completion_ctx *ctx)
 {
-    for (size_t i = 0; i < sizeof(shell_builtin_names) / sizeof(shell_builtin_names[0]); i++) {
-        completion_consider(ctx, shell_builtin_names[i]);
+    for (size_t i = 0; i < sizeof(shell_builtin_docs) / sizeof(shell_builtin_docs[0]); i++) {
+        completion_consider(ctx, shell_builtin_docs[i].name);
     }
-    completion_consider_list(ctx, tnu_applet_list());
-    struct vfs_node *bin = vfs_lookup("/bin", "/");
-    if (bin && bin->type == VFS_NODE_DIR) {
-        vfs_list(bin, path_completion_emit, ctx);
-    }
-    struct vfs_node *sbin = vfs_lookup("/sbin", "/");
-    if (sbin && sbin->type == VFS_NODE_DIR) {
-        vfs_list(sbin, path_completion_emit, ctx);
+    const char *path = shell_path();
+    char dir[VFS_PATH_MAX];
+    while (*path) {
+        size_t n = 0;
+        while (path[n] && path[n] != ':' && n + 1 < sizeof(dir)) {
+            dir[n] = path[n];
+            n++;
+        }
+        dir[n] = '\0';
+        struct vfs_node *node = vfs_lookup(dir[0] ? dir : ".", process_current()->cwd);
+        if (node && node->type == VFS_NODE_DIR) {
+            vfs_list(node, command_completion_emit, ctx);
+        }
+        path += n;
+        if (*path == ':') {
+            path++;
+        }
     }
 }
 
@@ -357,6 +424,8 @@ static void read_line(char *line, size_t size)
     size_t cursor = 0;
     int history_index = -1;
     char saved[LINE_MAX];
+    bool sel_active = false;
+    size_t sel_anchor = 0;
     saved[0] = '\0';
     line[0] = '\0';
 
@@ -368,11 +437,40 @@ static void read_line(char *line, size_t size)
             add_history(line);
             return;
         }
+        if (ch == KEY_CTRL_C) {
+            keyboard_ack_interrupt();
+            while (cursor < len) {
+                console_cursor_right();
+                cursor++;
+            }
+            kprintf("^C\n");
+            line[0] = '\0';
+            return;
+        }
+        if (ch == KEY_COPY) {
+            size_t start;
+            size_t end;
+            selection_bounds(sel_active, sel_anchor, cursor, &start, &end);
+            if (end > start && end - start < sizeof(shell_clipboard)) {
+                memcpy(shell_clipboard, line + start, end - start);
+                shell_clipboard[end - start] = '\0';
+            }
+            continue;
+        }
+        if (ch == KEY_PASTE) {
+            if (sel_active) {
+                delete_selection(line, &len, &cursor, &sel_active, sel_anchor);
+            }
+            insert_text(line, size, &len, &cursor, shell_clipboard);
+            continue;
+        }
         if (ch == '\t') {
+            sel_active = false;
             handle_tab(line, size, &len, &cursor);
             continue;
         }
         if (ch == KEY_LEFT) {
+            sel_active = false;
             if (cursor) {
                 console_cursor_left();
                 cursor--;
@@ -380,6 +478,29 @@ static void read_line(char *line, size_t size)
             continue;
         }
         if (ch == KEY_RIGHT) {
+            sel_active = false;
+            if (cursor < len) {
+                console_cursor_right();
+                cursor++;
+            }
+            continue;
+        }
+        if (ch == KEY_SHIFT_LEFT) {
+            if (!sel_active) {
+                sel_active = true;
+                sel_anchor = cursor;
+            }
+            if (cursor) {
+                console_cursor_left();
+                cursor--;
+            }
+            continue;
+        }
+        if (ch == KEY_SHIFT_RIGHT) {
+            if (!sel_active) {
+                sel_active = true;
+                sel_anchor = cursor;
+            }
             if (cursor < len) {
                 console_cursor_right();
                 cursor++;
@@ -387,6 +508,7 @@ static void read_line(char *line, size_t size)
             continue;
         }
         if (ch == KEY_HOME) {
+            sel_active = false;
             while (cursor) {
                 console_cursor_left();
                 cursor--;
@@ -394,6 +516,7 @@ static void read_line(char *line, size_t size)
             continue;
         }
         if (ch == KEY_END) {
+            sel_active = false;
             while (cursor < len) {
                 console_cursor_right();
                 cursor++;
@@ -411,6 +534,7 @@ static void read_line(char *line, size_t size)
                 history_index--;
             }
             replace_line(line, size, &len, &cursor, history[history_index]);
+            sel_active = false;
             continue;
         }
         if (ch == KEY_DOWN) {
@@ -424,10 +548,13 @@ static void read_line(char *line, size_t size)
                 history_index = -1;
                 replace_line(line, size, &len, &cursor, saved);
             }
+            sel_active = false;
             continue;
         }
         if (ch == '\b' || ch == 127) {
-            if (cursor) {
+            if (sel_active) {
+                delete_selection(line, &len, &cursor, &sel_active, sel_anchor);
+            } else if (cursor) {
                 size_t old_len = len;
                 size_t old_cursor = cursor;
                 memmove(line + cursor - 1, line + cursor, len - cursor + 1);
@@ -438,7 +565,9 @@ static void read_line(char *line, size_t size)
             continue;
         }
         if (ch == KEY_DELETE) {
-            if (cursor < len) {
+            if (sel_active) {
+                delete_selection(line, &len, &cursor, &sel_active, sel_anchor);
+            } else if (cursor < len) {
                 size_t old_len = len;
                 size_t old_cursor = cursor;
                 memmove(line + cursor, line + cursor + 1, len - cursor);
@@ -448,6 +577,9 @@ static void read_line(char *line, size_t size)
             continue;
         }
         if (ch >= 32 && ch <= 255 && len + 1 < size) {
+            if (sel_active) {
+                delete_selection(line, &len, &cursor, &sel_active, sel_anchor);
+            }
             size_t old_len = len;
             size_t old_cursor = cursor;
             memmove(line + cursor + 1, line + cursor, len - cursor + 1);
@@ -732,14 +864,87 @@ static int expand_args(int argc, char **argv, char **expanded,
     return out_argc;
 }
 
+static void help_command_emit(struct vfs_node *node, void *ctx)
+{
+    size_t *column = ctx;
+    if (!node || node->type != VFS_NODE_FILE || !shell_can_execute_node(node)) {
+        return;
+    }
+    kprintf("  %s", node->name);
+    (*column)++;
+    if ((*column % 6) == 0) {
+        kprintf("\n");
+    }
+}
+
+static void help_list_path_commands(void)
+{
+    const char *path = shell_path();
+    char dir[VFS_PATH_MAX];
+    size_t column = 0;
+
+    while (*path) {
+        size_t n = 0;
+        while (path[n] && path[n] != ':' && n + 1 < sizeof(dir)) {
+            dir[n] = path[n];
+            n++;
+        }
+        dir[n] = '\0';
+        struct vfs_node *node = vfs_lookup(dir[0] ? dir : ".", process_current()->cwd);
+        if (node && node->type == VFS_NODE_DIR) {
+            vfs_list(node, help_command_emit, &column);
+        }
+        path += n;
+        if (*path == ':') {
+            path++;
+        }
+    }
+    if (column % 6 != 0) {
+        kprintf("\n");
+    }
+}
+
 static int cmd_help(int argc, char **argv)
 {
-    (void)argc;
-    (void)argv;
-    kprintf("TNU shell builtins:\n");
-    kprintf("  help cd login exec history env set sh sysinstall\n");
-    kprintf("TNU binaries:\n");
-    kprintf("  %s\n", tnu_applet_list());
+    if (argc > 2) {
+        kprintf("usage: help [COMMAND]\n");
+        return 1;
+    }
+    if (argc == 2) {
+        const char *name = command_basename(argv[1]);
+        for (size_t i = 0; i < sizeof(shell_builtin_docs) / sizeof(shell_builtin_docs[0]); i++) {
+            if (strcmp(name, shell_builtin_docs[i].name) == 0) {
+                kprintf("Usage: %s\n\n%s\n", shell_builtin_docs[i].usage,
+                        shell_builtin_docs[i].help);
+                return 0;
+            }
+        }
+        if (tnu_applet_help(name) == 0) {
+            return 0;
+        }
+        char path[VFS_PATH_MAX];
+        struct vfs_node *node = resolve_command_node(argv[1], path, sizeof(path));
+        if (node && node->type == VFS_NODE_FILE) {
+            kprintf("%s: executable at %s\n", name, path);
+            kprintf("Try: %s --help\n", argv[1]);
+            return 0;
+        }
+        kprintf("help: no help topic for %s\n", argv[1]);
+        return 1;
+    }
+    kprintf("Tiramisu shell builtins:\n");
+    for (size_t i = 0; i < sizeof(shell_builtin_docs) / sizeof(shell_builtin_docs[0]); i++) {
+        kprintf("  %s", shell_builtin_docs[i].name);
+        if ((i + 1) % 6 == 0) {
+            kprintf("\n");
+        }
+    }
+    if (sizeof(shell_builtin_docs) / sizeof(shell_builtin_docs[0]) % 6 != 0) {
+        kprintf("\n");
+    }
+    kprintf("PATH executables:\n");
+    help_list_path_commands();
+    kprintf("Use 'help COMMAND' or 'COMMAND --help' for details.\n");
     return 0;
 }
 
@@ -818,8 +1023,8 @@ static int cmd_login(int argc, char **argv)
 
 static int cmd_exec(int argc, char **argv)
 {
-    if (argc != 2) {
-        kprintf("usage: exec PATH\n");
+    if (argc < 2) {
+        kprintf("usage: exec PATH [ARG...]\n");
         return 1;
     }
     struct vfs_node *node = vfs_lookup(argv[1], process_current()->cwd);
@@ -828,17 +1033,14 @@ static int cmd_exec(int argc, char **argv)
         kprintf("exec: not a valid x86_64 TNU ELF: %s\n", argv[1]);
         return 1;
     }
-    struct process *child = process_create(argv[1], process_current()->pid,
-                                           user_current()->uid, user_current()->gid);
-    if (!child) {
-        kprintf("exec: process table full\n");
+    long rc = syscall_dispatch(SYS_EXEC, (uint64_t)argv[1],
+                               (uint64_t)(argc - 1), (uint64_t)(argv + 1),
+                               0, 0, 0);
+    if (rc < 0) {
+        kprintf("exec: failed: %s\n", argv[1]);
         return 1;
     }
-    child->state = PROCESS_READY;
-    kprintf("ELF accepted: entry=0x%llx load=[0x%llx,0x%llx) pid=%d\n",
-            info.entry, info.lowest_vaddr, info.highest_vaddr, child->pid);
-    kprintf("ring-3 address-space activation is the next loader milestone.\n");
-    return 0;
+    return (int)rc;
 }
 
 static int cmd_history(int argc, char **argv)
@@ -886,6 +1088,10 @@ static int cmd_sysinstall(int argc, char **argv)
 {
     (void)argc;
     (void)argv;
+    if (!process_current() || process_current()->uid != 0) {
+        kprintf("sysinstall: permission denied; try sudo sysinstall\n");
+        return 1;
+    }
     char answer[LINE_MAX];
     const struct boot_info *boot = boot_info_get();
     const uint8_t *image = (const uint8_t *)boot->install_image.start;
@@ -893,7 +1099,7 @@ static int cmd_sysinstall(int argc, char **argv)
                               ? boot->install_image.end - boot->install_image.start
                               : 0;
 
-    kprintf("TNU sysinstall\n");
+    kprintf("Tiramisu sysinstall\n");
     kprintf("Mode: raw boot image install\n");
     kprintf("Detected PCI devices: %llu\n", (uint64_t)pci_count());
     if (!image || image_size == 0) {
@@ -976,6 +1182,7 @@ struct command {
     int (*fn)(int argc, char **argv);
 };
 
+static int run_command(int argc, char **argv, const char *stdin_data);
 static int run_tokens(int argc, char **argv);
 static int run_shell_script(struct vfs_node *node, int argc, char **argv,
                             bool require_exec, bool force_script);
@@ -995,10 +1202,61 @@ static int cmd_sh(int argc, char **argv)
     return rc < 0 ? 126 : rc;
 }
 
+static int cmd_sudo(int argc, char **argv)
+{
+    if (argc < 2) {
+        kprintf("usage: sudo COMMAND [ARG...]\n");
+        return 1;
+    }
+
+    struct process *proc = process_current();
+    const struct user_record *current = user_current();
+    const struct user_record *root = user_find_name("root");
+    if (!proc || !current || !root) {
+        kprintf("sudo: user database unavailable\n");
+        return 1;
+    }
+
+    if (proc->uid != 0) {
+        char password[LINE_MAX];
+        kprintf("[sudo] password for root: ");
+        read_password(password, sizeof(password));
+        if (!user_check_password("root", password)) {
+            kprintf("sudo: authentication failed\n");
+            return 1;
+        }
+    }
+
+    char saved_user[USER_NAME_MAX + 1];
+    char saved_cwd[VFS_PATH_MAX];
+    uint32_t saved_uid = proc->uid;
+    uint32_t saved_gid = proc->gid;
+    strncpy(saved_user, current->name, sizeof(saved_user) - 1);
+    saved_user[sizeof(saved_user) - 1] = '\0';
+    strncpy(saved_cwd, proc->cwd, sizeof(saved_cwd) - 1);
+    saved_cwd[sizeof(saved_cwd) - 1] = '\0';
+
+    if (user_login("root") < 0) {
+        kprintf("sudo: cannot switch to root\n");
+        return 1;
+    }
+    proc->uid = root->uid;
+    proc->gid = root->gid;
+
+    int rc = run_command(argc - 1, argv + 1, NULL);
+
+    user_login(saved_user);
+    proc->uid = saved_uid;
+    proc->gid = saved_gid;
+    strncpy(proc->cwd, saved_cwd, sizeof(proc->cwd) - 1);
+    proc->cwd[sizeof(proc->cwd) - 1] = '\0';
+    return rc;
+}
+
 static const struct command commands[] = {
     { "help", cmd_help },       { "cd", cmd_cd },             { "login", cmd_login },
     { "exec", cmd_exec },       { "history", cmd_history },   { "env", cmd_env },
-    { "set", cmd_set },         { "sh", cmd_sh },
+    { "set", cmd_set },         { "sh", cmd_sh },             { "sudo", cmd_sudo },
     { "sysinstall", cmd_sysinstall },
 };
 
@@ -1038,7 +1296,7 @@ static bool shell_can_execute_node(struct vfs_node *node)
         return false;
     }
     if (proc->uid == 0) {
-        return true;
+        return (node->mode & 0111u) != 0;
     }
     uint32_t shift = 0;
     if (proc->uid == node->uid) {
@@ -1047,6 +1305,42 @@ static bool shell_can_execute_node(struct vfs_node *node)
         shift = 3;
     }
     return ((node->mode >> shift) & 1u) == 1u;
+}
+
+static struct vfs_node *resolve_command_node(const char *command, char *resolved, size_t resolved_size)
+{
+    if (!command || !command[0] || !resolved || resolved_size == 0) {
+        return NULL;
+    }
+    if (strchr(command, '/')) {
+        expand_tilde(command, resolved, resolved_size);
+        return vfs_lookup(resolved, process_current()->cwd);
+    }
+
+    const char *path = shell_path();
+    char dir[VFS_PATH_MAX];
+    while (*path) {
+        size_t n = 0;
+        while (path[n] && path[n] != ':' && n + 1 < sizeof(dir)) {
+            dir[n] = path[n];
+            n++;
+        }
+        dir[n] = '\0';
+        if (dir[0]) {
+            ksnprintf(resolved, resolved_size, "%s/%s", dir, command);
+        } else {
+            ksnprintf(resolved, resolved_size, "%s", command);
+        }
+        struct vfs_node *node = vfs_lookup(resolved, process_current()->cwd);
+        if (node) {
+            return node;
+        }
+        path += n;
+        if (*path == ':') {
+            path++;
+        }
+    }
+    return NULL;
 }
 
 static const char *command_basename(const char *path)
@@ -1225,6 +1519,25 @@ static bool script_has_shebang(const struct vfs_node *node)
            ((const char *)node->data)[0] == '#' && ((const char *)node->data)[1] == '!';
 }
 
+static bool script_looks_textual(const struct vfs_node *node)
+{
+    if (!node || node->type != VFS_NODE_FILE || !node->data) {
+        return false;
+    }
+    size_t n = node->size < 256 ? (size_t)node->size : 256;
+    const unsigned char *data = node->data;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = data[i];
+        if (c == 0) {
+            return false;
+        }
+        if (c < 32 && c != '\n' && c != '\r' && c != '\t' && c != '\b') {
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool script_should_run(struct vfs_node *node, const char *invoked,
                               bool force_script, bool *skip_first_line)
 {
@@ -1239,7 +1552,8 @@ static bool script_should_run(struct vfs_node *node, const char *invoked,
     if (script_has_shebang(node)) {
         return false;
     }
-    return has_suffix(invoked, ".sh") || has_suffix(node->name, ".sh");
+    return has_suffix(invoked, ".sh") || has_suffix(invoked, ".tsh") ||
+           has_suffix(node->name, ".sh") || has_suffix(node->name, ".tsh");
 }
 
 static char *script_trim(char *line)
@@ -1507,22 +1821,31 @@ static int run_command(int argc, char **argv, const char *stdin_data)
     }
 
     char path[VFS_PATH_MAX];
-    const char *lookup_cwd = "/";
-    if (strchr(argv[0], '/')) {
-        strncpy(path, argv[0], sizeof(path) - 1);
-        path[sizeof(path) - 1] = '\0';
-        lookup_cwd = process_current()->cwd;
-    } else {
-        ksnprintf(path, sizeof(path), "/bin/%s", argv[0]);
-    }
-    struct vfs_node *node = vfs_lookup(path, lookup_cwd);
+    struct vfs_node *node = resolve_command_node(argv[0], path, sizeof(path));
     if (node) {
+        if (!shell_can_execute_node(node)) {
+            kprintf("%s: permission denied\n", argv[0]);
+            return 126;
+        }
         int script_rc = run_shell_script(node, argc, argv, true, false);
         if (script_rc >= 0) {
             return script_rc;
         }
-        char *exec_argv[] = { "exec", path, NULL };
-        return cmd_exec(2, exec_argv);
+        //kprintf("tsh: executing %s in userspace...\n", path);
+        long rc = syscall_dispatch(SYS_EXEC, (uint64_t)path,
+                                   (uint64_t)argc, (uint64_t)argv,
+                                   0, 0, 0);
+        if (rc < 0) {
+            if (script_looks_textual(node)) {
+                int fallback_rc = run_shell_script(node, argc, argv, true, true);
+                if (fallback_rc >= 0) {
+                    return fallback_rc;
+                }
+            }
+            kprintf("tsh: exec failed: %s (returned %ld)\n", path, rc);
+            return 126;
+        }
+        return (int)rc;
     }
     kprintf("%s: command not found\n", argv[0]);
     return 127;
@@ -1581,7 +1904,18 @@ static int run_stage(char **tokens, int start, int end, const char *stdin_data,
     if (do_capture) {
         captured = console_capture_end();
         if (output_path) {
-            if (vfs_write_file(output_path, process_current()->cwd, stage_capture_buf, captured) < 0) {
+            int fd = (int)syscall_dispatch(SYS_OPEN, (uint64_t)output_path,
+                                           VFS_O_CREAT | VFS_O_RDWR | VFS_O_TRUNC,
+                                           0644, 0, 0, 0);
+            long written = 0;
+            if (fd >= 0 && captured > 0) {
+                written = syscall_dispatch(SYS_WRITE, (uint64_t)fd,
+                                           (uint64_t)stage_capture_buf, captured, 0, 0, 0);
+            }
+            if (fd >= 0) {
+                syscall_dispatch(SYS_CLOSE, (uint64_t)fd, 0, 0, 0, 0, 0);
+            }
+            if (fd < 0 || (captured > 0 && written != (long)captured)) {
                 kprintf("tsh: cannot write %s\n", output_path);
                 return 1;
             }
@@ -1626,7 +1960,6 @@ static int run_tokens(int argc, char **argv)
     for (int i = 0; i <= argc; i++) {
         if (i == argc || strcmp(argv[i], "&&") == 0) {
             if (i == start) {
-                kprintf("tsh: empty command\n");
                 return 2;
             }
             rc = run_pipeline(argv, start, i);
@@ -1643,7 +1976,7 @@ static void init_env(void)
 {
     env_count = 0;
     strcpy(envs[env_count].key, "PATH");
-    strcpy(envs[env_count++].value, "/bin:/sbin");
+    strcpy(envs[env_count++].value, DEFAULT_EXEC_PATH);
     strcpy(envs[env_count].key, "SHELL");
     strcpy(envs[env_count++].value, "/bin/tsh");
     strcpy(envs[env_count].key, "TERM");
@@ -1665,7 +1998,7 @@ void tsh_run(void)
     init_env();
     init_keymap();
     char motd[512];
-    read_file_text("/etc/motd", motd, sizeof(motd), "Welcome to TNU.");
+    read_file_text("/etc/motd", motd, sizeof(motd), "Welcome to Tiramisu.");
     kprintf("\n%s\n\n", motd);
 
     for (;;) {

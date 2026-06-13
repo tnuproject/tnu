@@ -4,7 +4,7 @@
       "name": "nano",
       "kind": "editor",
       "upstream": "GNU nano",
-      "source": "https://www.nano-editor.org/dist/latest/nano.tar.xz",
+      "source": "https://www.nano-editor.org/dist/v9/nano-9.0.tar.xz",
       "license": "GPL-3.0-or-later",
       "target_binary": "/bin/nano",
       "required_features": [

@@ -1,7 +1,7 @@
-NAME=TNU
-PRETTY_NAME="TNU"
-ID=tnu
-VERSION_ID=0.1.0
-VERSION_CODENAME=espresso
+NAME=Tiramisu
+PRETTY_NAME="Tiramisu generated"
+ID=tiramisu
+VERSION_ID=generated
+VERSION_CODENAME=generated
 HOME_URL=https://github.com/tnuproject
 BUG_REPORT_URL=https://github.com/tnuproject/tnu/issues

@@ -91,7 +91,7 @@ int main(int argc, char **argv)
         char user[32];
         getcwd(cwd, sizeof(cwd));
         if (read_file("/etc/hostname", host, sizeof(host)) < 0) {
-            strcpy(host, "tnu");
+            strcpy(host, "tiramisu");
         }
         username_from_uid(getuid(), user, sizeof(user));
         print(user);

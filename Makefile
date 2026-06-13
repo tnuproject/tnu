@@ -1,5 +1,7 @@
-ARCH := x86_64
-PROJECT := tnu
+include version.mk
+
+ARCH := $(TNU_ARCH)
+PROJECT := $(TNU_PROJECT)
 
 ifeq ($(origin CC),default)
 CC := $(shell command -v x86_64-elf-gcc >/dev/null 2>&1 && echo x86_64-elf-gcc || echo gcc)
@@ -20,14 +22,17 @@ XORRISO ?= xorriso
 BUILD := build
 KERNEL := $(BUILD)/kernel.elf
 ROOTFS := $(BUILD)/root.tfs
-ISO := $(BUILD)/tnu.iso
+ISO := $(BUILD)/$(TNU_ISO_NAME)
 EFI_BOOT := $(BUILD)/BOOTX64.EFI
 INSTALL_IMAGE := $(BUILD)/install.img
+GENERATED := $(BUILD)/generated
+GENERATED_VERSION := $(GENERATED)/include/tnu/version.h
+GENERATED_GRUB := $(GENERATED)/boot/grub/grub.cfg
 
 KERNEL_CFLAGS := -std=gnu11 -O2 -g -Wall -Wextra -ffreestanding \
 	-fno-stack-protector -fno-stack-check -fno-pic -fno-omit-frame-pointer \
 	-fno-builtin -m64 -mno-red-zone -mgeneral-regs-only \
-	-Ikernel/include -Ikernel/arch/x86_64/include
+	-I$(GENERATED)/include -Ikernel/include -Ikernel/arch/x86_64/include
 KERNEL_ASFLAGS := $(KERNEL_CFLAGS)
 KERNEL_LDFLAGS := -T kernel/linker.ld -nostdlib -static -no-pie \
 	-Wl,-z,max-page-size=0x1000 -Wl,--build-id=none
@@ -40,21 +45,28 @@ USER_LDFLAGS := -T userspace/linker.ld -nostdlib -static -no-pie \
 
 KERNEL_C := $(shell find kernel -name '*.c' | sort)
 KERNEL_S := $(shell find kernel -name '*.S' | sort)
+KERNEL_HEADERS := $(shell find kernel/include kernel/arch/x86_64/include -name '*.h' | sort) \
+	$(GENERATED_VERSION)
 KERNEL_OBJS := $(patsubst %.c,$(BUILD)/obj/%.o,$(KERNEL_C)) \
 	$(patsubst %.S,$(BUILD)/obj/%.o,$(KERNEL_S))
 
 LIBC_C := $(shell find userspace/libc/src -name '*.c' | sort)
 LIBC_S := $(shell find userspace/libc/src -name '*.S' | sort)
+USER_HEADERS := $(shell find userspace/libc/include -name '*.h' | sort)
 LIBC_OBJS := $(patsubst %.c,$(BUILD)/obj/%.o,$(LIBC_C)) \
 	$(patsubst %.S,$(BUILD)/obj/%.o,$(LIBC_S))
 USER_CRT := $(BUILD)/obj/userspace/libc/src/crt0.o
 USER_LIB := $(BUILD)/user/libtnu.a
 
 COREUTIL_NAMES := cat chmod chown clear cp date dmesg echo hostname \
-	id ifconfig keymap kill ls mkdir mount mv xedit netstat ping ps pwd reboot rm route \
+	id ifconfig keymap kill ls mkdir mount mv xedit netstat ping ps pwd reboot rm route dhcp \
 	shutdown stat sysfetch time timezone touch uname uptime usb whoami wifi
 
-.PHONY: all kernel userspace iso run clean rootfs verify verify-kernel verify-iso ports-preflight
+IWN_FW_SRC := $(shell find freebsd-src/sys/contrib/dev/iwn freebsd-src/sys/contrib/dev/wpi -maxdepth 1 -name '*.fw.uu' 2>/dev/null | sort)
+IWM_FW_SRC := $(shell find freebsd-src/sys/contrib/dev/iwm -maxdepth 1 -name '*.fw' 2>/dev/null | sort)
+
+.PHONY: all kernel userspace iso run clean rootfs universe version-files permission-tests verify verify-kernel verify-iso \
+	firmware-iwlwifi ports-preflight ports-fetch ports-fetch-core
 
 all: iso
 
@@ -62,7 +74,8 @@ kernel: $(KERNEL)
 
 userspace: $(USER_LIB) $(BUILD)/user/init $(BUILD)/user/tsh \
 	$(BUILD)/user/tnu-utils $(BUILD)/user/login $(BUILD)/user/passwd \
-	$(BUILD)/user/useradd $(BUILD)/user/userdel $(BUILD)/user/sysinstall
+	$(BUILD)/user/useradd $(BUILD)/user/userdel $(BUILD)/user/sysinstall \
+	$(BUILD)/user/pkg
 
 iso: $(ISO)
 
@@ -72,26 +85,35 @@ run: $(ISO)
 clean:
 	rm -rf $(BUILD)
 
-$(KERNEL): $(KERNEL_OBJS) kernel/linker.ld
+version-files: $(GENERATED_VERSION) $(GENERATED_GRUB)
+
+$(GENERATED_VERSION) $(GENERATED_GRUB): version.mk boot/grub/grub.cfg.in tools/gen_version.py
+	$(HOSTPY) tools/gen_version.py --version version.mk --out $(GENERATED)
+
+firmware-iwlwifi: tools/decode_iwn_firmware.py $(IWN_FW_SRC) $(IWM_FW_SRC)
+	rm -rf $(BUILD)/firmware/iwlwifi
+	$(HOSTPY) tools/decode_iwn_firmware.py --out $(BUILD)/firmware/iwlwifi $(IWN_FW_SRC) $(IWM_FW_SRC)
+
+$(KERNEL): $(KERNEL_OBJS) kernel/linker.ld $(GENERATED_VERSION)
 	@mkdir -p $(dir $@)
 	$(CC) $(KERNEL_CFLAGS) $(KERNEL_LDFLAGS) -o $@ $(KERNEL_OBJS) -lgcc
 	$(GRUB_FILE) --is-x86-multiboot2 $@
 	$(READELF) -h $@ | grep -q 'Class:.*ELF64'
 	$(READELF) -h $@ | grep -q 'Machine:.*Advanced Micro Devices X86-64'
 
-$(BUILD)/obj/kernel/%.o: kernel/%.c
+$(BUILD)/obj/kernel/%.o: kernel/%.c $(KERNEL_HEADERS)
 	@mkdir -p $(dir $@)
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
-$(BUILD)/obj/kernel/%.o: kernel/%.S
+$(BUILD)/obj/kernel/%.o: kernel/%.S $(KERNEL_HEADERS)
 	@mkdir -p $(dir $@)
 	$(CC) $(KERNEL_ASFLAGS) -c $< -o $@
 
-$(BUILD)/obj/userspace/%.o: userspace/%.c
+$(BUILD)/obj/userspace/%.o: userspace/%.c $(USER_HEADERS)
 	@mkdir -p $(dir $@)
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
-$(BUILD)/obj/userspace/%.o: userspace/%.S
+$(BUILD)/obj/userspace/%.o: userspace/%.S $(USER_HEADERS)
 	@mkdir -p $(dir $@)
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -131,38 +153,59 @@ $(BUILD)/user/sysinstall: $(BUILD)/obj/userspace/sbin/sysinstall.o $(USER_LIB) $
 	@mkdir -p $(dir $@)
 	$(CC) $(USER_CFLAGS) $(USER_LDFLAGS) -o $@ $(USER_CRT) $< $(USER_LIB) -lgcc
 
-rootfs: userspace
+$(BUILD)/user/pkg: $(BUILD)/obj/userspace/pkg/pkg.o $(USER_LIB) $(USER_CRT) userspace/linker.ld
+	@mkdir -p $(dir $@)
+	$(CC) $(USER_CFLAGS) $(USER_LDFLAGS) -o $@ $(USER_CRT) $< $(USER_LIB) -lgcc
+
+universe:
+	rm -rf $(BUILD)/universe
+	mkdir -p $(BUILD)/universe
+	cp -a universe/. $(BUILD)/universe/
+
+rootfs: userspace universe version-files firmware-iwlwifi
 	rm -rf $(BUILD)/rootfs
 	mkdir -p $(BUILD)/rootfs
 	cp -a rootfs/. $(BUILD)/rootfs/
+	cp -a $(GENERATED)/rootfs/. $(BUILD)/rootfs/
 	cp ascii.txt $(BUILD)/rootfs/etc/sysfetch-logo
-	mkdir -p $(BUILD)/rootfs/bin $(BUILD)/rootfs/sbin $(BUILD)/rootfs/usr/bin
+	mkdir -p $(BUILD)/rootfs/bin $(BUILD)/rootfs/sbin $(BUILD)/rootfs/usr/bin \
+		$(BUILD)/rootfs/etc/pkg $(BUILD)/rootfs/var/db/pkg/installed \
+		$(BUILD)/rootfs/usr/share/pkg/repos/universe/packages \
+		$(BUILD)/rootfs/lib/firmware/iwlwifi
 	cp $(BUILD)/user/init $(BUILD)/rootfs/sbin/init
 	cp $(BUILD)/user/tsh $(BUILD)/rootfs/bin/tsh
 	cp $(BUILD)/user/tsh $(BUILD)/rootfs/bin/sh
 	cp $(BUILD)/user/tsh $(BUILD)/rootfs/usr/bin/sh
+	cp $(BUILD)/user/pkg $(BUILD)/rootfs/bin/pkg
 	cp $(BUILD)/user/login $(BUILD)/rootfs/bin/login
 	cp $(BUILD)/user/passwd $(BUILD)/rootfs/bin/passwd
 	cp $(BUILD)/user/useradd $(BUILD)/rootfs/sbin/useradd
 	cp $(BUILD)/user/userdel $(BUILD)/rootfs/sbin/userdel
 	cp $(BUILD)/user/sysinstall $(BUILD)/rootfs/sbin/sysinstall
 	for name in $(COREUTIL_NAMES); do cp $(BUILD)/user/tnu-utils $(BUILD)/rootfs/bin/$$name; done
+	cp rootfs/etc/pkg/repos.conf $(BUILD)/rootfs/etc/pkg/repos.conf
+	cp -a $(BUILD)/universe/. $(BUILD)/rootfs/usr/share/pkg/repos/universe/
+	$(HOSTPY) tools/install_required_packages.py $(BUILD)/rootfs $(BUILD)/universe required-packages
+	cp -a $(BUILD)/firmware/iwlwifi/. $(BUILD)/rootfs/lib/firmware/iwlwifi/
 
 $(ROOTFS): rootfs tools/mktfs.py
 	$(HOSTPY) tools/mktfs.py $(BUILD)/rootfs $@
 
-$(EFI_BOOT): boot/grub/grub.cfg
+$(EFI_BOOT): $(GENERATED_GRUB)
 	@mkdir -p $(dir $@)
 	$(GRUB_MKSTANDALONE) -O x86_64-efi -o $@ \
 		--modules="part_gpt part_msdos iso9660 fat search search_fs_file test normal boot multiboot2 font gfxterm all_video efi_gop efi_uga video video_fb video_bochs video_cirrus" \
-		"boot/grub/grub.cfg=boot/grub/grub.cfg"
+		"boot/grub/grub.cfg=$(GENERATED_GRUB)"
 
-$(INSTALL_IMAGE): $(KERNEL) $(ROOTFS) boot/grub/grub.cfg $(EFI_BOOT)
+$(INSTALL_IMAGE): $(KERNEL) $(ROOTFS) $(GENERATED_GRUB) $(EFI_BOOT)
 	rm -rf $(BUILD)/install-iso
 	mkdir -p $(BUILD)/install-iso/boot/grub/fonts $(BUILD)/install-iso/EFI/BOOT
 	cp $(KERNEL) $(BUILD)/install-iso/boot/kernel.elf
+	$(GRUB_FILE) --is-x86-multiboot2 $(BUILD)/install-iso/boot/kernel.elf
+	$(READELF) -h $(BUILD)/install-iso/boot/kernel.elf | grep -q 'Class:.*ELF64'
+	$(READELF) -l $(BUILD)/install-iso/boot/kernel.elf | grep -q 'LOAD'
 	cp $(ROOTFS) $(BUILD)/install-iso/boot/root.tfs
-	cp boot/grub/grub.cfg $(BUILD)/install-iso/boot/grub/grub.cfg
+	cp $(GENERATED_GRUB) $(BUILD)/install-iso/boot/grub/grub.cfg
 	cp $(GRUB_FONT) $(BUILD)/install-iso/boot/grub/fonts/unicode.pf2
 	cp $(EFI_BOOT) $(BUILD)/install-iso/EFI/BOOT/BOOTX64.EFI
 	$(GRUB_MKRESCUE) -V TNU_BOOT -o $@ $(BUILD)/install-iso
@@ -172,13 +215,16 @@ $(INSTALL_IMAGE): $(KERNEL) $(ROOTFS) boot/grub/grub.cfg $(EFI_BOOT)
 	$(ISOINFO) -i $@ -R -f | grep -qx '/boot/grub/fonts/unicode.pf2'
 	$(ISOINFO) -i $@ -R -f | grep -qx '/EFI/BOOT/BOOTX64.EFI'
 
-$(ISO): $(KERNEL) $(ROOTFS) boot/grub/grub.cfg $(EFI_BOOT) $(INSTALL_IMAGE)
+$(ISO): $(KERNEL) $(ROOTFS) $(GENERATED_GRUB) $(EFI_BOOT) $(INSTALL_IMAGE)
 	rm -rf $(BUILD)/iso
 	mkdir -p $(BUILD)/iso/boot/grub/fonts $(BUILD)/iso/EFI/BOOT
 	cp $(KERNEL) $(BUILD)/iso/boot/kernel.elf
+	$(GRUB_FILE) --is-x86-multiboot2 $(BUILD)/iso/boot/kernel.elf
+	$(READELF) -h $(BUILD)/iso/boot/kernel.elf | grep -q 'Class:.*ELF64'
+	$(READELF) -l $(BUILD)/iso/boot/kernel.elf | grep -q 'LOAD'
 	cp $(ROOTFS) $(BUILD)/iso/boot/root.tfs
 	cp $(INSTALL_IMAGE) $(BUILD)/iso/boot/install.img
-	cp boot/grub/grub.cfg $(BUILD)/iso/boot/grub/grub.cfg
+	cp $(GENERATED_GRUB) $(BUILD)/iso/boot/grub/grub.cfg
 	cp $(GRUB_FONT) $(BUILD)/iso/boot/grub/fonts/unicode.pf2
 	cp $(EFI_BOOT) $(BUILD)/iso/EFI/BOOT/BOOTX64.EFI
 	$(GRUB_MKRESCUE) -V TNU_BOOT -o $@ $(BUILD)/iso
@@ -191,10 +237,19 @@ $(ISO): $(KERNEL) $(ROOTFS) boot/grub/grub.cfg $(EFI_BOOT) $(INSTALL_IMAGE)
 	$(XORRISO) -indev $@ -report_el_torito plain 2>/dev/null | grep -q 'BIOS'
 	$(XORRISO) -indev $@ -report_el_torito plain 2>/dev/null | grep -q 'UEFI'
 
-verify: verify-kernel verify-iso
+verify: permission-tests verify-kernel verify-iso
+
+permission-tests:
+	$(HOSTPY) tools/permission_policy_test.py
 
 ports-preflight:
 	$(HOSTPY) tools/ports_preflight.py
+
+ports-fetch:
+	$(HOSTPY) tools/ports_fetch.py
+
+ports-fetch-core:
+	$(HOSTPY) tools/ports_fetch.py xorg
 
 verify-kernel: $(KERNEL)
 	$(GRUB_FILE) --is-x86-multiboot2 $(KERNEL)

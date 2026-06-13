@@ -1,0 +1,10 @@
+TNU_PROJECT := tiramisu
+TNU_ID := tiramisu
+TNU_NAME := Tiramisu
+TNU_FULL_NAME := Tiramisu
+TNU_VERSION := 1.0.0-stable
+TNU_CODENAME := espresso
+TNU_ARCH := x86_64
+TNU_HOME_URL := https://github.com/tnuproject
+TNU_BUG_REPORT_URL := https://github.com/tnuproject/tnu/issues
+TNU_ISO_NAME := $(TNU_PROJECT)-$(TNU_VERSION)-$(TNU_ARCH).iso

@@ -6,6 +6,7 @@ extern uint64_t pml4_table[];
 
 #define PTE_PRESENT 0x001ULL
 #define PTE_WRITABLE 0x002ULL
+#define PTE_USER 0x004ULL
 #define PTE_HUGE 0x080ULL
 
 #define PAGE_TABLE_ENTRIES 512
@@ -66,7 +67,10 @@ static int map_huge_identity(uintptr_t addr, uint64_t flags)
         if (!new_pdpt) {
             return -1;
         }
-        pml4_table[pml4_index] = ((uint64_t)(uintptr_t)new_pdpt) | PTE_PRESENT | PTE_WRITABLE;
+        pml4_table[pml4_index] = ((uint64_t)(uintptr_t)new_pdpt) |
+                                  PTE_PRESENT | PTE_WRITABLE | (flags & PTE_USER);
+    } else {
+        pml4_table[pml4_index] |= flags & PTE_USER;
     }
 
     uint64_t *pdpt = table_from_entry(pml4_table[pml4_index]);
@@ -75,12 +79,17 @@ static int map_huge_identity(uintptr_t addr, uint64_t flags)
         if (!new_pd) {
             return -1;
         }
-        pdpt[pdpt_index] = ((uint64_t)(uintptr_t)new_pd) | PTE_PRESENT | PTE_WRITABLE;
+        pdpt[pdpt_index] = ((uint64_t)(uintptr_t)new_pd) |
+                            PTE_PRESENT | PTE_WRITABLE | (flags & PTE_USER);
+    } else {
+        pdpt[pdpt_index] |= flags & PTE_USER;
     }
 
     uint64_t *pd = table_from_entry(pdpt[pdpt_index]);
     if (!(pd[pd_index] & PTE_PRESENT)) {
         pd[pd_index] = aligned | PTE_PRESENT | PTE_WRITABLE | PTE_HUGE | flags;
+    } else {
+        pd[pd_index] |= flags;
     }
     return 0;
 }

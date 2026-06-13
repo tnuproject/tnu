@@ -1,7 +1,7 @@
 #include <tnu/memory.h>
 #include <tnu/string.h>
 
-#define KERNEL_HEAP_SIZE (2 * 1024 * 1024)
+#define KERNEL_HEAP_SIZE (64 * 1024 * 1024)
 
 static uint8_t heap[KERNEL_HEAP_SIZE] __attribute__((aligned(16)));
 static size_t heap_offset;

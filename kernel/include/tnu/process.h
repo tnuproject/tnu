@@ -6,6 +6,7 @@
 
 #define PROCESS_NAME_MAX 31
 #define PROCESS_MAX 64
+#define PROCESS_SIGNAL_MAX 32
 
 enum process_state {
     PROCESS_UNUSED = 0,
@@ -25,6 +26,8 @@ struct process {
     char cwd[VFS_PATH_MAX];
     uint64_t started_ticks;
     int exit_code;
+    uint8_t signal_disposition[PROCESS_SIGNAL_MAX];
+    uintptr_t signal_handler[PROCESS_SIGNAL_MAX];
     struct file_descriptor fds[VFS_MAX_FDS];
 };
 

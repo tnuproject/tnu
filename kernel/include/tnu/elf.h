@@ -12,5 +12,6 @@ struct elf_image_info {
 };
 
 int elf64_validate(const void *image, size_t size, struct elf_image_info *info);
+int elf64_load(const void *image, size_t size);
 
 #endif

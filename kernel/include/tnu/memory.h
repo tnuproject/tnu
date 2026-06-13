@@ -5,6 +5,8 @@
 #include <tnu/types.h>
 
 #define PAGE_SIZE 4096UL
+#define VMM_FLAG_WRITABLE 0x002ULL
+#define VMM_FLAG_USER     0x004ULL
 
 struct memory_stats {
     uint64_t total_bytes;

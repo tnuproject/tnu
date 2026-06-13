@@ -1,11 +1,10 @@
-# TNU
+# Tiramisù
 
-TNU is a small x86_64 monolithic operating system built for systems
-programming study. It boots with GRUB, mounts a TFS root image, starts a
-kernel-hosted `tsh` shell, and provides a freestanding userspace tree that is
-compiled into ELF binaries for the next ring-3 loader milestone.
+Tiramisù is a small x86_64 monolithic operating system built for systems
+programming study. It boots with GRUB, mounts a TFS root image, starts `tsh`,
+and provides a freestanding userspace tree with native ELF binaries.
 
-Current release: **0.1.0 "espresso"**.
+Current release metadata is generated from [version.mk](version.mk).
 
 ## Status
 
@@ -23,14 +22,16 @@ Working today:
   and basic redirection.
 - Executable `#!/bin/tsh` scripts with arguments and simple variable expansion.
 - `/bin` applets for common Unix-like commands.
+- `pkg`, with a local `universe` mirror for installable Doom and Nano packages.
 - Read-only probe foundations for ext2, ext4, and FAT32 metadata.
+- Ring-3 ELF execution for the current static userspace model.
 
 Not finished yet:
 
-- Ring-3 ELF execution.
+- Per-process address spaces and a full `fork`/`exec`/`wait` process model.
 - Persistent writable TFS on real disks.
 - Real disk installation from `sysinstall`.
-- Full TCP/IP, DNS, DHCP, HTTP, Git transport, or package downloads.
+- DHCP, HTTP, Git transport, remote package downloads, and WiFi association.
 - Full ext2/ext4/FAT32 mounting and writing.
 
 ## Build
@@ -55,7 +56,7 @@ make verify
 The ISO is written to:
 
 ```text
-build/tnu.iso
+build/<project>-<version>-<arch>.iso
 ```
 
 The ISO contains `/boot/kernel.elf`, `/boot/root.tfs`,
@@ -98,8 +99,17 @@ kernel/fs/     TFS, VFS, procfs, devfs, and filesystem probes
 rootfs/        files packed into the boot TFS image
 tools/         host-side image builders
 userspace/     freestanding libc, shell, init, sbin tools, and applets
+universe/      default package repository metadata for pkg
 ```
 
 ## License
 
 See [LICENSE](LICENSE).
+
+## FreeBSD Acknowledgement
+
+The local `freebsd-src/` tree may be used as a reference for BSD-licensed
+interfaces and driver design. Any FreeBSD-derived source imported into
+Tiramisù must retain its original copyright notices and license conditions.
+FreeBSD is copyright The FreeBSD Project and its contributors; see
+`freebsd-src/COPYRIGHT`.

@@ -82,3 +82,30 @@ int elf64_validate(const void *image, size_t size, struct elf_image_info *info)
     }
     return 0;
 }
+
+int elf64_load(const void *image, size_t size)
+{
+    struct elf_image_info info;
+    if (elf64_validate(image, size, &info) < 0) {
+        return -1;
+    }
+    if (info.lowest_vaddr < 0x4000000 || info.highest_vaddr > 0x5000000) {
+        return -1;
+    }
+
+    const struct elf64_ehdr *eh = image;
+    for (uint16_t i = 0; i < eh->e_phnum; i++) {
+        const struct elf64_phdr *ph =
+            (const struct elf64_phdr *)((const uint8_t *)image + eh->e_phoff +
+                                        (uint64_t)i * eh->e_phentsize);
+        if (ph->p_type != PT_LOAD) {
+            continue;
+        }
+        void *dest = (void *)(uintptr_t)ph->p_vaddr;
+        memcpy(dest, (const uint8_t *)image + ph->p_offset, (size_t)ph->p_filesz);
+        if (ph->p_memsz > ph->p_filesz) {
+            memset((uint8_t *)dest + ph->p_filesz, 0, (size_t)(ph->p_memsz - ph->p_filesz));
+        }
+    }
+    return 0;
+}

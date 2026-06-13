@@ -92,6 +92,10 @@ int process_kill(int pid)
     if (!p || p->pid == 1) {
         return -1;
     }
+    struct process *caller = process_current();
+    if (!caller || (caller->uid != 0 && caller->uid != p->uid)) {
+        return -1;
+    }
     process_exit(p, -1);
     return 0;
 }
@@ -130,7 +134,7 @@ int process_open_fd(struct process *proc, struct vfs_node *node, int flags)
         if (!proc->fds[i].used) {
             proc->fds[i].used = true;
             proc->fds[i].flags = flags;
-            proc->fds[i].offset = 0;
+            proc->fds[i].offset = (flags & VFS_O_APPEND) ? node->size : 0;
             proc->fds[i].node = node;
             return i;
         }

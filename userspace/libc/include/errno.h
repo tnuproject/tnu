@@ -28,6 +28,7 @@ extern int errno;
 #define EMFILE  24
 #define ENOSPC  28
 #define EROFS   30
+#define ERANGE  34
 #define ENOSYS  38
 
 #endif

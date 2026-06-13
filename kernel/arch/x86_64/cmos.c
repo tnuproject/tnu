@@ -1,5 +1,8 @@
 #include <arch/io.h>
+#include <arch/pit.h>
 #include <tnu/time.h>
+
+static uint64_t boot_epoch;
 
 static uint8_t cmos_read(uint8_t reg)
 {
@@ -47,4 +50,55 @@ int rtc_read_time(struct rtc_time *out)
     out->minute = minute;
     out->second = second;
     return 0;
+}
+
+static bool leap_year(int year)
+{
+    return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+}
+
+static int days_in_month(int year, int month)
+{
+    static const int days[] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+    if (month == 2 && leap_year(year)) {
+        return 29;
+    }
+    return days[month - 1];
+}
+
+static uint64_t rtc_to_epoch(const struct rtc_time *t)
+{
+    uint64_t days = 0;
+    for (int y = 1970; y < t->year; y++) {
+        days += leap_year(y) ? 366 : 365;
+    }
+    for (int m = 1; m < t->month; m++) {
+        days += (uint64_t)days_in_month(t->year, m);
+    }
+    days += (uint64_t)(t->day - 1);
+    return days * 86400ull + (uint64_t)t->hour * 3600ull +
+           (uint64_t)t->minute * 60ull + (uint64_t)t->second;
+}
+
+void time_init(void)
+{
+    struct rtc_time now;
+    boot_epoch = rtc_read_time(&now) == 0 ? rtc_to_epoch(&now) : 0;
+}
+
+uint64_t time_now_seconds(void)
+{
+    struct rtc_time now;
+    return rtc_read_time(&now) == 0 ? rtc_to_epoch(&now) : boot_epoch + pit_uptime_seconds();
+}
+
+uint64_t time_uptime_seconds(void)
+{
+    uint64_t pit = pit_uptime_seconds();
+    if (!boot_epoch) {
+        return pit;
+    }
+    uint64_t now = time_now_seconds();
+    uint64_t rtc = now >= boot_epoch ? now - boot_epoch : 0;
+    return rtc > pit ? rtc : pit;
 }
