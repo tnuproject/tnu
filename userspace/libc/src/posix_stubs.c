@@ -107,23 +107,74 @@ int sigaction(int sig, const struct sigaction *act, struct sigaction *oldact)
 
 int tcgetattr(int fd, struct termios *termios_p)
 {
-    (void)fd;
     if (!termios_p) {
         errno = EINVAL;
         return -1;
     }
+    /* Ask the kernel for the current TTY state via TCGETS ioctl.
+     * Map the kernel's syscall_termios layout into the user termios struct. */
+    struct syscall_termios kt;
+    int tty_fd = (fd >= 0 && fd <= 2) ? 0 : fd; /* use fd 0 as the representative tty fd */
+    /* Open /dev/tty to get a proper VFS node for the ioctl */
+    int devfd = open("/dev/tty", O_RDONLY);
+    if (devfd >= 0) {
+        int rc = (int)tnu_syscall(SYS_IOCTL, devfd, TNU_IOCTL_TCGETS, (long)&kt, 0, 0, 0);
+        close(devfd);
+        if (rc == 0) {
+            termios_p->c_iflag  = IXON | ICRNL;
+            termios_p->c_oflag  = (kt.c_lflag & TNU_TTYF_ICANON) ? OPOST : 0;
+            termios_p->c_cflag  = 0;
+            termios_p->c_lflag  = 0;
+            if (kt.c_lflag & TNU_TTYF_ICANON) termios_p->c_lflag |= ICANON;
+            if (kt.c_lflag & TNU_TTYF_ECHO)   termios_p->c_lflag |= ECHO;
+            if (kt.c_lflag & TNU_TTYF_ISIG)   termios_p->c_lflag |= ISIG;
+            termios_p->c_lflag |= IEXTEN;
+            termios_p->c_cc[VTIME] = kt.c_cc[5];
+            termios_p->c_cc[VMIN]  = kt.c_cc[6];
+            return 0;
+        }
+    }
+    /* Fallback: return sane defaults */
+    (void)tty_fd;
     memset(termios_p, 0, sizeof(*termios_p));
     termios_p->c_lflag = ECHO | ICANON | ISIG | IEXTEN;
     termios_p->c_iflag = IXON;
     termios_p->c_oflag = OPOST;
+    termios_p->c_cc[VMIN]  = 1;
+    termios_p->c_cc[VTIME] = 0;
     return 0;
 }
 
 int tcsetattr(int fd, int optional_actions, const struct termios *termios_p)
 {
+    if (!termios_p) {
+        errno = EINVAL;
+        return -1;
+    }
     (void)fd;
-    (void)optional_actions;
-    (void)termios_p;
+
+    /* Translate user termios to kernel syscall_termios */
+    struct syscall_termios kt;
+    __builtin_memset(&kt, 0, sizeof(kt));
+    if (termios_p->c_lflag & ICANON) kt.c_lflag |= TNU_TTYF_ICANON;
+    if (termios_p->c_lflag & ECHO)   kt.c_lflag |= TNU_TTYF_ECHO;
+    if (termios_p->c_lflag & ISIG)   kt.c_lflag |= TNU_TTYF_ISIG;
+    kt.c_cc[5] = termios_p->c_cc[VTIME];
+    kt.c_cc[6] = termios_p->c_cc[VMIN];
+
+    unsigned long req;
+    switch (optional_actions) {
+    case TCSADRAIN:  req = TNU_IOCTL_TCSETSW; break;
+    case TCSAFLUSH:  req = TNU_IOCTL_TCSETSF; break;
+    default:         req = TNU_IOCTL_TCSETS;  break;
+    }
+
+    int devfd = open("/dev/tty", O_RDONLY);
+    if (devfd >= 0) {
+        int rc = (int)tnu_syscall(SYS_IOCTL, devfd, (long)req, (long)&kt, 0, 0, 0);
+        close(devfd);
+        return rc;
+    }
     return 0;
 }
 
@@ -396,28 +447,17 @@ int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
 
 int poll(struct pollfd *fds, nfds_t nfds, int timeout)
 {
-    (void)timeout;
     if (!fds && nfds) {
         errno = EINVAL;
         return -1;
     }
-    int ready = 0;
-    for (nfds_t i = 0; i < nfds; i++) {
-        fds[i].revents = 0;
-        if (fds[i].fd < 0) {
-            continue;
-        }
-        if (fds[i].events & POLLIN) {
-            fds[i].revents |= POLLIN;
-        }
-        if (fds[i].events & POLLOUT) {
-            fds[i].revents |= POLLOUT;
-        }
-        if (fds[i].revents) {
-            ready++;
-        }
+    /* Delegate to the kernel poll syscall which properly checks stdin availability */
+    long rc = tnu_syscall(SYS_POLL, (long)fds, (long)nfds, timeout, 0, 0, 0);
+    if (rc < 0) {
+        errno = EINVAL;
+        return -1;
     }
-    return ready;
+    return (int)rc;
 }
 
 void *mmap(void *addr, size_t length, int prot, int flags, int fd, long offset)
@@ -498,11 +538,13 @@ int fcntl(int fd, int cmd, ...)
 
 int nanosleep(const struct timespec *req, struct timespec *rem)
 {
-    (void)req;
-    if (rem) {
-        rem->tv_sec = 0;
-        rem->tv_nsec = 0;
+    if (!req) {
+        errno = EINVAL;
+        return -1;
     }
+    /* Use the kernel SYS_NANOSLEEP syscall which busy-waits via PIT */
+    long rc = tnu_syscall(SYS_NANOSLEEP, (long)req, (long)rem, 0, 0, 0, 0);
+    if (rc < 0) { errno = EINTR; return -1; }
     return 0;
 }
 
@@ -519,12 +561,20 @@ int gettimeofday(struct timeval *tv, void *tz)
 
 unsigned int sleep(unsigned int seconds)
 {
-    (void)seconds;
+    if (seconds == 0) return 0;
+    struct timespec req;
+    req.tv_sec  = (long)seconds;
+    req.tv_nsec = 0;
+    tnu_syscall(SYS_NANOSLEEP, (long)&req, 0, 0, 0, 0, 0);
     return 0;
 }
 
 int usleep(unsigned long usec)
 {
-    (void)usec;
+    if (usec == 0) return 0;
+    struct timespec req;
+    req.tv_sec  = (long)(usec / 1000000UL);
+    req.tv_nsec = (long)((usec % 1000000UL) * 1000UL);
+    tnu_syscall(SYS_NANOSLEEP, (long)&req, 0, 0, 0, 0, 0);
     return 0;
 }

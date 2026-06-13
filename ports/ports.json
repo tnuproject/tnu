@@ -39,6 +39,24 @@
       ]
     },
     {
+      "name": "fastfetch",
+      "kind": "system-info",
+      "upstream": "tnu-native",
+      "source": "ports/fastfetch/src/fastfetch.c",
+      "license": "MIT",
+      "target_binary": "/usr/bin/fastfetch",
+      "required_features": [
+        "exec",
+        "proc_filesystem",
+        "framebuffer_ioctl",
+        "tty_ioctl",
+        "filesystem_read"
+      ],
+      "dependencies": [
+        "libc"
+      ]
+    },
+    {
       "name": "curl",
       "kind": "network-tool",
       "upstream": "curl",

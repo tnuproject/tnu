@@ -2,6 +2,9 @@
 .code64
 
 .extern syscall_dispatch
+.extern log_info
+.extern arch_enter_user_debug_log
+.extern arch_enter_user_dump_stack
 
 .global syscall_entry
 syscall_entry:
@@ -139,12 +142,13 @@ arch_enter_user:
     movw %dx, %ds
     movw %dx, %es
 
-    /* iretq pops: RIP, CS, RFLAGS, RSP, SS (lowest address first) */
-    pushq $0x1b          /* SS  = user data */
-    pushq %rsi           /* RSP = user stack */
-    pushq $0x202         /* RFLAGS: IF=1, reserved bit 1 */
-    pushq $0x23          /* CS  = user code */
-    pushq %rdi           /* RIP = entry point */
+    /* iretq pops (in this order): RIP, CS, RFLAGS, RSP, SS
+     * Push them in reverse order (last item pushed = first item popped) */
+    pushq $0x1b          /* SS  = user data (5th pop) */
+    pushq %rsi           /* RSP = user stack (4th pop) */
+    pushq $0x202         /* RFLAGS: IF=1, reserved bit 1 (3rd pop) */
+    pushq $0x23          /* CS  = user code (2nd pop) */
+    pushq %rdi           /* RIP = entry point (1st pop) */
     iretq
 
 .global arch_abort_user

@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
+#include <time.h>
 #include <tnu/syscall.h>
 
 /* ------------------------------------------------------------------ */
@@ -177,7 +178,7 @@ void DG_SleepMs(uint32_t ms)
     uint64_t start = (uint64_t)tnu_syscall(SYS_UPTIME_MS, 0, 0, 0, 0, 0, 0);
     uint64_t end   = start + ms;
     while ((uint64_t)tnu_syscall(SYS_UPTIME_MS, 0, 0, 0, 0, 0, 0) < end)
-        ;
+        __asm__ volatile("pause");
 }
 
 uint32_t DG_GetTicksMs(void)

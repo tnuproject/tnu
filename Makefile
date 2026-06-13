@@ -68,7 +68,8 @@ IWM_FW_SRC := $(shell find freebsd-src/sys/contrib/dev/iwm -maxdepth 1 -name '*.
 LINUX_IWL_FW_SRC := $(shell find rootfs/lib/firmware rootfs/lib/firmware/iwlwifi /lib/firmware /lib/firmware/iwlwifi -maxdepth 1 \( -name 'iwlwifi-*.ucode' -o -name 'iwlwifi-*.fw' \) 2>/dev/null | sort -u)
 
 .PHONY: all kernel userspace iso run clean rootfs version-files permission-tests verify verify-kernel verify-iso \
-	firmware-iwlwifi ports-preflight ports-fetch ports-fetch-core
+	firmware-iwlwifi ports-preflight ports-fetch ports-fetch-core \
+	nano doom fastfetch
 
 all: iso
 
@@ -77,12 +78,16 @@ kernel: $(KERNEL)
 userspace: $(USER_LIB) $(BUILD)/user/init $(BUILD)/user/tsh \
 	$(BUILD)/user/tnu-utils $(BUILD)/user/login $(BUILD)/user/passwd \
 	$(BUILD)/user/useradd $(BUILD)/user/userdel $(BUILD)/user/sysinstall \
-	$(BUILD)/user/nano $(BUILD)/user/doom
+	$(BUILD)/user/nano $(BUILD)/user/doom $(BUILD)/user/fastfetch
+
+nano: $(BUILD)/user/nano
+doom: $(BUILD)/user/doom
+fastfetch: $(BUILD)/user/fastfetch $(BUILD)/user/fastfetch
 
 iso: $(ISO)
 
 run: $(ISO)
-	$(QEMU) -m 512M -cdrom $(ISO) -vga std -serial stdio -no-reboot -no-shutdown
+	$(QEMU) -m 1G -cdrom $(ISO) -vga std -serial file:/tmp/qemu_serial.log
 
 clean:
 	rm -rf $(BUILD)
@@ -179,6 +184,12 @@ $(BUILD)/user/doom: $(USER_LIB) $(USER_CRT) userspace/linker.ld \
 		USER_CRT="$(abspath $(USER_CRT))" \
 		USER_LIB="$(abspath $(USER_LIB))"
 
+$(BUILD)/user/fastfetch: $(USER_LIB) $(USER_CRT) userspace/linker.ld \
+	$(shell find ports/fastfetch/src -type f 2>/dev/null)
+	$(MAKE) -C ports/fastfetch CC="$(CC)" \
+		USER_CRT="$(abspath $(USER_CRT))" \
+		USER_LIB="$(abspath $(USER_LIB))"
+
 rootfs: userspace version-files firmware-iwlwifi
 	rm -rf $(BUILD)/rootfs
 	mkdir -p $(BUILD)/rootfs
@@ -200,6 +211,7 @@ rootfs: userspace version-files firmware-iwlwifi
 	for name in $(COREUTIL_NAMES); do cp $(BUILD)/user/tnu-utils $(BUILD)/rootfs/bin/$$name; done
 	cp $(BUILD)/user/nano $(BUILD)/rootfs/bin/nano
 	cp $(BUILD)/user/doom $(BUILD)/rootfs/usr/games/doom
+	cp $(BUILD)/user/fastfetch $(BUILD)/rootfs/usr/bin/fastfetch
 	cp -a $(BUILD)/firmware/iwlwifi/. $(BUILD)/rootfs/lib/firmware/iwlwifi/
 
 $(ROOTFS): rootfs tools/mktfs.py

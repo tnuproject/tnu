@@ -65,6 +65,8 @@ static volatile size_t read_pos;
 static volatile size_t write_pos;
 static volatile uint64_t interrupt_generation;
 static volatile uint64_t interrupt_consumed_generation;
+static volatile uint64_t irq_count = 0;
+static volatile uint64_t poll_count = 0;
 
 static bool key_down[128];
 static bool ext_key_down[128];
@@ -806,6 +808,7 @@ static void process_scancode(uint8_t scancode)
 
 static void keyboard_poll(void)
 {
+    poll_count++;
     for (size_t i = 0; i < 64; i++) {
         uint8_t status = inb(I8042_STATUS);
 
@@ -825,6 +828,7 @@ static void keyboard_poll(void)
 
 void keyboard_handle_irq(void)
 {
+    irq_count++;
     keyboard_poll();
 }
 
@@ -841,12 +845,7 @@ int keyboard_getchar(void)
 
 int keyboard_try_getchar(void)
 {
-    /*
-     * Polling fallback:
-     * useful on early kernels if IRQ1/PIC/APIC routing is not fully correct yet.
-     */
-    keyboard_poll();
-
+    /* Do NOT poll here - let IRQ handler fill the buffer */
     if (read_pos == write_pos) {
         return -1;
     }
@@ -855,6 +854,14 @@ int keyboard_try_getchar(void)
     read_pos = (read_pos + 1) % KBD_BUFFER;
 
     return c;
+}
+
+void keyboard_debug_stats(void)
+{
+    extern void log_info(const char *tag, const char *fmt, ...);
+    size_t avail = (write_pos >= read_pos) ? (write_pos - read_pos) : (KBD_BUFFER - read_pos + write_pos);
+    log_info("kbd", "IRQ count: %llu, poll count: %llu, buffer avail: %lu", 
+             (unsigned long long)irq_count, (unsigned long long)poll_count, (unsigned long)avail);
 }
 
 bool keyboard_input_available(void)

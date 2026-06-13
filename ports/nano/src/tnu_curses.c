@@ -444,20 +444,20 @@ int wgetch(WINDOW *win)
     int c = read_byte();
     if (c == ERR) return ERR;
 
-    if (c == 27) { /* ESC sequence */
-        /* set non-blocking briefly to detect escape vs sequence */
+    if (c == 27) { /* ESC — try to read an escape sequence */
+        /* Switch to non-blocking / short-timeout mode to detect sequence body */
         struct termios t;
         tcgetattr(STDIN_FILENO, &t);
-        t.c_cc[VMIN]  = 0;
-        t.c_cc[VTIME] = 1; /* 100ms */
-        tcsetattr(STDIN_FILENO, TCSANOW, &t);
+        struct termios raw = t;
+        raw.c_cc[VMIN]  = 0;
+        raw.c_cc[VTIME] = 1; /* 100 ms */
+        tcsetattr(STDIN_FILENO, TCSANOW, &raw);
 
+        /* Read up to 8 bytes of sequence body in one window */
         unsigned char seq[8];
-        int n = (int)read(STDIN_FILENO, seq, 2);
+        int n = (int)read(STDIN_FILENO, seq, sizeof(seq));
 
-        /* restore blocking */
-        t.c_cc[VMIN]  = 1;
-        t.c_cc[VTIME] = 0;
+        /* Restore blocking mode */
         tcsetattr(STDIN_FILENO, TCSANOW, &t);
 
         if (n <= 0) return 27; /* bare ESC */
@@ -471,26 +471,22 @@ int wgetch(WINDOW *win)
             case 'D': return KEY_LEFT;
             case 'H': return KEY_HOME;
             case 'F': return KEY_END;
-            case '1': { /* \e[1~ home or \e[1;5C etc */
-                unsigned char extra[4]; int en = (int)read(STDIN_FILENO, extra, 1);
-                if (en > 0 && extra[0] == '~') return KEY_HOME;
-                return KEY_HOME;
-            }
-            case '3': { unsigned char x; read(STDIN_FILENO, &x, 1); return KEY_DC; }
-            case '4': { unsigned char x; read(STDIN_FILENO, &x, 1); return KEY_END; }
-            case '5': { unsigned char x; read(STDIN_FILENO, &x, 1); return KEY_PPAGE; }
-            case '6': { unsigned char x; read(STDIN_FILENO, &x, 1); return KEY_NPAGE; }
-            case '7': { unsigned char x; read(STDIN_FILENO, &x, 1); return KEY_HOME; }
-            case '8': { unsigned char x; read(STDIN_FILENO, &x, 1); return KEY_END; }
             case 'Z': return KEY_F(1); /* Shift+Tab */
+            /* \e[N~ style */
+            case '1': return (n >= 3 && seq[2] == '~') ? KEY_HOME : KEY_HOME;
+            case '2': return (n >= 3 && seq[2] == '~') ? KEY_IC   : KEY_IC;
+            case '3': return KEY_DC;   /* \e[3~ */
+            case '4': return KEY_END;  /* \e[4~ */
+            case '5': return KEY_PPAGE;/* \e[5~ */
+            case '6': return KEY_NPAGE;/* \e[6~ */
+            case '7': return KEY_HOME; /* \e[7~ */
+            case '8': return KEY_END;  /* \e[8~ */
             default:
-                /* F1-F12 */
+                /* F1-F12: \e[NNm or \e[NN~ */
                 if (seq[1] >= '1' && seq[1] <= '9') {
-                    /* read until ~ */
-                    unsigned char buf2[4]; int m = (int)read(STDIN_FILENO, buf2, 2);
                     int code = seq[1] - '0';
-                    if (m > 0 && buf2[0] >= '0' && buf2[0] <= '9')
-                        code = code * 10 + buf2[0] - '0';
+                    if (n >= 3 && seq[2] >= '0' && seq[2] <= '9')
+                        code = code * 10 + seq[2] - '0';
                     switch (code) {
                     case 11: return KEY_F(1);
                     case 12: return KEY_F(2);
@@ -521,10 +517,12 @@ int wgetch(WINDOW *win)
             default:  return 27;
             }
         }
+        /* Alt+key: push the real key back and return ESC */
+        /* (nano interprets ESC+key as Meta prefix itself) */
+        if (n >= 1) ungetch(seq[0]);
         return 27;
     }
 
-    /* Ctrl+A = KEY_HOME, Ctrl+E = KEY_END in some nano configs */
     if (c == '\r') c = '\n';
     return c;
 }

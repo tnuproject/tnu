@@ -920,7 +920,9 @@ int console_getchar(void)
             return c;
         }
         console_cursor_blink_tick();
-        cpu_pause();
+        /* Use HLT to sleep until next interrupt */
+        cpu_sti();
+        __asm__ volatile("hlt");
     }
 }
 

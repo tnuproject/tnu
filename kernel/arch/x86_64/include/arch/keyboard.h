@@ -10,6 +10,7 @@ int keyboard_getchar(void);
 bool keyboard_input_available(void);
 bool keyboard_consume_interrupt(void);
 void keyboard_ack_interrupt(void);
+void keyboard_debug_stats(void);
 int keyboard_set_layout(const char *name);
 const char *keyboard_current_layout(void);
 const char *keyboard_available_layouts(void);

@@ -237,9 +237,16 @@ static void clear_user_range_preserving_boot_modules(uintptr_t start, uintptr_t 
     }
 }
 static bool user_exec_active;
-static char tty_pending[8];
+static char tty_pending[64];
 static size_t tty_pending_len;
 static size_t tty_pending_pos;
+
+/* Per-session TTY mode (set by tcsetattr / TCSETS ioctl).
+ * Defaults: canonical + echo + signals (ICANON | ECHO | ISIG), VMIN=1, VTIME=0.
+ * When ICANON is cleared we switch to raw character-at-a-time mode with VMIN/VTIME. */
+static uint32_t tty_c_lflag = TNU_TTYF_ICANON | TNU_TTYF_ECHO | TNU_TTYF_ISIG;
+static uint8_t  tty_vmin    = 1;
+static uint8_t  tty_vtime   = 0; /* in tenths of a second */
 
 enum {
     SIGINT_NUMBER = 2,
@@ -322,6 +329,7 @@ static int tty_read_byte(struct process *proc)
     for (;;) {
         char c;
         if (tty_pending_pop(&c)) {
+            log_info("tty", "pop pending char %d (%c)", (int)(unsigned char)c, (c >= 32 && c < 127) ? c : '\\0');
             return (unsigned char)c;
         }
         int ch = console_getchar();
@@ -339,7 +347,9 @@ static int tty_read_byte(struct process *proc)
             console_switch_tty((size_t)(ch - KEY_TTY1));
             continue;
         }
-        return tty_encode_key(ch, proc);
+        int encoded = tty_encode_key(ch, proc);
+        log_info("tty", "console getchar returned %d, encoded %d (%c)", ch, encoded, (encoded >= 32 && encoded < 127) ? (char)encoded : '\\0');
+        return encoded;
     }
 }
 
@@ -460,18 +470,73 @@ static long sys_read(int fd, void *buf, size_t count)
     struct process *proc = process_current();
     if (fd == 0) {
         char *cbuf = buf;
-        for (size_t i = 0; i < count; i++) {
-            int ch = tty_read_byte(proc);
-            if (ch < 0) {
-                /* CTRL+C killed the process — return to kernel */
-                return (long)syscall_encode_result(130, SYSCALL_RET_TO_KERNEL);
+        bool canonical = (tty_c_lflag & TNU_TTYF_ICANON) != 0;
+        uint8_t vmin  = tty_vmin;
+        uint8_t vtime = tty_vtime;
+
+        if (canonical) {
+            /* Line-buffered: return on newline */
+            for (size_t i = 0; i < count; i++) {
+                int ch = tty_read_byte(proc);
+                if (ch < 0) {
+                    return (long)syscall_encode_result(130, SYSCALL_RET_TO_KERNEL);
+                }
+                cbuf[i] = (char)ch;
+                if (cbuf[i] == '\n') {
+                    return (long)i + 1;
+                }
             }
-            cbuf[i] = (char)ch;
-            if (cbuf[i] == '\n') {
-                return (long)i + 1;
-            }
+            return (long)count;
         }
-        return (long)count;
+
+        /* Raw mode: honour VMIN / VTIME */
+        if (vmin == 0 && vtime == 0) {
+            /* Fully non-blocking: return whatever is available right now */
+            size_t n = 0;
+            while (n < count) {
+                int ch = tty_try_read_byte(proc);
+                if (ch < 0) break;
+                cbuf[n++] = (char)ch;
+            }
+            return (long)n;
+        }
+
+        if (vmin > 0 && vtime == 0) {
+            /* Block until at least vmin bytes are available */
+            size_t n = 0;
+            size_t need = vmin < count ? vmin : count;
+            while (n < need) {
+                int ch = tty_read_byte(proc);
+                if (ch < 0) {
+                    return (long)syscall_encode_result(130, SYSCALL_RET_TO_KERNEL);
+                }
+                cbuf[n++] = (char)ch;
+            }
+            /* Drain any remaining bytes that are immediately available */
+            while (n < count) {
+                int ch = tty_try_read_byte(proc);
+                if (ch < 0) break;
+                cbuf[n++] = (char)ch;
+            }
+            return (long)n;
+        }
+
+        /* vtime > 0: timed read (vtime * 100ms deadline) */
+        {
+            uint64_t deadline = pit_get_ticks() + (uint64_t)vtime * (PIT_HZ / 10);
+            size_t n = 0;
+            while (n < count) {
+                int ch = tty_try_read_byte(proc);
+                if (ch >= 0) {
+                    cbuf[n++] = (char)ch;
+                    if (vmin > 0 && n >= vmin) break;
+                    deadline = pit_get_ticks() + (uint64_t)vtime * (PIT_HZ / 10);
+                } else {
+                    if (pit_get_ticks() >= deadline) break;
+                }
+            }
+            return (long)n;
+        }
     }
     struct file_descriptor *file = process_get_fd(proc, fd);
     if (!file) {
@@ -490,17 +555,66 @@ static long sys_read(int fd, void *buf, size_t count)
         }
         if (strcmp(file->node->name, "tty") == 0 || strcmp(file->node->name, "console") == 0) {
             char *cbuf = buf;
-            for (size_t i = 0; i < count; i++) {
-                int ch = tty_read_byte(proc);
-                if (ch < 0) {
-                    return (long)syscall_encode_result(130, SYSCALL_RET_TO_KERNEL);
+            bool canonical = (tty_c_lflag & TNU_TTYF_ICANON) != 0;
+            uint8_t vmin  = tty_vmin;
+            uint8_t vtime = tty_vtime;
+
+            if (canonical) {
+                for (size_t i = 0; i < count; i++) {
+                    int ch = tty_read_byte(proc);
+                    if (ch < 0) {
+                        return (long)syscall_encode_result(130, SYSCALL_RET_TO_KERNEL);
+                    }
+                    cbuf[i] = (char)ch;
+                    if (cbuf[i] == '\n') {
+                        return (long)i + 1;
+                    }
                 }
-                cbuf[i] = (char)ch;
-                if (cbuf[i] == '\n') {
-                    return (long)i + 1;
-                }
+                return (long)count;
             }
-            return (long)count;
+
+            /* Raw mode: same VMIN/VTIME logic as fd==0 */
+            if (vmin == 0 && vtime == 0) {
+                size_t n = 0;
+                while (n < count) {
+                    int ch = tty_try_read_byte(proc);
+                    if (ch < 0) break;
+                    cbuf[n++] = (char)ch;
+                }
+                return (long)n;
+            }
+            if (vmin > 0 && vtime == 0) {
+                size_t n = 0;
+                size_t need = vmin < count ? vmin : count;
+                while (n < need) {
+                    int ch = tty_read_byte(proc);
+                    if (ch < 0) {
+                        return (long)syscall_encode_result(130, SYSCALL_RET_TO_KERNEL);
+                    }
+                    cbuf[n++] = (char)ch;
+                }
+                while (n < count) {
+                    int ch = tty_try_read_byte(proc);
+                    if (ch < 0) break;
+                    cbuf[n++] = (char)ch;
+                }
+                return (long)n;
+            }
+            {
+                uint64_t deadline = pit_get_ticks() + (uint64_t)vtime * (PIT_HZ / 10);
+                size_t n = 0;
+                while (n < count) {
+                    int ch = tty_try_read_byte(proc);
+                    if (ch >= 0) {
+                        cbuf[n++] = (char)ch;
+                        if (vmin > 0 && n >= vmin) break;
+                        deadline = pit_get_ticks() + (uint64_t)vtime * (PIT_HZ / 10);
+                    } else {
+                        if (pit_get_ticks() >= deadline) break;
+                    }
+                }
+                return (long)n;
+            }
         }
         if (strcmp(file->node->name, "kbd") == 0) {
             unsigned char *cbuf = buf;
@@ -727,6 +841,27 @@ static long sys_ioctl(int fd, unsigned long request, void *arg)
         ws->ws_ypixel = (uint16_t)console_pixel_height();
         return 0;
     }
+    /* TCGETS / TCSETS — get/set TTY termios state */
+    if (strcmp(file->node->name, "tty") == 0 || strcmp(file->node->name, "console") == 0) {
+        if (request == TNU_IOCTL_TCGETS) {
+            if (!arg) return -1;
+            struct syscall_termios *t = arg;
+            memset(t, 0, sizeof(*t));
+            t->c_lflag = tty_c_lflag;
+            t->c_cc[5] = tty_vtime; /* VTIME */
+            t->c_cc[6] = tty_vmin;  /* VMIN  */
+            return 0;
+        }
+        if (request == TNU_IOCTL_TCSETS || request == TNU_IOCTL_TCSETSW ||
+            request == TNU_IOCTL_TCSETSF) {
+            if (!arg) return -1;
+            const struct syscall_termios *t = arg;
+            tty_c_lflag = t->c_lflag & (TNU_TTYF_ICANON | TNU_TTYF_ECHO | TNU_TTYF_ISIG);
+            tty_vtime   = t->c_cc[5];
+            tty_vmin    = t->c_cc[6];
+            return 0;
+        }
+    }
     return -1;
 }
 
@@ -735,10 +870,10 @@ static long sys_exec_image(const char *path, int argc, char **argv)
     enum {
         USER_BASE = 0x4000000,
         USER_HEAP_BASE = 0x8000000,
-        USER_STACK_BOTTOM_SMALL = 0x17c00000,
-        USER_STACK_TOP_SMALL = 0x18000000,
-        USER_STACK_BOTTOM_LARGE = 0x2fc00000,
-        USER_STACK_TOP_LARGE = 0x30000000,
+        USER_STACK_BOTTOM_SMALL = 0x30000000,  /* 768MB - leave room for boot modules */
+        USER_STACK_TOP_SMALL = 0x30400000,    /* 4MB stack */
+        USER_STACK_BOTTOM_LARGE = 0x40000000,  /* 1GB */
+        USER_STACK_TOP_LARGE = 0x40400000,
         MAX_ARGS = 16,
         MAX_ARG_LEN = 127,
     };
@@ -784,8 +919,11 @@ static long sys_exec_image(const char *path, int argc, char **argv)
 
     struct elf_image_info info;
     if (elf64_validate(node->data, (size_t)node->size, &info) < 0) {
+        log_warn("exec", "ELF validation failed for %s", resolved);
         return -1;
     }
+    log_info("exec", "ELF entry=%p lowest=%p highest=%p",
+             (void *)info.entry, (void *)info.lowest_vaddr, (void *)info.highest_vaddr);
     uintptr_t user_stack_bottom = USER_STACK_BOTTOM_SMALL;
     uintptr_t user_stack_top = USER_STACK_TOP_SMALL;
     const struct memory_stats *mem = memory_stats_get();
@@ -825,13 +963,19 @@ static long sys_exec_image(const char *path, int argc, char **argv)
 
     /* Map code region, heap region, and stack region */
     if (vmm_map_range_identity(USER_BASE, user_heap_limit - USER_BASE,
-                               VMM_FLAG_WRITABLE | VMM_FLAG_USER) < 0 ||
-        vmm_map_range_identity(user_stack_bottom, user_stack_top - user_stack_bottom,
                                VMM_FLAG_WRITABLE | VMM_FLAG_USER) < 0) {
+        log_warn("exec", "vmm_map_range_identity failed for code region");
+        return -1;
+    }
+    if (vmm_map_range_identity(user_stack_bottom, user_stack_top - user_stack_bottom,
+                               VMM_FLAG_WRITABLE | VMM_FLAG_USER) < 0) {
+        log_warn("exec", "vmm_map_range_identity failed for stack region");
         return -1;
     }
 
-    clear_user_range_preserving_boot_modules(USER_BASE, user_heap_limit);
+    /* Disabled: clearing 700MB+ is too slow. ELF loader overwrites needed pages.
+     * BSS is zeroed by elf64_load. Stack is zeroed separately below. */
+    /* clear_user_range_preserving_boot_modules(USER_BASE, user_heap_limit); */
     memset((void *)user_stack_bottom, 0, user_stack_top - user_stack_bottom);
     /* brk starts just after the highest ELF segment, page-aligned */
     uintptr_t elf_end = page_align_up((uintptr_t)info.highest_vaddr);
@@ -950,6 +1094,107 @@ static long sys_brk(uintptr_t next)
     return (long)user_brk_current;
 }
 
+/* Kernel-side timespec (matches user ABI: two 64-bit values) */
+struct user_timespec {
+    int64_t tv_sec;
+    int64_t tv_nsec;
+};
+
+struct user_pollfd {
+    int     fd;
+    short   events;
+    short   revents;
+};
+
+#define POLLIN  0x0001
+#define POLLOUT 0x0004
+#define POLLERR 0x0008
+#define POLLHUP 0x0010
+
+static long sys_nanosleep(const struct user_timespec *req,
+                          struct user_timespec *rem)
+{
+    if (!req || !uptr_ok(req, sizeof(*req))) return -1;
+    int64_t sec  = req->tv_sec;
+    int64_t nsec = req->tv_nsec;
+    if (sec < 0 || nsec < 0 || nsec >= 1000000000LL) return -1;
+
+    uint64_t ms = (uint64_t)sec * 1000ULL + (uint64_t)(nsec / 1000000LL);
+    if (ms == 0) {
+        if (rem) { rem->tv_sec = 0; rem->tv_nsec = 0; }
+        return 0;
+    }
+
+    uint64_t deadline = pit_get_ticks() + ms * PIT_HZ / 1000u;
+    while (pit_get_ticks() < deadline) {
+        cpu_pause();
+    }
+    if (rem) { rem->tv_sec = 0; rem->tv_nsec = 0; }
+    return 0;
+}
+
+/* poll: only supports fd 0/stdin and tty devices (read-readiness) */
+static long sys_poll(struct user_pollfd *fds, uint32_t nfds, int timeout_ms)
+{
+    if (!fds || !uptr_ok(fds, nfds * sizeof(*fds))) return -1;
+
+    /* For timeout_ms == 0: non-blocking check */
+    uint64_t deadline = 0;
+    bool timed = false;
+    if (timeout_ms > 0) {
+        deadline = pit_get_ticks() + (uint64_t)timeout_ms * PIT_HZ / 1000u;
+        timed = true;
+    }
+
+    struct process *proc = process_current();
+
+    for (;;) {
+        int ready = 0;
+        for (uint32_t i = 0; i < nfds; i++) {
+            fds[i].revents = 0;
+            if (fds[i].fd < 0) continue;
+
+            bool is_tty = (fds[i].fd == 0 || fds[i].fd == 1 || fds[i].fd == 2);
+            if (!is_tty) {
+                struct file_descriptor *file = process_get_fd(proc, fds[i].fd);
+                if (file && file->node &&
+                    (file->node->type == VFS_NODE_DEV) &&
+                    (strcmp(file->node->name, "tty") == 0 ||
+                     strcmp(file->node->name, "console") == 0)) {
+                    is_tty = true;
+                }
+            }
+
+            if (fds[i].events & POLLIN) {
+                if (is_tty) {
+                    /* check if keyboard has a byte available */
+                    int ch = tty_try_read_byte(proc);
+                    if (ch >= 0) {
+                        /* push it back into pending buffer - ALWAYS */
+                        if (tty_pending_len < sizeof(tty_pending)) {
+                            tty_pending[tty_pending_len++] = (char)ch;
+                        }
+                        fds[i].revents |= POLLIN;
+                    }
+                } else {
+                    /* regular file: always readable */
+                    fds[i].revents |= POLLIN;
+                }
+            }
+            if (fds[i].events & POLLOUT) {
+                fds[i].revents |= POLLOUT;
+            }
+            if (fds[i].revents) ready++;
+        }
+
+        if (ready > 0) return ready;
+        if (timeout_ms == 0) return 0;
+        if (timed && pit_get_ticks() >= deadline) return 0;
+
+        cpu_pause();
+    }
+}
+
 long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
                       uint64_t a3, uint64_t a4, uint64_t a5)
 {
@@ -998,12 +1243,17 @@ long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
     case SYS_IOCTL:
         return sys_ioctl((int)a0, (unsigned long)a1, (void *)a2);
     case SYS_UPTIME_MS:
-        return (long)(pit_ticks() * 10);
+        return (long)(pit_ticks() * (1000u / PIT_HZ));
     case SYS_BRK:
         return sys_brk((uintptr_t)a0);
     case SYS_SIGACTION:
         return sys_sigaction((int)a0, (const struct user_sigaction_abi *)a1,
                              (struct user_sigaction_abi *)a2);
+    case SYS_NANOSLEEP:
+        return sys_nanosleep((const struct user_timespec *)a0,
+                             (struct user_timespec *)a1);
+    case SYS_POLL:
+        return sys_poll((struct user_pollfd *)a0, (uint32_t)a1, (int)a2);
     case SYS_CHDIR: {
         struct vfs_node *node = vfs_lookup((const char *)a0, proc->cwd);
         if (!node || node->type != VFS_NODE_DIR || !has_perm(proc, node, 1)) {
