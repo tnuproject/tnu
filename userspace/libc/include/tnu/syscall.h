@@ -1,13 +1,11 @@
-#ifndef TNU_USER_SYSCALL_H
-#define TNU_USER_SYSCALL_H
+#ifndef TNU_SYSCALL_H
+#define TNU_SYSCALL_H
 
-#include <stddef.h>
 #include <stdint.h>
+#include <stddef.h>
 #include <sys/types.h>
 
-struct stat;
-
-enum {
+enum syscall_number {
     SYS_READ = 0,
     SYS_WRITE = 1,
     SYS_OPEN = 2,
@@ -39,20 +37,28 @@ enum {
     SYS_FSTAT = 28,
     SYS_NANOSLEEP = 29,
     SYS_POLL = 30,
+    /* Block device syscalls for disk I/O */
+    SYS_BLOCK_GET_COUNT = 31,
+    SYS_BLOCK_GET_INFO = 32,
+    SYS_BLOCK_READ = 33,
+    SYS_BLOCK_WRITE = 34,
+    SYS_BLOCK_SYNC = 35,
+    SYS_LOGIN = 36,
 };
 
 #define TNU_IOCTL_FB_GETINFO 0x544e4601u
 #define TNU_IOCTL_TTY_GETSIZE 0x544e5401u
 #define TNU_IOCTL_TIOCGWINSZ 0x5413u
-/* Standard Linux termios ioctl numbers */
-#define TNU_IOCTL_TCGETS  0x5401u
-#define TNU_IOCTL_TCSETS  0x5402u
-#define TNU_IOCTL_TCSETSW 0x5403u
-#define TNU_IOCTL_TCSETSF 0x5404u
+/* Standard Linux termios ioctl numbers (used by musl/glibc ABI) */
+#define TNU_IOCTL_TCGETS  0x5401u   /* TCGETS  — get termios */
+#define TNU_IOCTL_TCSETS  0x5402u   /* TCSETS  — set termios (immediate) */
+#define TNU_IOCTL_TCSETSW 0x5403u   /* TCSETSW — set termios (after drain) */
+#define TNU_IOCTL_TCSETSF 0x5404u   /* TCSETSF — set termios (after flush) */
 
-#define TNU_TTYF_ICANON  0x0002u
-#define TNU_TTYF_ECHO    0x0008u
-#define TNU_TTYF_ISIG    0x0001u
+/* Minimal termios flags needed by the kernel TTY layer */
+#define TNU_TTYF_ICANON  0x0002u   /* canonical (line-buffered) mode */
+#define TNU_TTYF_ECHO    0x0008u   /* echo input */
+#define TNU_TTYF_ISIG    0x0001u   /* generate signals */
 
 struct syscall_termios {
     uint32_t c_iflag;
@@ -82,45 +88,7 @@ struct syscall_winsize {
     uint16_t ws_ypixel;
 };
 
-#define O_RDONLY 0x0
-#define O_WRONLY 0x1
-#define O_RDWR   0x2
-#define O_CREAT  0x40
-#define O_TRUNC  0x200
-#define O_APPEND 0x400
-#define O_EXCL   0x800
-
-long tnu_syscall(long n, long a0, long a1, long a2, long a3, long a4, long a5);
-ssize_t read(int fd, void *buf, size_t count);
-ssize_t write(int fd, const void *buf, size_t count);
-int open(const char *path, int flags, ...);
-int close(int fd);
-int spawn(const char *path);
-int exec(const char *path);
-int execv(const char *path, char *const argv[]);
-int execvp(const char *file, char *const argv[]);
-int wait(int pid);
-void exit(int code) __attribute__((noreturn));
-int getpid(void);
-int getppid(void);
-int getuid(void);
-int getgid(void);
-int chdir(const char *path);
-int getcwd(char *buf, size_t size);
-int mkdir(const char *path, mode_t mode);
-int unlink(const char *path);
-int stat(const char *path, struct stat *st);
-int fstat(int fd, struct stat *st);
-int chmod(const char *path, mode_t mode);
-int chown(const char *path, uid_t uid, gid_t gid);
-off_t lseek(int fd, off_t offset, int whence);
-int access(const char *path, int mode);
-int dup(int oldfd);
-int dup2(int oldfd, int newfd);
-int readdir_fd(int fd, struct syscall_dirent *out);
-int ioctl(int fd, unsigned long request, ...);
-uint64_t uptime_ms(void);
-void *sbrk(intptr_t increment);
-int brk(void *addr);
+long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
+                      uint64_t a3, uint64_t a4, uint64_t a5);
 
 #endif

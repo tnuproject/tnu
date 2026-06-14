@@ -466,11 +466,28 @@ static void fb_scroll(void)
         memmove(fb_cells[0], fb_cells[1], (rows - 1) * sizeof(fb_cells[0]));
         memmove(fb_attrs[0], fb_attrs[1], (rows - 1) * sizeof(fb_attrs[0]));
     }
+
     for (size_t x = 0; x < cols && x < FB_MAX_COLS; x++) {
         fb_cells[rows - 1][x] = ' ';
         fb_attrs[rows - 1][x] = color;
     }
-    fb_redraw_text_area();
+
+    if (backend == CONSOLE_BACKEND_FB) {
+        /* Fast path: move framebuffer pixels once, then clear only the last text row.
+         * The old code called fb_redraw_text_area(), which redrew every glyph on
+         * every scroll and is painfully slow on real uncached/WC-less framebuffers.
+         */
+        framebuffer_scroll_up((uint32_t)FB_CELL_H, bg_rgb());
+    } else {
+        /* VGA text mode is already cheap: update text memory linearly. */
+        for (size_t y = 0; y < rows && y < FB_MAX_ROWS; y++) {
+            for (size_t x = 0; x < cols && x < FB_MAX_COLS; x++) {
+                vga[y * VGA_WIDTH + x] =
+                    (uint16_t)(unsigned char)fb_cells[y][x] |
+                    ((uint16_t)fb_attrs[y][x] << 8);
+            }
+        }
+    }
 }
 
 static void scroll(void)

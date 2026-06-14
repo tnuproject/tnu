@@ -150,37 +150,8 @@ void arch_entry(uint32_t magic, uintptr_t mbi_addr)
     vfs_init();
     boot_ok();
 
-    boot_begin("Root filesystem (TFS)");
-    if (boot->rootfs.start && boot->rootfs.end > boot->rootfs.start) {
-        size_t size = (size_t)(boot->rootfs.end - boot->rootfs.start);
-        log_info("rootfs", "module root.tfs at %p-%p (%llu KiB)",
-                 (void *)boot->rootfs.start, (void *)boot->rootfs.end,
-                 (unsigned long long)(size / 1024));
-        if (tfs_mount_image((const void *)boot->rootfs.start, size) < 0) {
-            log_warn("rootfs", "root.tfs module present but not a valid TFS image");
-            boot_warn();
-        } else {
-            boot_ok();
-        }
-    } else {
-        log_warn("rootfs", "no root.tfs module supplied; using empty root");
-        boot_warn();
-    }
-
     boot_begin("Device filesystem");
     devfs_init();
-    boot_ok();
-
-    boot_begin("User accounts");
-    users_init();
-    boot_ok();
-
-    boot_begin("Process table");
-    process_init();
-    boot_ok();
-
-    boot_begin("Proc filesystem");
-    procfs_init();
     boot_ok();
 
     /* ------------------------------------------------------------------ */
@@ -223,12 +194,52 @@ void arch_entry(uint32_t magic, uintptr_t mbi_addr)
     ata_init();
     boot_ok();
 
+    boot_begin("NVMe storage");
+    nvme_init();
+    boot_ok();
+
     boot_begin("AHCI storage");
     ahci_init();
     boot_ok();
 
     boot_begin("USB");
     usb_init();
+    boot_ok();
+
+    boot_begin("Root filesystem (TFS)");
+    if (tfs_mount_installed_root() == 0) {
+        boot_ok();
+    } else if (boot->rootfs.start && boot->rootfs.end > boot->rootfs.start) {
+        size_t size = (size_t)(boot->rootfs.end - boot->rootfs.start);
+        log_info("rootfs", "module root.tfs at %p-%p (%llu KiB)",
+                 (void *)boot->rootfs.start, (void *)boot->rootfs.end,
+                 (unsigned long long)(size / 1024));
+        if (tfs_mount_image((const void *)boot->rootfs.start, size) < 0) {
+            log_warn("rootfs", "root.tfs module present but not a valid TFS image");
+            boot_warn();
+        } else {
+            boot_ok();
+        }
+    } else {
+        log_warn("rootfs", "no disk TFS and no root.tfs module supplied; using empty root");
+        boot_warn();
+    }
+
+    /* Recreate volatile device nodes after mounting root, so /dev is always live. */
+    boot_begin("Device filesystem refresh");
+    devfs_init();
+    boot_ok();
+
+    boot_begin("User accounts");
+    users_init();
+    boot_ok();
+
+    boot_begin("Process table");
+    process_init();
+    boot_ok();
+
+    boot_begin("Proc filesystem");
+    procfs_init();
     boot_ok();
 
     boot_begin("Network stack");

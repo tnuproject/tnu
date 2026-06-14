@@ -8,6 +8,10 @@
 #define TFS_VERSION 1
 #define TFS_PATH_MAX 256
 
+/* Fallback used by sysinstall's current GPT layout when no partition layer exists. */
+#define TFS_DEFAULT_ROOT_LBA 526336u
+#define TFS_SYNC_BUFFER_MAX  (64u * 1024u * 1024u)
+
 enum tfs_entry_type {
     TFS_ENTRY_DIR = 1,
     TFS_ENTRY_FILE = 2,
@@ -33,5 +37,16 @@ struct tfs_entry {
 };
 
 int tfs_mount_image(const void *image, size_t size);
+
+/* Persistent root support. These functions serialize the in-memory VFS back to
+ * the TFS image on disk. They are intentionally simple for now: every VFS
+ * mutation rewrites the compact TFS image. This is slower than a real inode
+ * allocator, but makes /etc/passwd, /etc/shadow, /home and user files persist. */
+int tfs_mount_disk(const char *device, uint64_t start_lba);
+int tfs_mount_installed_root(void);
+int tfs_sync(void);
+bool tfs_is_persistent(void);
+void tfs_set_auto_sync(bool enabled);
+int tfs_sync_if_mounted(void);
 
 #endif

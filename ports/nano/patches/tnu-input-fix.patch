@@ -1,0 +1,137 @@
+From: Tiramisu OS <dev@tnu.local>
+Date: Sat, 14 Jun 2025 00:00:00 +0000
+Subject: [PATCH] Fix keyboard input for TNU
+
+Use /dev/input/kbd for raw keyboard events instead of /dev/tty
+to properly handle key presses in raw mode.
+
+---
+ ports/nano/src/tnu_curses.c | 80 +++++++++++++++++++++++++++++++-------
+ 1 file changed, 65 insertions(+, 15 deletions(-)
+
+diff --git a/ports/nano/src/tnu_curses.c b/ports/nano/src/tnu_curses.c
+index 1234567..abcdefg 100644
+--- a/ports/nano/src/tnu_curses.c
++++ b/ports/nano/src/tnu_curses.c
+@@ -12,6 +12,9 @@
+ #include <termios.h>
+ #include <fcntl.h>
+ #include <poll.h>
++#include <sys/stat.h>
++
++static int kbd_fd = -1;
+ 
+ /* ------------------------------------------------------------------ */
+ /* Global state                                                         */
+@@ -43,6 +46,28 @@ static short cpairs[COLOR_PAIRS][2];
+ /* ------------------------------------------------------------------ */
+ /* ANSI helpers                                                         */
+ /* ------------------------------------------------------------------ */
++
++static int open_keyboard(void)
++{
++    if (kbd_fd >= 0) return kbd_fd;
++    kbd_fd = open("/dev/input/kbd", O_RDONLY);
++    return kbd_fd;
++}
++
++static int try_read_kbd(void)
++{
++    int fd = open_keyboard();
++    if (fd < 0) return -1;
++
++    uint16_t event;
++    ssize_t r = read(fd, &event, sizeof(event));
++    if (r != sizeof(event)) return -1;
++
++    /* Check release bit (bit 15) */
++    if (event & 0x8000) return -1; /* ignore releases for now */
++
++    return (int)(event & 0x7fff);
++}
+ 
+ static void tnu_write(const char *s, size_t n)
+ {
+@@ -435,6 +460,22 @@ int start_color(void)
+ /* Input                                                                */
+ /* ------------------------------------------------------------------ */
+ 
++/* Map special TNU keys to ncurses KEY_* */
++static int map_tnu_key(int k)
++{
++    if (k == 0x101) return KEY_UP;
++    if (k == 0x102) return KEY_DOWN;
++    if (k == 0x103) return KEY_LEFT;
++    if (k == 0x104) return KEY_RIGHT;
++    if (k == 0x105) return KEY_HOME;
++    if (k == 0x106) return KEY_END;
++    if (k == 0x107) return KEY_DC;
++    if (k == 0x108) return 3;  /* CTRL+C */
++    return k;
++}
++
+ static int read_byte(void)
+ {
+     unsigned char c;
+@@ -454,26 +495,35 @@ int wgetch(WINDOW *win)
+     if (ungetch_len > 0)
+         return ungetch_buf[--ungetch_len];
+ 
+-    int c = read_byte();
+-    if (c == ERR) return ERR;
++    /* First try /dev/input/kbd for special keys */
++    int kbd = try_read_kbd();
++    if (kbd >= 0) {
++        int mapped = map_tnu_key(kbd);
++        if (mapped != kbd) return mapped;
++        /* Fall through for regular chars */
++    }
+ 
+-    if (c == 27) { /* ESC — try to read an escape sequence */
+-        /* Use poll() to check if more data is available within timeout */
+-        struct pollfd pfd = { .fd = STDIN_FILENO, .events = POLLIN };
+-        int ret = poll(&pfd, 1, 100); /* 100ms timeout */
++    /* Fall back to standard input for regular characters */
++    int c = read_byte();
++    if (c == ERR) {
++        /* If keyboard has data, return that even if we tried first */
++        if (kbd >= 0) {
++            int mapped = map_tnu_key(kbd);
++            if (mapped != kbd) return mapped;
++        }
++        return ERR;
++    }
+ 
+-        if (ret <= 0) {
+-            return 27; /* bare ESC */
+-        }
++    if (c == 27) { /* ESC — try to read an escape sequence */
++        /* Use poll() to check if more data is available */
++        struct pollfd pfd = { .fd = STDIN_FILENO, .events = POLLIN };
++        int ret = poll(&pfd, 1, 50); /* 50ms timeout */
+ 
+-        /* Read up to 8 bytes of sequence body */
+-        unsigned char seq[8];
+-        ssize_t n = read(STDIN_FILENO, seq, sizeof(seq));
+-        if (n <= 0) return 27; /* bare ESC */
++        if (ret > 0) {
++            unsigned char seq[8];
++            ssize_t n = read(STDIN_FILENO, seq, sizeof(seq));
++            if (n > 0 && seq[0] == '[') {
++                if (n >= 2) {
++                    switch (seq[1]) {
++                    case 'A': return KEY_UP;
++                    case 'B': return KEY_DOWN;
++                    case 'C': return KEY_RIGHT;
++                    case 'D': return KEY_LEFT;
++                    case 'H': return KEY_HOME;
++                    case 'F': return KEY_END;
++                    }
++                }
++            }
++        }
++        return 27; /* bare ESC */
++    }
+ 
+-        if (seq[0] == '[') {
+-

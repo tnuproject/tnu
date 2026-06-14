@@ -34,6 +34,14 @@ struct env_pair {
     char value[128];
 };
 
+static const char *env_get_value(const char *key);
+static bool shell_can_execute_node(struct vfs_node *node);
+static bool bin_entry_exists(const char *name);
+static struct vfs_node *resolve_command_node(const char *command, char *resolved, size_t resolved_size);
+static const char *command_basename(const char *path);
+
+static int shell_apply_user_session(const char *name);
+static int shell_authenticate_user(const char *name, bool interactive);
 static char history[HISTORY_MAX][LINE_MAX];
 static size_t history_count;
 static struct env_pair envs[ENV_MAX];
@@ -615,6 +623,57 @@ static void read_password(char *line, size_t size)
     }
 }
 
+static void read_plain_line(char *line, size_t size)
+{
+    size_t len = 0;
+    line[0] = '\0';
+    for (;;) {
+        int ch = console_getchar();
+        if (ch == '\n' || ch == '\r') {
+            console_putc('\n');
+            line[len] = '\0';
+            return;
+        }
+        if (ch == KEY_CTRL_C) {
+            keyboard_ack_interrupt();
+            kprintf("^C\n");
+            line[0] = '\0';
+            return;
+        }
+        if (ch == '\b' || ch == 127) {
+            if (len) {
+                len--;
+                console_putc('\b');
+            }
+            continue;
+        }
+        if (ch >= 32 && ch <= 255 && len + 1 < size) {
+            line[len++] = (char)ch;
+            console_putc((char)ch);
+        }
+    }
+}
+
+static void login_prompt(void)
+{
+    for (;;) {
+        char user[LINE_MAX];
+        kprintf("\nTiramisu login: ");
+        read_plain_line(user, sizeof(user));
+        if (!user[0]) {
+            continue;
+        }
+        if (shell_authenticate_user(user, true) < 0) {
+            continue;
+        }
+        if (shell_apply_user_session(user) < 0) {
+            kprintf("login: cannot start session for %s\n", user);
+            continue;
+        }
+        return;
+    }
+}
+
 static size_t shell_operator_len(const char *p)
 {
     if ((p[0] == '&' && p[1] == '&') ||
@@ -989,35 +1048,73 @@ static int cmd_cd(int argc, char **argv)
     return 0;
 }
 
+static int shell_apply_user_session(const char *name)
+{
+    if (user_login(name) < 0) {
+        return -1;
+    }
+    struct process *p = process_current();
+    const struct user_record *u = user_current();
+    if (!p || !u) {
+        return -1;
+    }
+    p->uid = u->uid;
+    p->gid = u->gid;
+    strncpy(p->cwd, u->home, sizeof(p->cwd) - 1);
+    p->cwd[sizeof(p->cwd) - 1] = '\0';
+    return 0;
+}
+
+static int shell_authenticate_user(const char *name, bool interactive)
+{
+    if (!name || !name[0]) {
+        return -1;
+    }
+    if (!user_find_name(name)) {
+        if (interactive) {
+            kprintf("login: unknown user: %s\n", name);
+        }
+        return -1;
+    }
+
+    char password[LINE_MAX];
+    kprintf("Password: ");
+    read_password(password, sizeof(password));
+
+    /* Accounts without a password intentionally accept an empty line. */
+    if (user_has_password(name)) {
+        if (user_login_password(name, password) < 0) {
+            if (interactive) {
+                kprintf("login: authentication failed\n");
+            }
+            return -1;
+        }
+        return 0;
+    }
+
+    if (password[0] != '\0') {
+        if (interactive) {
+            kprintf("login: account has no password; press Enter on an empty password prompt\n");
+        }
+        return -1;
+    }
+    return shell_apply_user_session(name);
+}
+
 static int cmd_login(int argc, char **argv)
 {
     if (argc != 2) {
         kprintf("usage: login USER\n");
         return 1;
     }
-    if (!user_find_name(argv[1])) {
-        kprintf("login: unknown user: %s\n", argv[1]);
+    if (shell_authenticate_user(argv[1], true) < 0) {
         return 1;
     }
-    char password[LINE_MAX];
-    if (user_has_password(argv[1])) {
-        kprintf("Password: ");
-        read_password(password, sizeof(password));
-    } else {
-        password[0] = '\0';
-        kprintf("login: warning: %s has no password set\n", argv[1]);
-    }
-    if (user_login_password(argv[1], password) < 0) {
-        kprintf("login: authentication failed\n");
+    if (shell_apply_user_session(argv[1]) < 0) {
+        kprintf("login: cannot switch session to %s\n", argv[1]);
         return 1;
     }
-    struct process *p = process_current();
-    const struct user_record *u = user_current();
-    p->uid = u->uid;
-    p->gid = u->gid;
-    strncpy(p->cwd, u->home, sizeof(p->cwd) - 1);
-    p->cwd[sizeof(p->cwd) - 1] = '\0';
-    kprintf("logged in as %s\n", u->name);
+    kprintf("logged in as %s\n", user_current()->name);
     return 0;
 }
 
@@ -1997,6 +2094,7 @@ void tsh_run(void)
 {
     init_env();
     init_keymap();
+    login_prompt();
     char motd[512];
     read_file_text("/etc/motd", motd, sizeof(motd), "Welcome to Tiramisu.");
     kprintf("\n%s\n\n", motd);

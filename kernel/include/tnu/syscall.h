@@ -35,6 +35,13 @@ enum syscall_number {
     SYS_FSTAT = 28,
     SYS_NANOSLEEP = 29,
     SYS_POLL = 30,
+    /* Block device syscalls for disk I/O */
+    SYS_BLOCK_GET_COUNT = 31,
+    SYS_BLOCK_GET_INFO = 32,
+    SYS_BLOCK_READ = 33,
+    SYS_BLOCK_WRITE = 34,
+    SYS_BLOCK_SYNC = 35,
+    SYS_LOGIN = 36,
 };
 
 #define TNU_IOCTL_FB_GETINFO 0x544e4601u

@@ -2,6 +2,7 @@
 #include <stdarg.h>
 #include <string.h>
 #include <unistd.h>
+#include <fcntl.h>
 
 long tnu_syscall(long n, long a0, long a1, long a2, long a3, long a4, long a5)
 {
@@ -211,4 +212,38 @@ void *sbrk(intptr_t increment)
         return (void *)-1;
     }
     return (void *)current;
+}
+
+/* Block device I/O functions for disk installation */
+long block_get_count(void)
+{
+    return tnu_syscall(SYS_BLOCK_GET_COUNT, 0, 0, 0, 0, 0, 0);
+}
+
+int block_get_info(long index, struct block_info *info)
+{
+    if (!info) {
+        return -1;
+    }
+    return (int)tnu_syscall(SYS_BLOCK_GET_INFO, index, (long)info, 0, 0, 0, 0);
+}
+
+ssize_t block_read(long index, uint64_t lba, void *buf, size_t bytes)
+{
+    return tnu_syscall(SYS_BLOCK_READ, index, (long)lba, (long)buf, (long)bytes, 0, 0);
+}
+
+ssize_t block_write(long index, uint64_t lba, const void *buf, size_t bytes)
+{
+    return tnu_syscall(SYS_BLOCK_WRITE, index, (long)lba, (long)buf, (long)bytes, 0, 0);
+}
+
+int block_sync(long index)
+{
+    return (int)tnu_syscall(SYS_BLOCK_SYNC, index, 0, 0, 0, 0, 0);
+}
+
+int login_session(const char *user, const char *password)
+{
+    return (int)tnu_syscall(SYS_LOGIN, (long)user, (long)password, 0, 0, 0, 0);
 }

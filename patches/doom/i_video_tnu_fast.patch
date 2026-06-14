@@ -1,0 +1,129 @@
+--- i_video.c	2026-06-14 12:36:27.252008406 +0000
++++ i_video_tnu_fast.c	2026-06-14 12:37:04.300267716 +0000
+@@ -76,6 +76,19 @@
+ int fb_scaling = 1;
+ int usemouse = 0;
+ 
++/* TNU performance mode:
++ * Keep the upstream Doom renderer output at native 320x200 and let the
++ * TNU platform backend do exactly one final blit. The previous code tried
++ * to expand the 8-bit Doom framebuffer into a full-resolution RGB buffer
++ * inside i_video.c, and doomgeneric_tnu.c could scale/blit again afterwards.
++ * On real hardware this means massive uncached framebuffer traffic and can
++ * drop to ~1 FPS.
++ */
++#ifndef TNU_DOOM_FAST_NATIVE
++#define TNU_DOOM_FAST_NATIVE 1
++#endif
++
++
+ 
+ #ifdef CMAP256
+ 
+@@ -208,8 +221,17 @@
+     char *mode;
+ 
+ 	memset(&s_Fb, 0, sizeof(struct FB_ScreenInfo));
++#if TNU_DOOM_FAST_NATIVE
++    /* Keep the conversion buffer at Doom native resolution. The real screen
++     * size is handled by the TNU doomgeneric backend, so this file must not
++     * create a full-screen software framebuffer.
++     */
++	s_Fb.xres = SCREENWIDTH;
++	s_Fb.yres = SCREENHEIGHT;
++#else
+ 	s_Fb.xres = DOOMGENERIC_RESX;
+ 	s_Fb.yres = DOOMGENERIC_RESY;
++#endif
+ 	s_Fb.xres_virtual = s_Fb.xres;
+ 	s_Fb.yres_virtual = s_Fb.yres;
+ 
+@@ -273,6 +295,10 @@
+     printf("I_InitGraphics: DOOM screen size: w x h: %d x %d\n", SCREENWIDTH, SCREENHEIGHT);
+ 
+ 
++#if TNU_DOOM_FAST_NATIVE
++    fb_scaling = 1;
++    printf("I_InitGraphics: TNU fast native mode enabled, scaling disabled in i_video.c\n");
++#else
+     i = M_CheckParmWithArgs("-scaling", 1);
+     if (i > 0) {
+         i = atoi(myargv[i + 1]);
+@@ -282,8 +308,11 @@
+         fb_scaling = s_Fb.xres / SCREENWIDTH;
+         if (s_Fb.yres / SCREENHEIGHT < fb_scaling)
+             fb_scaling = s_Fb.yres / SCREENHEIGHT;
++        if (fb_scaling < 1)
++            fb_scaling = 1;
+         printf("I_InitGraphics: Auto-scaling factor: %d\n", fb_scaling);
+     }
++#endif
+ 
+ 
+     /* Allocate screen to draw to */
+@@ -320,19 +349,36 @@
+ 
+ void I_FinishUpdate (void)
+ {
++#if TNU_DOOM_FAST_NATIVE
++    /* Convert exactly SCREENWIDTH*SCREENHEIGHT pixels into DG_ScreenBuffer.
++     * No centering, no software upscale, no full-screen clear. This avoids
++     * writing megabytes of framebuffer data twice per frame on bare metal.
++     */
++    unsigned char *line_in = (unsigned char *)I_VideoBuffer;
++    unsigned char *line_out = (unsigned char *)DG_ScreenBuffer;
++
++    for (int y = 0; y < SCREENHEIGHT; y++) {
++#ifdef CMAP256
++        memcpy(line_out, line_in, SCREENWIDTH);
++        line_out += SCREENWIDTH;
++#else
++        cmap_to_fb(line_out, line_in, SCREENWIDTH);
++        line_out += SCREENWIDTH * (s_Fb.bits_per_pixel / 8);
++#endif
++        line_in += SCREENWIDTH;
++    }
++#else
+     int y;
+     int x_offset, y_offset, x_offset_end;
+     unsigned char *line_in, *line_out;
+ 
+     /* Offsets in case FB is bigger than DOOM */
+-    /* 600 = s_Fb heigt, 200 screenheight */
+-    /* 600 = s_Fb heigt, 200 screenheight */
+-    /* 2048 =s_Fb width, 320 screenwidth */
+     y_offset     = (((s_Fb.yres - (SCREENHEIGHT * fb_scaling)) * s_Fb.bits_per_pixel/8)) / 2;
+-    x_offset     = (((s_Fb.xres - (SCREENWIDTH  * fb_scaling)) * s_Fb.bits_per_pixel/8)) / 2; // XXX: siglent FB hack: /4 instead of /2, since it seems to handle the resolution in a funny way
+-    //x_offset     = 0;
++    x_offset     = (((s_Fb.xres - (SCREENWIDTH  * fb_scaling)) * s_Fb.bits_per_pixel/8)) / 2;
+     x_offset_end = ((s_Fb.xres - (SCREENWIDTH  * fb_scaling)) * s_Fb.bits_per_pixel/8) - x_offset;
+ 
++    (void)y_offset;
++
+     /* DRAW SCREEN */
+     line_in  = (unsigned char *) I_VideoBuffer;
+     line_out = (unsigned char *) DG_ScreenBuffer;
+@@ -346,7 +392,7 @@
+             line_out += x_offset;
+ #ifdef CMAP256
+             if (fb_scaling == 1) {
+-                memcpy(line_out, line_in, SCREENWIDTH); /* fb_width is bigger than Doom SCREENWIDTH... */
++                memcpy(line_out, line_in, SCREENWIDTH);
+             } else {
+                 int j;
+ 
+@@ -358,13 +404,13 @@
+                 }
+             }
+ #else
+-            //cmap_to_rgb565((void*)line_out, (void*)line_in, SCREENWIDTH);
+             cmap_to_fb((void*)line_out, (void*)line_in, SCREENWIDTH);
+ #endif
+             line_out += (SCREENWIDTH * fb_scaling * (s_Fb.bits_per_pixel/8)) + x_offset_end;
+         }
+         line_in += SCREENWIDTH;
+     }
++#endif
+ 
+ 	DG_DrawFrame();
+ }

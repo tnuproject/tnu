@@ -21,6 +21,34 @@
  */
 
 #define KBD_BUFFER 128
+/* Separate event buffer for /dev/input/kbd: uint16_t events with 0x8000=release */
+#define KBD_EVENT_BUFFER 256
+static uint16_t evt_buffer[KBD_EVENT_BUFFER];
+static volatile size_t evt_read_pos;
+static volatile size_t evt_write_pos;
+
+static void push_event(uint16_t ev)
+{
+    size_t next = (evt_write_pos + 1) % KBD_EVENT_BUFFER;
+    if (next == evt_read_pos) return; /* full, drop oldest */
+    evt_buffer[evt_write_pos] = ev;
+    evt_write_pos = next;
+}
+
+int keyboard_try_get_event(void)
+{
+    keyboard_poll();
+    if (evt_read_pos == evt_write_pos) return -1;
+    uint16_t ev = evt_buffer[evt_read_pos];
+    evt_read_pos = (evt_read_pos + 1) % KBD_EVENT_BUFFER;
+    return (int)(unsigned int)ev;
+}
+
+bool keyboard_event_available(void)
+{
+    keyboard_poll();
+    return evt_read_pos != evt_write_pos;
+}
 
 #define I8042_DATA 0x60
 #define I8042_STATUS 0x64
@@ -219,6 +247,8 @@ static void push_key(int key)
 
     buffer[write_pos] = key;
     write_pos = next;
+    /* Also push a make-event (no release flag) to the event buffer */
+    push_event((uint16_t)(key & 0x7fff));
 }
 
 static void i8042_io_wait(void)
@@ -575,6 +605,18 @@ static void process_extended_scancode(uint8_t scancode)
             altgr_down = 0;
         }
 
+        /* Push release event for special keys */
+        switch (code) {
+        case 0x47: push_event((uint16_t)(KEY_HOME  | 0x8000)); break;
+        case 0x48: push_event((uint16_t)(KEY_UP    | 0x8000)); break;
+        case 0x4b: push_event((uint16_t)(KEY_LEFT  | 0x8000)); break;
+        case 0x4d: push_event((uint16_t)(KEY_RIGHT | 0x8000)); break;
+        case 0x4f: push_event((uint16_t)(KEY_END   | 0x8000)); break;
+        case 0x50: push_event((uint16_t)(KEY_DOWN  | 0x8000)); break;
+        case 0x53: push_event((uint16_t)(KEY_DELETE| 0x8000)); break;
+        default: break;
+        }
+
         return;
     }
 
@@ -644,9 +686,19 @@ static void process_set1_scancode(uint8_t scancode)
             shift_down = left_shift_down || right_shift_down;
         } else if (code == 0x1d) {
             ctrl_down = 0;
+            push_event((uint16_t)(0x114 | 0x8000));  /* Release CTRL */
         } else if (code == 0x38) {
             alt_down = 0;
             altgr_down = 0;
+            push_event((uint16_t)(0x115 | 0x8000));  /* Release ALT */
+        } else if (code == 0x39) {
+            push_event((uint16_t)(0x113 | 0x8000));  /* Release SPACE */
+        }
+
+        /* Push release event for regular keys */
+        {
+            char c = layout_char(code);
+            if (c) push_event((uint16_t)((unsigned char)c | 0x8000));
         }
 
         return;
@@ -682,11 +734,20 @@ static void process_set1_scancode(uint8_t scancode)
 
     if (code == 0x1d) {
         ctrl_down = 1;
+        push_key(KEY_CTRL);  /* 0x114 - for Doom fire */
         return;
     }
 
     if (code == 0x38) {
         alt_down = 1;
+        push_key(KEY_ALT);   /* 0x115 - for Doom use */
+        return;
+    }
+
+    /* Handle SPACE (0x39) - send both normal char and special code for Doom */
+    if (code == 0x39) {
+        push_key(' ');  /* Normal space character for applications */
+        push_event(0x113); /* Also send special code for Doom */
         return;
     }
 
@@ -806,7 +867,7 @@ static void process_scancode(uint8_t scancode)
     process_set1_scancode(scancode);
 }
 
-static void keyboard_poll(void)
+void keyboard_poll(void)
 {
     poll_count++;
     for (size_t i = 0; i < 64; i++) {

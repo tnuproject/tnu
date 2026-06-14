@@ -100,12 +100,16 @@ static void trim_nl(char *s)
 /* Format bytes into human-readable string */
 static void fmt_bytes(unsigned long long kb, char *out, int outlen)
 {
-    if (kb >= 1024 * 1024)
-        snprintf(out, (size_t)outlen, "%.1f GiB", (double)kb / (1024.0 * 1024.0));
-    else if (kb >= 1024)
-        snprintf(out, (size_t)outlen, "%.0f MiB", (double)kb / 1024.0);
-    else
+    if (kb >= 1024 * 1024) {
+        unsigned long long gib = kb / (1024 * 1024);
+        unsigned long long frac = ((kb % (1024 * 1024)) * 10) / (1024 * 1024);
+        snprintf(out, (size_t)outlen, "%llu.%llu GiB", gib, frac);
+    } else if (kb >= 1024) {
+        unsigned long long mib = kb / 1024;
+        snprintf(out, (size_t)outlen, "%llu MiB", mib);
+    } else {
         snprintf(out, (size_t)outlen, "%llu KiB", kb);
+    }
 }
 
 /* Format uptime seconds into "Xh Ym Zs" */
@@ -131,12 +135,7 @@ static void fmt_uptime(unsigned long long secs, char *out, int outlen)
 #define LOGO_PATH "/etc/fastfetch-logo"
 
 static const char *builtin_logo[] = {
-    " ___________.__                  ",
-    " \\__    ___/|__|___________   __ ",
-    "   |    |   |  \\_  __ \\__  \\ /  \\",
-    "   |    |   |  ||  | \\// __ \\|  |/",
-    "   |____|   |__||__|  (____  /____/",
-    "                           \\/     ",
+    "Tiramisù",
     NULL
 };
 

@@ -2,6 +2,7 @@
 #define TNU_UNISTD_H
 
 #include <stddef.h>
+#include <stdint.h>
 #include <sys/types.h>
 #include <tnu/syscall.h>
 
@@ -21,6 +22,7 @@
 int access(const char *path, int mode);
 int dup(int oldfd);
 int dup2(int oldfd, int newfd);
+int exec(const char *path);
 int execl(const char *path, const char *arg, ...);
 int execv(const char *path, char *const argv[]);
 int execvp(const char *file, char *const argv[]);
@@ -32,7 +34,42 @@ int gethostname(char *name, size_t len);
 uid_t geteuid(void);
 int getppid(void);
 int isatty(int fd);
+/* file IO */
+ssize_t read(int fd, void *buf, size_t count);
+ssize_t write(int fd, const void *buf, size_t count);
+int close(int fd);
+off_t lseek(int fd, off_t offset, int whence);
+long tnu_syscall(long n, long a0, long a1, long a2, long a3, long a4, long a5);
+
+/* process */
+int spawn(const char *path);
+
+int getpid(void);
+int getppid(void);
+int getuid(void);
+int getgid(void);
+
+int wait(int pid);
+
+uid_t geteuid(void);
+gid_t getegid(void);
+
+int wait(int pid);
+
+/* filesystem */
+int chdir(const char *path);
+int getcwd(char *buf, size_t size);
+int unlink(const char *path);
+int mkdir(const char *path, mode_t mode);
+int rmdir(const char *path);
+/* timing */
+uint64_t uptime_ms(void);
+
+/* memory */
+void *sbrk(intptr_t increment);
 
 #define _PC_PIPE_BUF 1
+
+void _exit(int status) __attribute__((noreturn));
 
 #endif

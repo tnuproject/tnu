@@ -150,6 +150,34 @@ char *strdup(const char *s)
     return copy;
 }
 
+char *strtok(char *str, const char *delim)
+{
+    static char *last = NULL;
+    if (!str) str = last;
+    if (!str) return NULL;
+    
+    /* Skip leading delimiters */
+    while (*str && strchr(delim, *str)) str++;
+    if (!*str) {
+        last = NULL;
+        return NULL;
+    }
+    
+    char *token = str;
+    
+    /* Find end of token */
+    while (*str && !strchr(delim, *str)) str++;
+    
+    if (*str) {
+        *str = '\0';
+        last = str + 1;
+    } else {
+        last = NULL;
+    }
+    
+    return token;
+}
+
 char *strerror(int errnum)
 {
     switch (errnum) {

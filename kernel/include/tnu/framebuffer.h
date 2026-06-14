@@ -25,5 +25,6 @@ int framebuffer_putpixel(uint32_t x, uint32_t y, uint32_t rgb);
 int framebuffer_fillrect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t rgb);
 int framebuffer_blit(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
                      const uint32_t *pixels, uint32_t src_pitch_pixels);
+int framebuffer_scroll_up(uint32_t pixels, uint32_t clear_rgb);
 
 #endif

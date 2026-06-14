@@ -11,6 +11,7 @@
 #include <tnu/syscall_disposition.h>
 #include <tnu/user.h>
 #include <tnu/vfs.h>
+#include <tnu/block.h>
 
 #include <arch/cpu.h>
 #include <arch/keyboard.h>
@@ -44,6 +45,22 @@ static bool ustr_ok(const char *s)
     }
     uintptr_t v = (uintptr_t)s;
     return v >= 0x1000 && v < 0x0000800000000000ULL;
+}
+
+static int copy_user_string_bounded(const char *src, char *dst, size_t dst_size)
+{
+    if (!src || !dst || dst_size == 0 || !ustr_ok(src)) {
+        return -1;
+    }
+    for (size_t i = 0; i + 1 < dst_size; i++) {
+        char c = src[i];
+        dst[i] = c;
+        if (c == '\0') {
+            return 0;
+        }
+    }
+    dst[dst_size - 1] = '\0';
+    return -1;
 }
 
 static bool has_perm(const struct process *proc, const struct vfs_node *node, uint32_t perm)
@@ -329,7 +346,6 @@ static int tty_read_byte(struct process *proc)
     for (;;) {
         char c;
         if (tty_pending_pop(&c)) {
-            log_info("tty", "pop pending char %d (%c)", (int)(unsigned char)c, (c >= 32 && c < 127) ? c : '\\0');
             return (unsigned char)c;
         }
         int ch = console_getchar();
@@ -347,9 +363,7 @@ static int tty_read_byte(struct process *proc)
             console_switch_tty((size_t)(ch - KEY_TTY1));
             continue;
         }
-        int encoded = tty_encode_key(ch, proc);
-        log_info("tty", "console getchar returned %d, encoded %d (%c)", ch, encoded, (encoded >= 32 && encoded < 127) ? (char)encoded : '\\0');
-        return encoded;
+        return tty_encode_key(ch, proc);
     }
 }
 
@@ -491,7 +505,8 @@ static long sys_read(int fd, void *buf, size_t count)
 
         /* Raw mode: honour VMIN / VTIME */
         if (vmin == 0 && vtime == 0) {
-            /* Fully non-blocking: return whatever is available right now */
+            /* Fully non-blocking: poll and return whatever is available right now */
+            keyboard_poll();
             size_t n = 0;
             while (n < count) {
                 int ch = tty_try_read_byte(proc);
@@ -502,12 +517,15 @@ static long sys_read(int fd, void *buf, size_t count)
         }
 
         if (vmin > 0 && vtime == 0) {
-            /* Block until at least vmin bytes are available */
+            /* Block until at least vmin bytes are available.
+             * Use tty_read_byte which calls console_getchar: handles hlt,
+             * cursor blink, IRQ wakeup, and Ctrl+C correctly. */
             size_t n = 0;
             size_t need = vmin < count ? vmin : count;
             while (n < need) {
                 int ch = tty_read_byte(proc);
                 if (ch < 0) {
+                    if (n > 0) return (long)n;
                     return (long)syscall_encode_result(130, SYSCALL_RET_TO_KERNEL);
                 }
                 cbuf[n++] = (char)ch;
@@ -617,25 +635,22 @@ static long sys_read(int fd, void *buf, size_t count)
             }
         }
         if (strcmp(file->node->name, "kbd") == 0) {
-            unsigned char *cbuf = buf;
             size_t n = 0;
             if (count >= sizeof(uint16_t)) {
                 uint16_t *keys = buf;
                 size_t max_keys = count / sizeof(uint16_t);
                 while (n < max_keys) {
-                    int ch = input_try_read_raw_key();
-                    if (ch < 0) {
-                        break;
-                    }
-                    keys[n++] = (uint16_t)ch;
+                    int ev = keyboard_try_get_event();
+                    if (ev < 0) break;
+                    keys[n++] = (uint16_t)ev;
                 }
                 return (long)(n * sizeof(uint16_t));
             }
+            keyboard_poll();
+            unsigned char *cbuf = buf;
             while (n < count) {
                 int ch = tty_try_read_byte(proc);
-                if (ch < 0) {
-                    break;
-                }
+                if (ch < 0) break;
                 cbuf[n++] = (unsigned char)ch;
             }
             return (long)n;
@@ -1155,8 +1170,9 @@ static long sys_poll(struct user_pollfd *fds, uint32_t nfds, int timeout_ms)
             if (fds[i].fd < 0) continue;
 
             bool is_tty = (fds[i].fd == 0 || fds[i].fd == 1 || fds[i].fd == 2);
+            struct file_descriptor *file = NULL;
             if (!is_tty) {
-                struct file_descriptor *file = process_get_fd(proc, fds[i].fd);
+                file = process_get_fd(proc, fds[i].fd);
                 if (file && file->node &&
                     (file->node->type == VFS_NODE_DEV) &&
                     (strcmp(file->node->name, "tty") == 0 ||
@@ -1167,13 +1183,17 @@ static long sys_poll(struct user_pollfd *fds, uint32_t nfds, int timeout_ms)
 
             if (fds[i].events & POLLIN) {
                 if (is_tty) {
-                    /* check if keyboard has a byte available */
-                    int ch = tty_try_read_byte(proc);
-                    if (ch >= 0) {
-                        /* push it back into pending buffer - ALWAYS */
-                        if (tty_pending_len < sizeof(tty_pending)) {
-                            tty_pending[tty_pending_len++] = (char)ch;
-                        }
+                    /* check if we have pending bytes or keyboard buffer has data */
+                    bool has_pending = (tty_pending_len > tty_pending_pos);
+                    bool has_kbd = keyboard_input_available();
+                    if (has_pending || has_kbd) {
+                        fds[i].revents |= POLLIN;
+                    }
+                } else if (file && file->node && 
+                           (strcmp(file->node->name, "kbd") == 0 ||
+                            strcmp(file->node->name, "input/kbd") == 0)) {
+                    /* /dev/input/kbd - check event buffer */
+                    if (keyboard_event_available()) {
                         fds[i].revents |= POLLIN;
                     }
                 } else {
@@ -1191,8 +1211,116 @@ static long sys_poll(struct user_pollfd *fds, uint32_t nfds, int timeout_ms)
         if (timeout_ms == 0) return 0;
         if (timed && pit_get_ticks() >= deadline) return 0;
 
-        cpu_pause();
+        /* Wait for interrupt if blocking indefinitely or with timeout */
+        keyboard_poll(); /* Check for new input */
+        cpu_sti();
+        __asm__ volatile("hlt");
     }
+}
+
+/* Block device syscall implementations */
+struct user_block_info {
+    char name[64];
+    char description[128];
+    uint8_t writable;
+    uint8_t removable;
+    uint8_t reserved[2];
+    uint64_t sector_count;
+    uint32_t sector_size;
+    char transport[32];
+};
+
+static long sys_block_get_count(void)
+{
+    return (long)block_device_count();
+}
+
+static long sys_block_get_info(uint32_t index, struct user_block_info *out)
+{
+    if (!out || !uptr_ok(out, sizeof(*out))) {
+        return -1;
+    }
+    const struct block_device_info *info = block_device_get((size_t)index);
+    if (!info) {
+        return -1;
+    }
+    memset(out, 0, sizeof(*out));
+    strncpy(out->name, info->name ? info->name : "", sizeof(out->name) - 1);
+    strncpy(out->description, info->description ? info->description : "", sizeof(out->description) - 1);
+    out->writable = info->writable ? 1 : 0;
+    out->removable = info->removable ? 1 : 0;
+    out->sector_count = info->sector_count;
+    out->sector_size = info->sector_size;
+    strncpy(out->transport, info->transport ? info->transport : "", sizeof(out->transport) - 1);
+    return 0;
+}
+
+static long sys_block_read(uint32_t index, uint64_t lba, void *buf, uint32_t bytes)
+{
+    if (!buf || !uptr_ok(buf, bytes)) {
+        return -1;
+    }
+    const struct block_device_info *info = block_device_get((size_t)index);
+    if (!info) {
+        return -1;
+    }
+    return block_read(info->name, lba, buf, (size_t)bytes);
+}
+
+static long sys_block_write(uint32_t index, uint64_t lba, const void *buf, uint32_t bytes)
+{
+    if (!buf || !uptr_ok(buf, bytes)) {
+        return -1;
+    }
+    const struct block_device_info *info = block_device_get((size_t)index);
+    if (!info || !info->writable) {
+        return -1;
+    }
+    return block_write_lba28(info->name, (uint32_t)lba, buf, (size_t)bytes);
+}
+
+static long sys_block_sync(uint32_t index)
+{
+    const struct block_device_info *info = block_device_get((size_t)index);
+    if (!info) {
+        return -1;
+    }
+    return block_sync(info->name);
+}
+
+
+static long sys_login(const char *user_ptr, const char *password_ptr)
+{
+    char name[USER_NAME_MAX + 1];
+    char password[128];
+    if (copy_user_string_bounded(user_ptr, name, sizeof(name)) < 0 ||
+        copy_user_string_bounded(password_ptr, password, sizeof(password)) < 0) {
+        return -1;
+    }
+    if (!user_find_name(name)) {
+        return -1;
+    }
+
+    if (user_has_password(name)) {
+        if (user_login_password(name, password) < 0) {
+            return -1;
+        }
+    } else {
+        if (password[0] != '\0' || user_login(name) < 0) {
+            return -1;
+        }
+    }
+
+    struct process *proc = process_current();
+    const struct user_record *u = user_current();
+    if (!proc || !u) {
+        return -1;
+    }
+    proc->uid = u->uid;
+    proc->gid = u->gid;
+    strncpy(proc->cwd, u->home, sizeof(proc->cwd) - 1);
+    proc->cwd[sizeof(proc->cwd) - 1] = '\0';
+    return 0;
 }
 
 long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
@@ -1254,6 +1382,18 @@ long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
                              (struct user_timespec *)a1);
     case SYS_POLL:
         return sys_poll((struct user_pollfd *)a0, (uint32_t)a1, (int)a2);
+    case SYS_BLOCK_GET_COUNT:
+        return sys_block_get_count();
+    case SYS_BLOCK_GET_INFO:
+        return sys_block_get_info((uint32_t)a0, (struct user_block_info *)a1);
+    case SYS_BLOCK_READ:
+        return sys_block_read((uint32_t)a0, a1, (void *)a2, (uint32_t)a3);
+    case SYS_BLOCK_WRITE:
+        return sys_block_write((uint32_t)a0, a1, (const void *)a2, (uint32_t)a3);
+    case SYS_BLOCK_SYNC:
+        return sys_block_sync((uint32_t)a0);
+    case SYS_LOGIN:
+        return sys_login((const char *)a0, (const char *)a1);
     case SYS_CHDIR: {
         struct vfs_node *node = vfs_lookup((const char *)a0, proc->cwd);
         if (!node || node->type != VFS_NODE_DIR || !has_perm(proc, node, 1)) {

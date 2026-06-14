@@ -2,10 +2,13 @@
 #define TNU_DIRENT_H
 
 #include <sys/types.h>
+#include <tnu/syscall.h>
 
 #define DT_UNKNOWN 0
 #define DT_DIR     4
 #define DT_REG     8
+
+int readdir_fd(int fd, struct syscall_dirent *out);
 
 struct dirent {
     ino_t d_ino;

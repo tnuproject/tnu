@@ -13,6 +13,11 @@
 #include <sys/ioctl.h>
 #include <termios.h>
 #include <fcntl.h>
+#include <poll.h>
+
+#ifndef O_NONBLOCK
+#define O_NONBLOCK 04000
+#endif
 
 /* ------------------------------------------------------------------ */
 /* Global state                                                         */
@@ -427,11 +432,50 @@ int use_default_colors(void) { return OK; }
 /* Input                                                                */
 /* ------------------------------------------------------------------ */
 
+static int kbd_fd = -1;
+
+static int open_kbd(void)
+{
+    if (kbd_fd >= 0) return kbd_fd;
+    kbd_fd = open("/dev/input/kbd", O_RDONLY | O_NONBLOCK);
+    return kbd_fd;
+}
+
+static int try_read_kbd(void)
+{
+    int fd = open_kbd();
+    if (fd < 0) return ERR;
+
+    uint16_t event;
+    ssize_t r = read(fd, &event, sizeof(event));
+    if (r != sizeof(event)) return ERR;
+
+    /* Ignore release events (bit 15 set) */
+    if (event & 0x8000) return ERR;
+
+    return (int)(event & 0x7fff);
+}
+
+/* Map TNU special keys to ncurses KEY_* */
+static int map_tnu_key(int k)
+{
+    if (k == 0x101) return KEY_UP;
+    if (k == 0x102) return KEY_DOWN;
+    if (k == 0x103) return KEY_LEFT;
+    if (k == 0x104) return KEY_RIGHT;
+    if (k == 0x105) return KEY_HOME;
+    if (k == 0x106) return KEY_END;
+    if (k == 0x107) return KEY_DC;
+    if (k == 0x108) return 3;  /* CTRL+C */
+    return k;
+}
+
 static int read_byte(void)
 {
     unsigned char c;
-    if (read(STDIN_FILENO, &c, 1) != 1) return ERR;
-    return c;
+    ssize_t r = read(STDIN_FILENO, &c, 1);
+    if (r != 1) return ERR;
+    return (int)c;
 }
 
 int wgetch(WINDOW *win)
@@ -441,29 +485,21 @@ int wgetch(WINDOW *win)
     if (ungetch_len > 0)
         return ungetch_buf[--ungetch_len];
 
+    /* Use poll to wait for input */
+    struct pollfd pfd = { .fd = STDIN_FILENO, .events = POLLIN };
+    int ret = poll(&pfd, 1, -1); /* block indefinitely */
+    if (ret <= 0) return ERR;
+
+    /* Simple blocking read from stdin */
     int c = read_byte();
     if (c == ERR) return ERR;
 
-    if (c == 27) { /* ESC — try to read an escape sequence */
-        /* Switch to non-blocking / short-timeout mode to detect sequence body */
-        struct termios t;
-        tcgetattr(STDIN_FILENO, &t);
-        struct termios raw = t;
-        raw.c_cc[VMIN]  = 0;
-        raw.c_cc[VTIME] = 1; /* 100 ms */
-        tcsetattr(STDIN_FILENO, TCSANOW, &raw);
-
-        /* Read up to 8 bytes of sequence body in one window */
+    /* Handle escape sequences for special keys */
+    if (c == 27) { /* ESC */
+        /* Try to read sequence - use non-blocking read for next char */
         unsigned char seq[8];
-        int n = (int)read(STDIN_FILENO, seq, sizeof(seq));
-
-        /* Restore blocking mode */
-        tcsetattr(STDIN_FILENO, TCSANOW, &t);
-
-        if (n <= 0) return 27; /* bare ESC */
-
-        if (seq[0] == '[') {
-            if (n < 2) return 27;
+        ssize_t n = read(STDIN_FILENO, seq, sizeof(seq));
+        if (n > 0 && seq[0] == '[' && n >= 2) {
             switch (seq[1]) {
             case 'A': return KEY_UP;
             case 'B': return KEY_DOWN;
@@ -471,55 +507,8 @@ int wgetch(WINDOW *win)
             case 'D': return KEY_LEFT;
             case 'H': return KEY_HOME;
             case 'F': return KEY_END;
-            case 'Z': return KEY_F(1); /* Shift+Tab */
-            /* \e[N~ style */
-            case '1': return (n >= 3 && seq[2] == '~') ? KEY_HOME : KEY_HOME;
-            case '2': return (n >= 3 && seq[2] == '~') ? KEY_IC   : KEY_IC;
-            case '3': return KEY_DC;   /* \e[3~ */
-            case '4': return KEY_END;  /* \e[4~ */
-            case '5': return KEY_PPAGE;/* \e[5~ */
-            case '6': return KEY_NPAGE;/* \e[6~ */
-            case '7': return KEY_HOME; /* \e[7~ */
-            case '8': return KEY_END;  /* \e[8~ */
-            default:
-                /* F1-F12: \e[NNm or \e[NN~ */
-                if (seq[1] >= '1' && seq[1] <= '9') {
-                    int code = seq[1] - '0';
-                    if (n >= 3 && seq[2] >= '0' && seq[2] <= '9')
-                        code = code * 10 + seq[2] - '0';
-                    switch (code) {
-                    case 11: return KEY_F(1);
-                    case 12: return KEY_F(2);
-                    case 13: return KEY_F(3);
-                    case 14: return KEY_F(4);
-                    case 15: return KEY_F(5);
-                    case 17: return KEY_F(6);
-                    case 18: return KEY_F(7);
-                    case 19: return KEY_F(8);
-                    case 20: return KEY_F(9);
-                    case 21: return KEY_F(10);
-                    case 23: return KEY_F(11);
-                    case 24: return KEY_F(12);
-                    default: return 27;
-                    }
-                }
-                return 27;
-            }
-        } else if (seq[0] == 'O') {
-            if (n < 2) return 27;
-            switch (seq[1]) {
-            case 'P': return KEY_F(1);
-            case 'Q': return KEY_F(2);
-            case 'R': return KEY_F(3);
-            case 'S': return KEY_F(4);
-            case 'H': return KEY_HOME;
-            case 'F': return KEY_END;
-            default:  return 27;
             }
         }
-        /* Alt+key: push the real key back and return ESC */
-        /* (nano interprets ESC+key as Meta prefix itself) */
-        if (n >= 1) ungetch(seq[0]);
         return 27;
     }
 

@@ -12,6 +12,7 @@ USER_CRT := ../../build/obj/userspace/libc/src/crt0.o
 USER_LIB := ../../build/user/libtnu.a
 
 UPSTREAM := src/upstream
+PATCHES := patches
 
 NANO_SRCS := $(UPSTREAM)/src/browser.c \
              $(UPSTREAM)/src/chars.c \
@@ -36,10 +37,11 @@ NANO_OBJS := $(patsubst $(UPSTREAM)/src/%.c, \
              ../../build/obj/ports/nano/upstream/%.o, $(NANO_SRCS))
 SHIM_OBJ  := ../../build/obj/ports/nano/tnu_curses.o
 
-.PHONY: all clean fetch
+.PHONY: all clean fetch patch
 
-all: fetch ../../build/user/nano
+all: fetch patch ../../build/user/nano
 
+# Clone nano from GitHub if not present
 fetch: $(UPSTREAM)/src/nano.c
 $(UPSTREAM)/src/nano.c:
 	@if [ ! -f "$@" ]; then \
@@ -47,9 +49,13 @@ $(UPSTREAM)/src/nano.c:
 			echo "nano: $(UPSTREAM) exists but $@ is missing"; \
 			exit 1; \
 		fi; \
-		echo "nano: cloning madnight/nano..."; \
+		echo "nano: cloning madnight/nano from GitHub..."; \
 		git clone --depth 1 https://github.com/madnight/nano.git $(UPSTREAM); \
 	fi
+
+# Apply patches after cloning (optional)
+patch: $(UPSTREAM)/src/nano.c
+	@echo "nano: patch step (no patches to apply)"
 
 ../../build/user/nano: $(NANO_OBJS) $(SHIM_OBJ) $(USER_LIB) $(USER_CRT)
 	@mkdir -p $(dir $@)

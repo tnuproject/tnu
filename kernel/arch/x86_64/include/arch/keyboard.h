@@ -5,8 +5,11 @@
 
 void keyboard_init(void);
 void keyboard_handle_irq(void);
+void keyboard_poll(void);
 int keyboard_try_getchar(void);
 int keyboard_getchar(void);
+int keyboard_try_get_event(void);
+bool keyboard_event_available(void);
 bool keyboard_input_available(void);
 bool keyboard_consume_interrupt(void);
 void keyboard_ack_interrupt(void);
@@ -33,5 +36,9 @@ const char *keyboard_available_layouts(void);
 #define KEY_TTY4   0x110
 #define KEY_TTY5   0x111
 #define KEY_TTY6   0x112
+/* Additional keys for Doom */
+#define KEY_SPACE  0x113
+#define KEY_CTRL   0x114
+#define KEY_ALT    0x115
 
 #endif

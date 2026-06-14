@@ -1,5 +1,7 @@
 #include <tnu/libc.h>
 #include <sys/stat.h>
+#include <unistd.h>
+#include <fcntl.h>
 
 static const char sysfetch_default_logo[] =
     "___________           \n"

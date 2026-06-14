@@ -1,4 +1,6 @@
 #include <tnu/libc.h>
+#include <unistd.h>
+#include <fcntl.h>
 
 static int read_file(const char *path, char *buf, size_t size)
 {

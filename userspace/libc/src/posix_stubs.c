@@ -78,6 +78,15 @@ int sigismember(const sigset_t *set, int signum)
     return (*set & (sigset_t)(1u << signum)) ? 1 : 0;
 }
 
+void _exit(int status)
+{
+    /* SYS_exit = 1 */
+    register long rax __asm__("rax") = 1;
+    register long rdi __asm__("rdi") = status;
+    __asm__ volatile("syscall" : : "r"(rax), "r"(rdi) : "rcx", "r11", "memory");
+    __builtin_unreachable();
+}
+
 int sigprocmask(int how, const sigset_t *set, sigset_t *oldset)
 {
     (void)how; (void)set;

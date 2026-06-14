@@ -1,4 +1,8 @@
 #include <tnu/libc.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+#include <unistd.h>
 
 struct block_header {
     size_t size;

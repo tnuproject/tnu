@@ -243,6 +243,22 @@ static struct ata_device *ata_by_name(const char *name)
     return NULL;
 }
 
+/* External AHCI device count - defined in ahci.c */
+extern size_t ahci_get_device_count(void);
+extern const struct block_device_info *ahci_device_get(size_t index);
+extern const struct block_device_info *ahci_device_find(const char *name);
+extern int ahci_block_read(const char *name, uint64_t lba, void *data, size_t bytes);
+extern int ahci_block_write(const char *name, uint64_t lba, const void *data, size_t bytes);
+extern int ahci_block_sync(const char *name);
+
+/* External NVMe device count - defined in nvme.c */
+extern size_t nvme_get_device_count(void);
+extern const struct block_device_info *nvme_device_get(size_t index);
+extern const struct block_device_info *nvme_device_find(const char *name);
+extern int nvme_block_read(const char *name, uint64_t lba, void *data, size_t bytes);
+extern int nvme_block_write(const char *name, uint64_t lba, const void *data, size_t bytes);
+extern int nvme_block_sync(const char *name);
+
 void ata_init(void)
 {
     device_count = 0;
@@ -279,69 +295,115 @@ void ata_init(void)
 
 size_t block_device_count(void)
 {
-    return device_count;
+    return device_count + ahci_get_device_count() + nvme_get_device_count();
 }
 
 const struct block_device_info *block_device_get(size_t index)
 {
-    return index < device_count ? &devices[index].info : NULL;
+    if (index < device_count) {
+        return &devices[index].info;
+    }
+
+    index -= device_count;
+    if (index < ahci_get_device_count()) {
+        return ahci_device_get(index);
+    }
+
+    index -= ahci_get_device_count();
+    if (index < nvme_get_device_count()) {
+        return nvme_device_get(index);
+    }
+    return NULL;
 }
 
 const struct block_device_info *block_device_find(const char *name)
 {
     struct ata_device *dev = ata_by_name(name);
-    return dev ? &dev->info : NULL;
+    if (dev) {
+        return &dev->info;
+    }
+
+    const struct block_device_info *ahci = ahci_device_find(name);
+    if (ahci) {
+        return ahci;
+    }
+
+    return nvme_device_find(name);
 }
 
 int block_write_lba28(const char *name, uint32_t lba, const void *data, size_t bytes)
 {
     struct ata_device *dev = ata_by_name(name);
-    if (!dev || (!data && bytes)) {
-        return -1;
-    }
-    const uint8_t *src = data;
-    size_t offset = 0;
-    while (offset < bytes) {
-        size_t remaining = bytes - offset;
-        size_t chunk = remaining < 512 ? remaining : 512;
-        if (ata_write_one_sector(dev, lba++, src + offset, chunk) < 0) {
+    if (dev) {
+        if (!data && bytes) {
             return -1;
         }
-        offset += chunk;
+        const uint8_t *src = data;
+        size_t offset = 0;
+        while (offset < bytes) {
+            size_t remaining = bytes - offset;
+            size_t chunk = remaining < 512 ? remaining : 512;
+            if (ata_write_one_sector(dev, lba++, src + offset, chunk) < 0) {
+                return -1;
+            }
+            offset += chunk;
+        }
+        return ata_flush(dev);
     }
-    return ata_flush(dev);
+
+    if (ahci_device_find(name)) {
+        return ahci_block_write(name, lba, data, bytes);
+    }
+
+    return nvme_block_write(name, lba, data, bytes);
 }
 
 int block_read(const char *name, uint64_t lba, void *data, size_t bytes)
 {
     struct ata_device *dev = ata_by_name(name);
-    if (!dev || (!data && bytes) || lba >= 0x10000000ull) {
-        return -1;
-    }
-    uint8_t sector[512];
-    uint8_t *out = data;
-    size_t offset = 0;
-    while (offset < bytes) {
-        if (ata_read_one_sector(dev, (uint32_t)lba++, sector) < 0) {
+    if (dev) {
+        if (!data && bytes) {
             return -1;
         }
-        size_t chunk = bytes - offset;
-        if (chunk > sizeof(sector)) {
-            chunk = sizeof(sector);
+        if (lba >= 0x10000000ull) {
+            return -1;
         }
-        memcpy(out + offset, sector, chunk);
-        offset += chunk;
+        uint8_t sector[512];
+        uint8_t *out = data;
+        size_t offset = 0;
+        while (offset < bytes) {
+            if (ata_read_one_sector(dev, (uint32_t)lba++, sector) < 0) {
+                return -1;
+            }
+            size_t chunk = bytes - offset;
+            if (chunk > sizeof(sector)) {
+                chunk = sizeof(sector);
+            }
+            memcpy(out + offset, sector, chunk);
+            offset += chunk;
+        }
+        return 0;
     }
-    return 0;
+
+    if (ahci_device_find(name)) {
+        return ahci_block_read(name, lba, data, bytes);
+    }
+
+    return nvme_block_read(name, lba, data, bytes);
 }
 
 int block_sync(const char *name)
 {
     struct ata_device *dev = ata_by_name(name);
-    if (!dev) {
-        return -1;
+    if (dev) {
+        return ata_flush(dev);
     }
-    return ata_flush(dev);
+
+    if (ahci_device_find(name)) {
+        return ahci_block_sync(name);
+    }
+
+    return nvme_block_sync(name);
 }
 
 bool ata_primary_master_present(void)

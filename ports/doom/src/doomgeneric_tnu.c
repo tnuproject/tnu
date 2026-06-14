@@ -68,6 +68,10 @@ static unsigned char tnu_to_doom(uint16_t k, int *valid)
     if (k == TNU_KEY_END)   return KEY_END;
     if (k == TNU_KEY_DEL)   return KEY_DEL;
     if (k == TNU_KEY_CTRL_C) return KEY_ESCAPE;
+    /* Additional TNU keys for Doom - 0x113=SPACE, 0x114=CTRL, 0x115=ALT */
+    if (k == 0x113) return ' ';           /* SPACE = fire (ASCII space) */
+    if (k == 0x114) return KEY_FIRE;      /* CTRL = fire */
+    if (k == 0x115) return KEY_USE;       /* ALT = use */
 
     /* ASCII range */
     if (k < 0x100) {
@@ -91,10 +95,8 @@ static void checkKeys(void)
 {
     if (kbd_fd < 0) return;
 
-    /* /dev/input/kbd returns uint16_t TNU key codes.  The current kernel
-       interface reports make events; synthesize a release so Doom never sees
-       permanently held menu/action keys.  Holding a key still repeats through
-       the PS/2 repeat path. */
+    /* /dev/input/kbd returns uint16_t TNU key events.
+       Bit 15 set = release (key-up), clear = press (key-down). */
     uint16_t buf[32];
     ssize_t n = read(kbd_fd, buf, sizeof(buf));
     if (n <= 0) return;
@@ -107,12 +109,7 @@ static void checkKeys(void)
         int valid;
         unsigned char dk = tnu_to_doom(code, &valid);
         if (valid) {
-            if (released) {
-                addKeyToQueue(0, dk);
-            } else {
-                addKeyToQueue(1, dk);
-                addKeyToQueue(0, dk);
-            }
+            addKeyToQueue(released ? 0 : 1, dk);
         }
     }
 }
@@ -128,18 +125,26 @@ void DG_Init(void)
 
     if (fb_fd >= 0) {
         struct syscall_fb_info info;
-        if (ioctl(fb_fd, TNU_IOCTL_FB_GETINFO, &info) == 0) {
+        int ret = ioctl(fb_fd, TNU_IOCTL_FB_GETINFO, &info);
+        if (ret == 0 && info.width > 0 && info.height > 0) {
             fb_w = (int)info.width;
             fb_h = (int)info.height;
         }
     }
-    if (fb_w <= 0) fb_w = DOOMGENERIC_RESX;
-    if (fb_h <= 0) fb_h = DOOMGENERIC_RESY;
+    
+    /* Safety bounds - prevent infinite loops and invalid values */
+    if (fb_w <= 0 || fb_w > 4096 || fb_h <= 0 || fb_h > 4096) {
+        fb_w = DOOMGENERIC_RESX;
+        fb_h = DOOMGENERIC_RESY;
+    }
 
     if (fb_w != DOOMGENERIC_RESX || fb_h != DOOMGENERIC_RESY) {
         scale_buf = malloc((size_t)fb_w * (size_t)fb_h * sizeof(uint32_t));
-        if (!scale_buf)
-            I_Error("DG_Init: out of memory for scale buffer");
+        if (!scale_buf) {
+            /* Fall back to native resolution */
+            fb_w = DOOMGENERIC_RESX;
+            fb_h = DOOMGENERIC_RESY;
+        }
     }
 
     if (kbd_fd < 0)
@@ -152,19 +157,29 @@ void DG_DrawFrame(void)
 
     uint32_t *src = DG_ScreenBuffer;
 
+    /* Safety check for invalid dimensions */
+    if (fb_w <= 0 || fb_h <= 0) {
+        fb_w = DOOMGENERIC_RESX;
+        fb_h = DOOMGENERIC_RESY;
+    }
+
     if (!scale_buf) {
         write(fb_fd, src,
               (size_t)(DOOMGENERIC_RESX * DOOMGENERIC_RESY) * sizeof(uint32_t));
         return;
     }
 
-    /* Nearest-neighbour upscale */
-    for (int dy = 0; dy < fb_h; dy++) {
+    /* Nearest-neighbour upscale with bounds check */
+    for (int dy = 0; dy < fb_h && dy < 4096; dy++) {
         int sy = dy * DOOMGENERIC_RESY / fb_h;
+        if (sy >= DOOMGENERIC_RESY) continue;
         const uint32_t *srow = src + sy * DOOMGENERIC_RESX;
         uint32_t *drow = scale_buf + dy * fb_w;
-        for (int dx = 0; dx < fb_w; dx++)
-            drow[dx] = srow[dx * DOOMGENERIC_RESX / fb_w];
+        for (int dx = 0; dx < fb_w && dx < 4096; dx++) {
+            int sx = dx * DOOMGENERIC_RESX / fb_w;
+            if (sx < DOOMGENERIC_RESX)
+                drow[dx] = srow[sx];
+        }
     }
     write(fb_fd, scale_buf,
           (size_t)fb_w * (size_t)fb_h * sizeof(uint32_t));

@@ -216,3 +216,23 @@ int framebuffer_blit(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
     }
     return 0;
 }
+
+int framebuffer_scroll_up(uint32_t pixels, uint32_t clear_rgb)
+{
+    if (fb.kind != FB_KIND_LINEAR || pixels == 0) {
+        return -1;
+    }
+    if (pixels >= fb.height) {
+        return framebuffer_fillrect(0, 0, fb.width, fb.height, clear_rgb);
+    }
+
+    uint8_t *base = (uint8_t *)fb.address;
+    size_t scroll_bytes = (size_t)pixels * (size_t)fb.pitch;
+    size_t move_bytes = (size_t)(fb.height - pixels) * (size_t)fb.pitch;
+
+    memmove(base, base + scroll_bytes, move_bytes);
+
+    /* Clear only the exposed bottom strip. */
+    return framebuffer_fillrect(0, fb.height - pixels, fb.width, pixels, clear_rgb);
+}
+
