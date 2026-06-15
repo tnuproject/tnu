@@ -13,6 +13,8 @@
 #include <tnu/memory.h>
 #include <tnu/multiboot2.h>
 #include <tnu/net.h>
+/* iwlwifi driver public API */
+#include <tnu/iwlwifi.h>
 #include <tnu/panic.h>
 #include <tnu/printf.h>
 #include <tnu/process.h>
@@ -189,6 +191,14 @@ void arch_entry(uint32_t magic, uintptr_t mbi_addr)
     boot_begin("PCI bus scan");
     pci_init();
     boot_ok();
+
+    /* Initialize the Intel Wi‑Fi driver (if hardware is present) */
+    boot_begin("iwlwifi driver");
+    if (iwlwifi_init() == 0) {
+        boot_ok();
+    } else {
+        boot_warn();
+    }
 
     boot_begin("ATA storage");
     ata_init();

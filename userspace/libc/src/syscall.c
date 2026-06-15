@@ -255,3 +255,19 @@ int sync(void)
 {
     return (int)tnu_syscall(SYS_SYNC, 0, 0, 0, 0, 0, 0);
 }
+
+int wifi_scan(struct wifi_ap *out, size_t max_aps)
+{
+    return (int)tnu_syscall(SYS_WIFI_SCAN, (long)out, (long)max_aps, 0, 0, 0, 0);
+}
+
+int wifi_connect(const char *iface, const char *ssid, const char *passphrase)
+{
+    return (int)tnu_syscall(SYS_WIFI_CONNECT, (long)iface, (long)ssid,
+                            (long)passphrase, 0, 0, 0);
+}
+
+int wifi_status(struct wifi_status *out)
+{
+    return (int)tnu_syscall(SYS_WIFI_STATUS, (long)out, 0, 0, 0, 0, 0);
+}

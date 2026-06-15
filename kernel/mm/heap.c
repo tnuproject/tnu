@@ -1,7 +1,12 @@
 #include <tnu/memory.h>
 #include <tnu/string.h>
 
-#define KERNEL_HEAP_SIZE (64 * 1024 * 1024)
+/* Reduce default kernel heap from 64 MiB to 16 MiB to lower overall RAM usage.
+ * The heap is primarily used for temporary allocations (e.g., during ELF
+ * loading and VFS operations). 16 MiB is sufficient for the current workload
+ * while providing a noticeable memory saving on systems with limited RAM.
+ */
+#define KERNEL_HEAP_SIZE (16 * 1024 * 1024)
 #define HEAP_MAGIC 0x544e5548u
 
 struct heap_block {

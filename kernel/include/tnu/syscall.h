@@ -44,6 +44,15 @@ enum syscall_number {
     SYS_LOGIN = 36,
     /* Flush the persistent TFS image to disk immediately. */
     SYS_SYNC  = 37,
+    /* Memory-map device (e.g. framebuffer) into user address space. */
+    SYS_MMAP  = 38,
+    /* POSIX select / pselect6 — used by nano, editors, networking. */
+    SYS_SELECT  = 39,
+    SYS_PSELECT = 40,
+    /* Wi-Fi control plane for scan/connect/status. */
+    SYS_WIFI_SCAN = 41,
+    SYS_WIFI_CONNECT = 42,
+    SYS_WIFI_STATUS = 43,
 };
 
 #define TNU_IOCTL_FB_GETINFO 0x544e4601u

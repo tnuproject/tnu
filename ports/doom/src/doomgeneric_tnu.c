@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <time.h>
 #include <tnu/syscall.h>
 
@@ -28,6 +29,7 @@ static int   kbd_fd  = -1;
 static int   fb_w    = 0;
 static int   fb_h    = 0;
 static uint32_t *scale_buf = NULL;
+static uint32_t *fb_mmap = NULL;  /* mmap'd framebuffer for zero-copy */
 
 /* ------------------------------------------------------------------ */
 /* Keyboard                                                             */
@@ -51,6 +53,14 @@ static unsigned int   s_KeyQueueRead  = 0;
 
 static void addKeyToQueue(int pressed, unsigned char doomKey)
 {
+    /* Prevent overflow of the fixed-size circular queue. If the queue is full
+     * we simply drop the new key event – this is better than overwriting older
+     * unprocessed events, which can corrupt the input state and cause the game
+     * to stop responding to further keys.
+     */
+    if ((s_KeyQueueWrite - s_KeyQueueRead) >= KEYQUEUE_SIZE) {
+        return; // queue full, drop event
+    }
     unsigned short entry = (unsigned short)((pressed << 8) | doomKey);
     s_KeyQueue[s_KeyQueueWrite % KEYQUEUE_SIZE] = entry;
     s_KeyQueueWrite++;
@@ -120,7 +130,7 @@ static void checkKeys(void)
 
 void DG_Init(void)
 {
-    fb_fd  = open("/dev/fb0", O_WRONLY);
+    fb_fd  = open("/dev/fb0", O_RDWR);
     /* Open keyboard in NON-BLOCKING mode to prevent hangs in checkKeys() */
     kbd_fd = open("/dev/input/kbd", O_RDONLY | O_NONBLOCK);
 
@@ -130,6 +140,14 @@ void DG_Init(void)
         if (ret == 0 && info.width > 0 && info.height > 0) {
             fb_w = (int)info.width;
             fb_h = (int)info.height;
+
+            /* Try to mmap the framebuffer for zero-copy rendering */
+            size_t fb_size = (size_t)info.pitch * info.height;
+            fb_mmap = mmap(NULL, fb_size, PROT_READ | PROT_WRITE, MAP_SHARED, fb_fd, 0);
+            if (fb_mmap == MAP_FAILED || fb_mmap == NULL) {
+                fb_mmap = NULL;
+                fprintf(stderr, "doom: mmap /dev/fb0 failed, using write() fallback\n");
+            }
         }
     }
     
@@ -164,26 +182,47 @@ void DG_DrawFrame(void)
         fb_h = DOOMGENERIC_RESY;
     }
 
-    if (!scale_buf) {
-        write(fb_fd, src,
-              (size_t)(DOOMGENERIC_RESX * DOOMGENERIC_RESY) * sizeof(uint32_t));
-        return;
-    }
-
-    /* Nearest-neighbour upscale with bounds check */
-    for (int dy = 0; dy < fb_h && dy < 4096; dy++) {
-        int sy = dy * DOOMGENERIC_RESY / fb_h;
-        if (sy >= DOOMGENERIC_RESY) continue;
-        const uint32_t *srow = src + sy * DOOMGENERIC_RESX;
-        uint32_t *drow = scale_buf + dy * fb_w;
-        for (int dx = 0; dx < fb_w && dx < 4096; dx++) {
-            int sx = dx * DOOMGENERIC_RESX / fb_w;
-            if (sx < DOOMGENERIC_RESX)
-                drow[dx] = srow[sx];
+    /* Fast path: mmap'd framebuffer — direct memcpy/scaling to mapped memory */
+    if (fb_mmap) {
+        if (!scale_buf) {
+            /* 1:1 native resolution — direct memcpy to framebuffer */
+            memcpy(fb_mmap, src, (size_t)(DOOMGENERIC_RESX * DOOMGENERIC_RESY) * sizeof(uint32_t));
+        } else {
+            /* Nearest-neighbour upscale directly into mmap'd framebuffer */
+            for (int dy = 0; dy < fb_h && dy < 4096; dy++) {
+                int sy = dy * DOOMGENERIC_RESY / fb_h;
+                if (sy >= DOOMGENERIC_RESY) continue;
+                const uint32_t *srow = src + sy * DOOMGENERIC_RESX;
+                uint32_t *drow = fb_mmap + dy * fb_w;
+                for (int dx = 0; dx < fb_w && dx < 4096; dx++) {
+                    int sx = dx * DOOMGENERIC_RESX / fb_w;
+                    if (sx < DOOMGENERIC_RESX)
+                        drow[dx] = srow[sx];
+                }
+            }
+        }
+    } else {
+        /* Fallback: write() syscall path */
+        if (!scale_buf) {
+            write(fb_fd, src,
+                  (size_t)(DOOMGENERIC_RESX * DOOMGENERIC_RESY) * sizeof(uint32_t));
+        } else {
+            /* Nearest-neighbour upscale with bounds check */
+            for (int dy = 0; dy < fb_h && dy < 4096; dy++) {
+                int sy = dy * DOOMGENERIC_RESY / fb_h;
+                if (sy >= DOOMGENERIC_RESY) continue;
+                const uint32_t *srow = src + sy * DOOMGENERIC_RESX;
+                uint32_t *drow = scale_buf + dy * fb_w;
+                for (int dx = 0; dx < fb_w && dx < 4096; dx++) {
+                    int sx = dx * DOOMGENERIC_RESX / fb_w;
+                    if (sx < DOOMGENERIC_RESX)
+                        drow[dx] = srow[sx];
+                }
+            }
+            write(fb_fd, scale_buf,
+                  (size_t)fb_w * (size_t)fb_h * sizeof(uint32_t));
         }
     }
-    write(fb_fd, scale_buf,
-          (size_t)fb_w * (size_t)fb_h * sizeof(uint32_t));
 
     checkKeys();
 }
@@ -204,6 +243,12 @@ void DG_SleepMs(uint32_t ms)
     
     /* Try nanosleep first (SYS_NANOSLEEP = 29) */
     long ret = tnu_syscall(29, (long)&req, 0, 0, 0, 0, 0);
+    
+    /* Drain keyboard buffer during sleep to prevent event overflow.
+     * This fixes the bug where doom stops receiving input after a few minutes
+     * because the kernel's 1024-event ring buffer fills up during cutscenes/menus. */
+    checkKeys();
+    
     if (ret == 0) return;
 
     /* Fallback: bounded busy-wait with early exit if uptime doesn't advance.
@@ -212,6 +257,7 @@ void DG_SleepMs(uint32_t ms)
     if (start == 0) {
         /* Timer not initialized yet — just yield once and return */
         __asm__ volatile("pause");
+        checkKeys();
         return;
     }
 
@@ -222,18 +268,27 @@ void DG_SleepMs(uint32_t ms)
     while ((uint64_t)tnu_syscall(SYS_UPTIME_MS, 0, 0, 0, 0, 0, 0) < end) {
         __asm__ volatile("pause");
         
+        /* Drain keyboard periodically during busy-wait */
+        if ((iterations % 10000) == 0) {
+            checkKeys();
+        }
+        
         /* Safety: if we've iterated 100000 times without time advancing,
          * assume the timer is stuck and break out to prevent hang. */
         if (++iterations > 100000) {
             uint64_t now = (uint64_t)tnu_syscall(SYS_UPTIME_MS, 0, 0, 0, 0, 0, 0);
             if (now == last_time) {
                 /* Time is stuck — abort sleep to prevent infinite loop */
+                checkKeys();
                 break;
             }
             last_time = now;
             iterations = 0;
         }
     }
+    
+    /* Final drain after sleep completes */
+    checkKeys();
 }
 
 uint32_t DG_GetTicksMs(void)

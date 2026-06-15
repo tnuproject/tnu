@@ -20,9 +20,9 @@
  * emulation or a future USB HID keyboard driver.
  */
 
-#define KBD_BUFFER 128
+#define KBD_BUFFER 256
 /* Separate event buffer for /dev/input/kbd: uint16_t events with 0x8000=release */
-#define KBD_EVENT_BUFFER 256
+#define KBD_EVENT_BUFFER 1024
 static uint16_t evt_buffer[KBD_EVENT_BUFFER];
 static volatile size_t evt_read_pos;
 static volatile size_t evt_write_pos;
@@ -30,7 +30,10 @@ static volatile size_t evt_write_pos;
 static void push_event(uint16_t ev)
 {
     size_t next = (evt_write_pos + 1) % KBD_EVENT_BUFFER;
-    if (next == evt_read_pos) return; /* full, drop oldest */
+    if (next == evt_read_pos) {
+        /* Buffer full: drop oldest event (advance read_pos) to make room */
+        evt_read_pos = (evt_read_pos + 1) % KBD_EVENT_BUFFER;
+    }
     evt_buffer[evt_write_pos] = ev;
     evt_write_pos = next;
 }
@@ -902,6 +905,14 @@ int keyboard_getchar(void)
     }
 
     return c;
+}
+
+/* Return whether the left or right Ctrl key is currently held down.
+ * Used by the tty layer to translate Ctrl+letter combos into control characters.
+ */
+int keyboard_is_ctrl_down(void)
+{
+    return ctrl_down;
 }
 
 int keyboard_try_getchar(void)

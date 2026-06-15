@@ -92,7 +92,7 @@ kernel: $(KERNEL)
 userspace: $(USER_LIB) $(BUILD)/user/init $(BUILD)/user/tsh \
 	$(BUILD)/user/tnu-utils $(BUILD)/user/login $(BUILD)/user/passwd \
 	$(BUILD)/user/useradd $(BUILD)/user/userdel $(BUILD)/user/sysinstall \
-	$(BUILD)/user/bootd $(BUILD)/user/dhclient $(BUILD)/user/httpget \
+	$(BUILD)/user/bootd \
 	$(BUILD)/user/nano $(BUILD)/user/doom $(BUILD)/user/fastfetch
 
 nano: $(BUILD)/user/nano

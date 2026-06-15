@@ -1,10 +1,32 @@
 #ifndef TNU_NET_H
 #define TNU_NET_H
 
+#include <tnu/ioctl.h>
 #include <tnu/types.h>
 
 #define NET_IFACE_MAX 8
 #define NET_NAME_MAX 15
+
+#define WIFI_IOCTL_SCAN    _IOR('w', 0x01, struct wifi_ap[32])
+#define WIFI_IOCTL_CONNECT _IOW('w', 0x02, struct wifi_connect_req)
+#define WIFI_IOCTL_STATUS  _IOR('w', 0x03, struct wifi_status)
+
+struct wifi_ap {
+    char ssid[32];
+    uint8_t bssid[6];
+    int8_t rssi;
+    uint16_t flags;
+};
+
+struct wifi_connect_req {
+    char ssid[32];
+    char psk[64];
+};
+
+struct wifi_status {
+    bool connected;
+    char ssid[32];
+};
 
 struct net_iface;
 
@@ -64,5 +86,7 @@ int net_iface_dhcp(const char *name);
 int net_wifi_scan(void);
 int net_wifi_connect(const char *iface, const char *ssid, const char *passphrase);
 int net_wifi_autoconnect(void);
+int net_wifi_scan_results(struct wifi_ap *out, size_t max_aps);
+int net_wifi_status(struct wifi_status *out);
 
 #endif

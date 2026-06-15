@@ -6,5 +6,6 @@
 #include <stdint.h>
 
 typedef intptr_t ssize_t;
+typedef int64_t off_t;
 
 #endif

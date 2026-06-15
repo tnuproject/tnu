@@ -10,7 +10,27 @@
 
 /* Fallback used by sysinstall's current GPT layout when no partition layer exists. */
 #define TFS_DEFAULT_ROOT_LBA 526336u
-#define TFS_SYNC_BUFFER_MAX  (64u * 1024u * 1024u)
+/* Reduce the in‑memory sync buffer to limit RAM consumption.
+ * The original 64 MiB buffer contributed significantly to the ~600 MiB usage.
+ * An 8 MiB buffer is sufficient for the typical rootfs used in this project
+ * while keeping memory footprint low.
+ */
+/* Restore original buffer size to accommodate the full root TFS image (~250 MiB).
+ * A smaller buffer caused sync failures and warnings on boot.
+ */
+/* Increase buffer to hold the full root TFS image (≈256 MiB) while keeping the
+ * overall memory footprint reasonable.
+ */
+/* Sync buffer size – 64 MiB is sufficient for typical rootfs and keeps RAM
+ * consumption modest. A larger buffer caused allocation failures on low‑mem
+ * systems during the initial sync.
+ */
+/* Sync buffer size – 512 MiB gives enough headroom for the full root TFS image
+ * (≈250 MiB) plus overhead while still fitting within a system that has about
+ * 512 MiB of RAM. The previous 256 MiB buffer was insufficient on this hardware,
+ * leading to "initial sync failed … will retry on next write" warnings.
+ */
+#define TFS_SYNC_BUFFER_MAX  (512u * 1024u * 1024u)
 
 enum tfs_entry_type {
     TFS_ENTRY_DIR = 1,

@@ -1,9 +1,10 @@
 #ifndef TNU_IWLWIFI_H
 #define TNU_IWLWIFI_H
 
-#include <arch/pci.h>
 #include <tnu/net.h>
 #include <tnu/types.h>
+
+struct pci_device;
 
 struct iwlwifi_fw_part {
     const uint8_t *text;
@@ -118,24 +119,19 @@ struct iwlwifi_state {
     bool tx_queue_ready;
     const char *family;
     const char *firmware_name;
-    /* actual FH queue IDs — set at attach */
-    uint8_t  cmd_queue_id;    /* DVM=4, MVM=9 */
-    uint8_t  mgmt_queue_id;   /* DVM=0, MVM=0 (data queue) */
-    /* MVM phase-tracking flags */
+    uint8_t  cmd_queue_id;
+    uint8_t  mgmt_queue_id;
     bool     mvm_init_alive_seen;
     bool     mvm_rt_alive_seen;
     bool     mvm_alive;
     bool     mvm_fw_ready;
-    /* MVM context IDs */
     uint32_t mvm_phy_id;
     uint32_t mvm_mac_id;
     uint32_t mvm_sta_id;
-    uint32_t mvm_te_uid;      /* time event unique id */
+    uint32_t mvm_te_uid;
     bool     mvm_te_active;
-    /* MVM scan state */
     bool     mvm_scan_running;
     bool     mvm_scan_done;
-    /* PHY_DB sections captured during INIT phase, replayed at RT */
     uint8_t  phy_db_cfg[512];
     uint16_t phy_db_cfg_size;
     uint8_t  phy_db_calib_nch[512];
@@ -154,5 +150,7 @@ int iwlwifi_start(struct net_iface *iface);
 int iwlwifi_scan(struct net_iface *iface);
 int iwlwifi_associate(struct net_iface *iface, const char *ssid, const char *passphrase);
 const struct iwlwifi_state *iwlwifi_state_for(const struct net_iface *iface);
+int iwlwifi_init(void);
+void iwlwifi_exit(void);
 
 #endif

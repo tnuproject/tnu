@@ -3,6 +3,7 @@ CFLAGS := -std=gnu11 -O2 -g \
            -ffreestanding -fno-stack-protector -fno-builtin -fno-pic \
            -m64 -mno-red-zone \
            -I../../userspace/libc/include \
+           -I../../kernel/include \
            -Isrc \
            -Isrc/doomgeneric/doomgeneric
 LDFLAGS := -T ../../userspace/linker.ld -nostdlib -static -no-pie \

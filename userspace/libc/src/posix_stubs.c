@@ -471,6 +471,19 @@ int poll(struct pollfd *fds, nfds_t nfds, int timeout)
 
 void *mmap(void *addr, size_t length, int prot, int flags, int fd, long offset)
 {
+    /* Try kernel mmap first (SYS_MMAP = 38) for device mappings like /dev/fb0.
+     * If it succeeds, return the mapped address. Otherwise fall back to
+     * malloc-based emulation for anonymous/file mappings. */
+    if (!(flags & MAP_ANONYMOUS) && fd >= 0) {
+        long result = tnu_syscall(SYS_MMAP, (long)addr, (long)length, (long)prot,
+                                  (long)flags, (long)fd, offset);
+        if (result != -1) {
+            return (void *)result;
+        }
+        /* Kernel mmap failed — fall through to malloc emulation */
+    }
+
+    /* Fallback: malloc-based mmap emulation */
     (void)addr;
     (void)prot;
     if (length == 0) {
@@ -557,7 +570,7 @@ int nanosleep(const struct timespec *req, struct timespec *rem)
     return 0;
 }
 
-int gettimeofday(struct timeval *tv, void *tz)
+int gettimeofday(struct timeval *tv, struct timezone *tz)
 {
     (void)tz;
     if (tv) {

@@ -45,6 +45,7 @@ static const struct util_help help_topics[] = {
     { "keymap", "keymap [LAYOUT]", "Show or set /etc/keymap; setting requires root." },
     { "layout", "layout [LAYOUT]", "Alias for keymap." },
     { "ping", "ping IPv4", "Send a minimal ICMP test when networking is available." },
+    { "wifi", "wifi scan|connect IFACE SSID [PASSPHRASE]|status", "Scan, connect, and show Wi-Fi status." },
     { "chmod", "chmod MODE FILE", "Change file permissions; supports octal and simple symbolic modes." },
     { "stat", "stat FILE", "Print file metadata." },
 };
@@ -550,7 +551,7 @@ static const char *stat_type_name(int type)
 
 static int cmd_stat(int argc, char **argv)
 {
-    if (argc != 2) {
+    if (argc < 2) {
         println("usage: stat FILE");
         return 1;
     }
@@ -565,7 +566,7 @@ static int cmd_stat(int argc, char **argv)
     print("Type: ");
     println(stat_type_name(st.st_type));
     print("Mode: ");
-    print_octal_mode(st.st_mode & 07777);
+    print_int(st.st_mode);
     print("\nUID: ");
     print_int(st.st_uid);
     print("  GID: ");
@@ -574,6 +575,74 @@ static int cmd_stat(int argc, char **argv)
     print_int(st.st_size);
     println(" bytes");
     return 0;
+}
+
+static void print_bssid(const uint8_t bssid[6])
+{
+    printf("%02x:%02x:%02x:%02x:%02x:%02x",
+           bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
+}
+
+static int cmd_wifi(int argc, char **argv)
+{
+    if (argc < 2 || strcmp(argv[1], "help") == 0 || strcmp(argv[1], "--help") == 0) {
+        println("usage: wifi scan");
+        println("       wifi connect IFACE SSID [PASSPHRASE]");
+        println("       wifi status");
+        return argc < 2 ? 1 : 0;
+    }
+    if (strcmp(argv[1], "scan") == 0) {
+        struct wifi_ap aps[32];
+        int count = wifi_scan(aps, sizeof(aps) / sizeof(aps[0]));
+        if (count < 0) {
+            println("wifi: scan failed");
+            return 1;
+        }
+        if (count == 0) {
+            println("wifi: no networks found");
+            return 0;
+        }
+        for (int i = 0; i < count; i++) {
+            print(aps[i].ssid);
+            print("  ");
+            print_bssid(aps[i].bssid);
+            print("  rssi=");
+            print_int(aps[i].rssi);
+            print("  ");
+            println((aps[i].flags & 1u) ? "wpa" : "open");
+        }
+        return 0;
+    }
+    if (strcmp(argv[1], "connect") == 0) {
+        if (argc < 4) {
+            println("usage: wifi connect IFACE SSID [PASSPHRASE]");
+            return 1;
+        }
+        const char *passphrase = argc > 4 ? argv[4] : NULL;
+        int rc = wifi_connect(argv[2], argv[3], passphrase);
+        if (rc < 0) {
+            println("wifi: connect failed");
+            return 1;
+        }
+        println("wifi: connected");
+        return 0;
+    }
+    if (strcmp(argv[1], "status") == 0) {
+        struct wifi_status st;
+        if (wifi_status(&st) < 0) {
+            println("wifi: status unavailable");
+            return 1;
+        }
+        if (st.connected) {
+            print("connected: ");
+            println(st.ssid[0] ? st.ssid : "<unknown>");
+        } else {
+            println("disconnected");
+        }
+        return 0;
+    }
+    println("wifi: unknown command");
+    return 1;
 }
 
 int main(int argc, char **argv)
@@ -602,10 +671,7 @@ int main(int argc, char **argv)
     if (strcmp(cmd, "netstat") == 0) { print_file("/proc/net/sockstat"); return 0; }
     if (strcmp(cmd, "usb") == 0) { print_file("/proc/usb"); return 0; }
     if (strcmp(cmd, "ping") == 0) return cmd_ping(argc, argv);
-    if (strcmp(cmd, "wifi") == 0) {
-        println("wifi: use the kernel applet from tsh for scan/connect support");
-        return 1;
-    }
+    if (strcmp(cmd, "wifi") == 0) return cmd_wifi(argc, argv);
     if (strcmp(cmd, "xedit") == 0) { println("xedit: unavailable from userspace"); return 1; }
     if (strcmp(cmd, "clear") == 0) { print("\033[2J\033[H"); return 0; }
     if (strcmp(cmd, "date") == 0) { println("date: unavailable from userspace"); return 1; }

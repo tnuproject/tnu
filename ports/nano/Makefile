@@ -3,6 +3,7 @@ CFLAGS := -std=gnu11 -O2 -g -Wall \
            -ffreestanding -fno-stack-protector -fno-builtin -fno-pic \
            -m64 -mno-red-zone \
            -I../../userspace/libc/include \
+           -I../../kernel/include \
            -Isrc \
            -Isrc/upstream/src \
            -include src/config.h

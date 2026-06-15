@@ -1,12 +1,34 @@
+/*
+ * iwlwifi – Intel Wireless driver (full implementation)
+ *
+ * This file contains the complete iwlwifi driver implementation for TNU.
+ * It supports both DVM (old) and MVM (new) firmware transports for Intel
+ * wireless devices (3160, 7260, 7265, 8260, 8265, 9260, 9560).
+ *
+ * The driver:
+ * - Loads firmware from /lib/firmware/iwlwifi/
+ * - Handles both INIT and RT firmware phases (MVM) or single image (DVM)
+ * - Implements RX/TX rings, command queues, and interrupt handling
+ * - Provides scan/connect/association with WPA-PSK support
+ * - Exposes /dev/iwlwifi for userspace ioctl access
+ *
+ * For details on the implementation, see the comments in iwlwifi_attach()
+ * and iwlwifi_start().
+ */
+
 #include <arch/pci.h>
 #include <arch/pit.h>
 #include <tnu/crypto.h>
 #include <tnu/iwlwifi.h>
 #include <tnu/log.h>
 #include <tnu/memory.h>
+#include <tnu/net.h>
 #include <tnu/printf.h>
 #include <tnu/string.h>
 #include <tnu/vfs.h>
+
+/* Forward declaration - defined in net.c */
+struct net_iface *find_free_iface(void);
 
 /*
  * Native TNU iwlwifi foundation.
@@ -1677,6 +1699,7 @@ static bool iwl_parse_tlv_sections(struct iwlwifi_state *st)
     const uint8_t *end = st->firmware_data + st->firmware_size;
     uint64_t altmask = le64_at(st->firmware_data + 80);
     uint16_t alt = 0;
+    uint32_t tlv_count = 0;
 
     for (uint16_t candidate = 3; candidate > 0; candidate--) {
         if (altmask & (1ull << candidate)) {
@@ -1685,11 +1708,20 @@ static bool iwl_parse_tlv_sections(struct iwlwifi_state *st)
         }
     }
 
+    log_info("iwlwifi", "TLV parse: altmask=%016llx alt=%u ptr=%p end=%p",
+             (unsigned long long)altmask, alt, (void*)ptr, (void*)end);
+
     while (ptr + 8 <= end) {
         uint16_t type = le16_at(ptr);
         uint16_t entry_alt = le16_at(ptr + 2);
         uint32_t len = le32_at(ptr + 4);
         ptr += 8;
+        
+        tlv_count++;
+        if (tlv_count <= 10 || type == IWL_TLV_SEC_RT || type == IWL_TLV_SEC_INIT) {
+            log_info("iwlwifi", "TLV %u: type=%u alt=%u len=%u", tlv_count, type, entry_alt, len);
+        }
+        
         if (ptr + len > end) {
             log_warn("iwlwifi", "firmware %s TLV section overruns image",
                      st->firmware_name);
@@ -1772,6 +1804,9 @@ static bool iwl_parse_tlv_sections(struct iwlwifi_state *st)
         }
         ptr += (len + 3u) & ~3u;
     }
+
+    log_info("iwlwifi", "TLV parse done: total=%u runtime=%u init=%u",
+             tlv_count, st->runtime_section_count, st->init_section_count);
 
     bool legacy_ok = part_present(&st->runtime_ucode) && part_present(&st->init_ucode);
     bool modern_ok = st->runtime_section_count > 0;
@@ -3698,19 +3733,16 @@ static int iwl_execute_runtime_firmware(struct iwlwifi_state *st)
         iwl_write32(st, CSR_INT, 0xffffffffu);
         iwl_write32(st, CSR_RESET, 0);
 
-        uint32_t seen = 0;
-        if (!iwl_wait_int(st, IWL_INT_ALIVE, &seen, 500)) {
-            log_warn("iwlwifi", "MVM INIT alive timed out (int=%08x)", seen);
-            return -4;
-        }
+        /* For MVM, INIT alive is sent via RX ring as UC_READY message, not interrupt.
+         * Just poll for it. */
         uint64_t t = pit_ticks();
-        while (!st->mvm_init_alive_seen && pit_ticks() - t < 300) {
+        while (!st->mvm_init_alive_seen && pit_ticks() - t < 800) {
             iwl_poll_rx_notifications(st);
             __asm__ volatile("pause");
         }
         if (!st->mvm_init_alive_seen) {
-            st->mvm_init_alive_seen = true;
-            log_warn("iwlwifi", "MVM INIT alive interrupt seen but notification not parsed");
+            log_warn("iwlwifi", "MVM INIT alive timed out - firmware not responding");
+            return -4;
         }
         log_info("iwlwifi", "MVM INIT alive OK");
 
@@ -3797,23 +3829,19 @@ static int iwl_execute_runtime_firmware(struct iwlwifi_state *st)
         iwl_write32(st, CSR_INT, 0xffffffffu);
         iwl_write32(st, CSR_RESET, 0);
 
-        seen = 0;
-        if (!iwl_wait_int(st, IWL_INT_ALIVE, &seen, 500)) {
-            log_warn("iwlwifi", "MVM RT alive timed out (int=%08x)", seen);
-            return -4;
-        }
+        /* For MVM, RT alive is sent via RX ring as UC_READY message, not interrupt. */
         t = pit_ticks();
-        while (!st->mvm_rt_alive_seen && pit_ticks() - t < 300) {
+        while (!st->mvm_rt_alive_seen && pit_ticks() - t < 800) {
             iwl_poll_rx_notifications(st);
             __asm__ volatile("pause");
         }
         if (!st->mvm_rt_alive_seen) {
-            st->mvm_rt_alive_seen  = true;
-            st->mvm_alive          = true;
-            st->firmware_alive     = true;
-            st->firmware_running   = true;
-            log_warn("iwlwifi", "MVM RT alive interrupt seen but notification not parsed");
+            log_warn("iwlwifi", "MVM RT alive timed out - firmware not responding");
+            return -4;
         }
+        st->mvm_alive          = true;
+        st->firmware_alive     = true;
+        st->firmware_running   = true;
         log_info("iwlwifi", "MVM RT alive OK");
 
         return iwl_mvm_post_alive_init(st);
@@ -4236,4 +4264,62 @@ const struct iwlwifi_state *iwlwifi_state_for(const struct net_iface *iface)
         return NULL;
     }
     return iface->driver_data;
+}
+
+/* ---------------------------------------------------------------------
+ *  Driver entry point – called from kmain.c after PCI subsystem is ready.
+ * --------------------------------------------------------------------- */
+int iwlwifi_init(void)
+{
+    size_t dev_count = pci_count();
+    int attached = 0;
+
+    for (size_t i = 0; i < dev_count; i++) {
+        const struct pci_device *dev = pci_get(i);
+        if (!dev) continue;
+
+        if (!iwlwifi_is_supported(dev)) {
+            continue;
+        }
+
+        /* Find a free network interface slot */
+        struct net_iface *iface = find_free_iface();
+        if (!iface) {
+            log_warn("iwlwifi", "no free net_iface slots for device %04x:%04x",
+                     dev->vendor_id, dev->device_id);
+            continue;
+        }
+
+        /* Initialize interface structure */
+        memset(iface, 0, sizeof(*iface));
+        ksnprintf(iface->name, sizeof(iface->name), "wlan%zu", attached);
+        iface->type = NET_IFACE_WIFI;
+        iface->pci_vendor = dev->vendor_id;
+        iface->pci_device = dev->device_id;
+
+        int ret = iwlwifi_attach(iface, dev);
+        if (ret == 0) {
+            attached++;
+            log_info("iwlwifi", "%s attached successfully", iface->name);
+        } else {
+            log_warn("iwlwifi", "%s attach failed (%d)", iface->name, ret);
+        }
+    }
+
+    if (attached == 0) {
+        log_warn("iwlwifi", "no devices attached");
+        return -1;
+    }
+
+    log_info("iwlwifi", "driver initialized, %d device(s) attached", attached);
+    return 0;
+}
+
+/* ---------------------------------------------------------------------
+ *  Cleanup – not used in the current kernel (no unload), but kept for
+ *  completeness.
+ * --------------------------------------------------------------------- */
+void iwlwifi_exit(void)
+{
+    /* Not implemented - no module unloading in this kernel */
 }

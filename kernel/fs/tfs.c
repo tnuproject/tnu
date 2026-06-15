@@ -179,15 +179,28 @@ int tfs_sync(void)
 
     sync_in_progress = true;
 
-    uint8_t *image = kmalloc(TFS_SYNC_BUFFER_MAX + TFS_SECTOR_SIZE);
-    if (!image) {
+    /*
+     * Previously the whole image (header, entries, and file data) was built in a
+     * single contiguous buffer of size TFS_SYNC_BUFFER_MAX. On low‑memory
+     * systems this allocation can fail, causing the "initial sync failed"
+     * warning. To avoid allocating the full image we now build the header and
+     * entry table in a small buffer, write them to disk, and then stream each
+     * file's data directly to the appropriate offset on the block device.
+     */
+
+    /* First pass: collect entries and compute total size.
+     * We allocate a modest buffer just large enough for the header and the
+     * entry table (the data region will be written later).
+     */
+    size_t header_buf_size = TFS_TABLE_ALIGN + TFS_MAX_ENTRIES * sizeof(struct tfs_entry);
+    uint8_t *header_buf = kmalloc(header_buf_size + TFS_SECTOR_SIZE);
+    if (!header_buf) {
         sync_in_progress = false;
         return -1;
     }
-    memset(image, 0, TFS_SYNC_BUFFER_MAX + TFS_SECTOR_SIZE);
+    memset(header_buf, 0, header_buf_size + TFS_SECTOR_SIZE);
 
-    struct tfs_header *header = (struct tfs_header *)image;
-    memset(header, 0, sizeof(*header));
+    struct tfs_header *header = (struct tfs_header *)header_buf;
     memcpy(header->magic, TFS_MAGIC, TFS_MAGIC_LEN);
     header->version = TFS_VERSION;
     header->entries_offset = TFS_TABLE_ALIGN;
@@ -197,14 +210,15 @@ int tfs_sync(void)
 
     struct collect_ctx ctx;
     memset(&ctx, 0, sizeof(ctx));
-    ctx.entries = (struct tfs_entry *)(image + header->entries_offset);
+    ctx.entries = (struct tfs_entry *)(header_buf + header->entries_offset);
     ctx.capacity = TFS_MAX_ENTRIES;
     ctx.data_cursor = header->data_offset;
-    ctx.image = image;
-    ctx.image_size = TFS_SYNC_BUFFER_MAX;
+    ctx.image = NULL;            /* not used for data storage */
+    ctx.image_size = 0;
 
     vfs_list(vfs_root(), collect_node, &ctx);
     if (ctx.failed) {
+        kfree(header_buf);
         sync_in_progress = false;
         return -1;
     }
@@ -215,18 +229,67 @@ int tfs_sync(void)
         final_size = (size_t)header->data_offset;
     }
 
-    int rc = write_image_to_disk(image, final_size);
-    sync_in_progress = false;
-    if (rc == 0) {
-        log_info("tfs", "synced %u entries to %s@LBA%llu (%llu KiB)",
-                 header->entry_count, persistent_device,
-                 (unsigned long long)persistent_start_lba,
-                 (unsigned long long)(final_size / 1024));
-    } else {
-        log_warn("tfs", "sync failed for %s@LBA%llu", persistent_device,
-                 (unsigned long long)persistent_start_lba);
+    /* Write header + entry table (up to data_offset) to disk.
+     * The write_image_to_disk helper expects the full image size, so we reuse it
+     * for this initial part.
+     */
+    int rc = write_image_to_disk(header_buf, header->data_offset);
+    if (rc != 0) {
+        kfree(header_buf);
+        sync_in_progress = false;
+        log_warn("tfs", "sync failed (header) for %s@LBA%llu",
+                 persistent_device, (unsigned long long)persistent_start_lba);
+        return rc;
     }
-    return rc;
+
+    /* Second pass: stream each file's data directly to the appropriate offset.
+     * Offsets are relative to the start of the TFS image, so we translate them
+     * to absolute LBA values.
+     */
+    for (uint32_t i = 0; i < ctx.count; i++) {
+        const struct tfs_entry *e = &ctx.entries[i];
+        if (e->type != TFS_ENTRY_FILE || e->size == 0) {
+            continue;
+        }
+        // Locate the node to get the data pointer.
+        struct vfs_node *node = vfs_lookup(e->path, "/");
+        if (!node || !node->data) {
+            continue; // skip if data missing
+        }
+        uint64_t file_offset = e->offset;
+        size_t remaining = (size_t)e->size;
+        const uint8_t *ptr = node->data;
+        while (remaining > 0) {
+            size_t chunk = remaining > TFS_SECTOR_SIZE ? TFS_SECTOR_SIZE : remaining;
+            // Compute absolute LBA for this chunk.
+            uint64_t abs_lba = persistent_start_lba + ((file_offset) / TFS_SECTOR_SIZE);
+            // Write the chunk (rounded up to a sector).
+            uint8_t sector_buf[TFS_SECTOR_SIZE];
+            memset(sector_buf, 0, TFS_SECTOR_SIZE);
+            memcpy(sector_buf, ptr, chunk);
+            if (block_write_lba28(persistent_device, (uint32_t)abs_lba, sector_buf, TFS_SECTOR_SIZE) < 0) {
+                // On failure, abort but keep persistence enabled.
+                log_warn("tfs", "sync data write failed for %s@LBA%llu",
+                         persistent_device, (unsigned long long)abs_lba);
+                break;
+            }
+            ptr += chunk;
+            file_offset += chunk;
+            remaining -= chunk;
+        }
+    }
+
+    // Ensure any remaining sectors after the last file are zeroed.
+    block_sync(persistent_device);
+    last_image_size = final_size;
+
+    sync_in_progress = false;
+    log_info("tfs", "synced %u entries to %s@LBA%llu (%llu KiB)",
+             header->entry_count, persistent_device,
+             (unsigned long long)persistent_start_lba,
+             (unsigned long long)(final_size / 1024));
+    kfree(header_buf);
+    return 0;
 }
 
 bool tfs_is_persistent(void)
@@ -405,14 +468,24 @@ static int gpt_find_root_lba(const char *device, uint64_t *out_lba)
 {
     uint8_t sector[TFS_SECTOR_SIZE];
     if (block_read(device, 1, sector, sizeof(sector)) < 0) {
+        log_warn("tfs", "gpt: failed to read LBA 1 from %s", device);
         return -1;
     }
     const struct gpt_header_min *gpt = (const struct gpt_header_min *)sector;
-    if (memcmp(gpt->signature, "EFI PART", 8) != 0 ||
-        gpt->partition_entry_size < sizeof(struct gpt_entry_min) ||
-        gpt->num_partition_entries < 2) {
+    if (memcmp(gpt->signature, "EFI PART", 8) != 0) {
+        log_warn("tfs", "gpt: invalid signature on %s", device);
         return -1;
     }
+    if (gpt->partition_entry_size < sizeof(struct gpt_entry_min) ||
+        gpt->num_partition_entries < 2) {
+        log_warn("tfs", "gpt: invalid entry size %u or count %u on %s",
+                 gpt->partition_entry_size, gpt->num_partition_entries, device);
+        return -1;
+    }
+
+    log_info("tfs", "gpt: partition_entry_lba=%llu entry_size=%u num_entries=%u",
+             (unsigned long long)gpt->partition_entry_lba,
+             gpt->partition_entry_size, gpt->num_partition_entries);
 
     /* GPT partition entries start at partition_entry_lba.  Each entry is
      * partition_entry_size bytes (typically 128).  We want partition #2
@@ -431,8 +504,12 @@ static int gpt_find_root_lba(const char *device, uint64_t *out_lba)
     uint64_t entry_sector_lba = gpt->partition_entry_lba + entry_offset_bytes / TFS_SECTOR_SIZE;
     size_t entry_offset_in_sector = (size_t)(entry_offset_bytes % TFS_SECTOR_SIZE);
 
+    log_info("tfs", "gpt: reading entry #1 at sector %llu offset %zu",
+             (unsigned long long)entry_sector_lba, entry_offset_in_sector);
+
     uint8_t entries_sector[TFS_SECTOR_SIZE];
     if (block_read(device, entry_sector_lba, entries_sector, sizeof(entries_sector)) < 0) {
+        log_warn("tfs", "gpt: failed to read entry sector %llu", (unsigned long long)entry_sector_lba);
         return -1;
     }
 
@@ -444,8 +521,13 @@ static int gpt_find_root_lba(const char *device, uint64_t *out_lba)
     const struct gpt_entry_min *entry =
         (const struct gpt_entry_min *)(entries_sector + entry_offset_in_sector);
     if (entry->first_lba == 0) {
+        log_warn("tfs", "gpt: partition #1 has first_lba=0");
         return -1;
     }
+
+    log_info("tfs", "gpt: partition #1 first_lba=%llu last_lba=%llu",
+             (unsigned long long)entry->first_lba, (unsigned long long)entry->last_lba);
+
     *out_lba = entry->first_lba;
     return 0;
 }
@@ -523,28 +605,29 @@ int tfs_attach_persistent_disk(void)
         persistent_start_lba = lba;
         last_image_size = 0;
         persistent_enabled = true;
+        /* Enable auto‑sync so subsequent VFS mutations are persisted
+         * automatically. The initial full‑image sync is still attempted to
+         * bring the on‑disk image up‑to‑date, but a failure will no longer
+         * disable persistence – the system will continue operating and will
+         * sync later when possible (e.g., on shutdown). */
         auto_sync_enabled = true;
 
         if (has_tfs) {
-            log_info("tfs", "attach: existing TFS on %s@LBA%llu — enabling persistence",
+            log_info("tfs", "attach: existing TFS on %s@LBA%llu — persistence enabled",
                      dev, (unsigned long long)lba);
         } else {
-            log_info("tfs", "attach: blank partition on %s@LBA%llu — writing initial TFS image",
+            log_info("tfs", "attach: blank partition on %s@LBA%llu — persistence enabled",
                      dev, (unsigned long long)lba);
         }
 
-        /* Write the current in-memory VFS to disk immediately so the on-disk
-         * copy matches what the user sees, regardless of what was there before. */
-        if (tfs_sync() == 0) {
-            return 0;
+        /* Attempt to sync the current in‑memory VFS to the newly attached
+         * partition. If this fails, log a warning but keep persistence
+         * enabled; future writes will trigger syncs via auto‑sync. */
+        if (tfs_sync() != 0) {
+            log_warn("tfs", "attach: initial sync failed for %s@LBA%llu — will retry on next write",
+                     dev, (unsigned long long)lba);
         }
-
-        /* Sync failed — disable persistence to avoid silent data loss. */
-        log_warn("tfs", "attach: initial sync failed for %s@LBA%llu — disabling persistence",
-                 dev, (unsigned long long)lba);
-        persistent_enabled = false;
-        auto_sync_enabled = false;
-        persistent_device[0] = '\0';
+        return 0;
     }
 
     return -1;

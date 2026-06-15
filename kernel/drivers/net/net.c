@@ -199,6 +199,17 @@ static bool is_wifi(const struct pci_device *dev)
     return dev->class_code == 0x02 && dev->subclass == 0x80;
 }
 
+/* Find the next available net_iface slot, or NULL if none available */
+struct net_iface *find_free_iface(void)
+{
+    for (size_t i = 0; i < NET_IFACE_MAX; i++) {
+        if (!ifaces[i].driver) {
+            return &ifaces[i];
+        }
+    }
+    return NULL;
+}
+
 static bool is_intel_wifi(const struct pci_device *dev)
 {
     return is_wifi(dev) && dev->vendor_id == 0x8086;
@@ -1305,7 +1316,6 @@ int net_wifi_connect(const char *iface_name, const char *ssid, const char *passp
         if (rc == 0) {
             iface->up = true;
             iface->link = true;
-            iface->ssid = ssid;
             int dhcp = net_iface_dhcp(iface_name);
             if (dhcp < 0) {
                 log_warn("iwlwifi", "%s associated with '%s' but DHCP failed (%d)",
@@ -1427,4 +1437,58 @@ int net_wifi_autoconnect(void)
     struct wifi_autoconnect_ctx ctx = {0};
     vfs_list(dir, wifi_autoconnect_emit, &ctx);
     return ctx.connected > 0 ? 0 : (ctx.attempted > 0 ? -1 : 0);
+}
+
+int net_wifi_scan_results(struct wifi_ap *out, size_t max_aps)
+{
+    if (!out || max_aps == 0) {
+        return -1;
+    }
+    size_t count = 0;
+    for (size_t i = 0; i < iface_count && count < max_aps; i++) {
+        if (ifaces[i].type != NET_IFACE_WIFI || strcmp(ifaces[i].driver, "iwlwifi") != 0) {
+            continue;
+        }
+        const struct iwlwifi_state *st = iwlwifi_state_for(&ifaces[i]);
+        if (!st) {
+            continue;
+        }
+        size_t n = st->ap_count < max_aps - count ? st->ap_count : max_aps - count;
+        for (size_t j = 0; j < n; j++) {
+            const struct iwlwifi_ap *ap = &st->aps[j];
+            if (!ap->valid) {
+                continue;
+            }
+            memset(&out[count], 0, sizeof(out[count]));
+            strncpy(out[count].ssid, ap->ssid, sizeof(out[count].ssid) - 1);
+            memcpy(out[count].bssid, ap->bssid, sizeof(out[count].bssid));
+            out[count].rssi = ap->rssi;
+            out[count].flags = ap->privacy ? 1u : 0u;
+            count++;
+        }
+    }
+    return (int)count;
+}
+
+int net_wifi_status(struct wifi_status *out)
+{
+    if (!out) {
+        return -1;
+    }
+    memset(out, 0, sizeof(*out));
+    for (size_t i = 0; i < iface_count; i++) {
+        if (ifaces[i].type != NET_IFACE_WIFI || strcmp(ifaces[i].driver, "iwlwifi") != 0) {
+            continue;
+        }
+        const struct iwlwifi_state *st = iwlwifi_state_for(&ifaces[i]);
+        if (!st) {
+            continue;
+        }
+        if (st->associated && st->link_ready) {
+            out->connected = true;
+            strncpy(out->ssid, st->associated_ssid, sizeof(out->ssid) - 1);
+            return 0;
+        }
+    }
+    return 0;
 }

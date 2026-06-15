@@ -1,6 +1,7 @@
 #ifndef TNU_SYSCALL_H
 #define TNU_SYSCALL_H
 
+#include <tnu/iwlwifi.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <sys/types.h>
@@ -46,7 +47,20 @@ enum syscall_number {
     SYS_LOGIN = 36,
     /* Flush the persistent TFS image to disk immediately. */
     SYS_SYNC  = 37,
+    /* Memory-map device (e.g. framebuffer) into user address space. */
+    SYS_MMAP  = 38,
+    /* POSIX select / pselect6 — used by nano, editors, networking. */
+    SYS_SELECT  = 39,
+    SYS_PSELECT = 40,
+    /* Wi-Fi control plane for scan/connect/status. */
+    SYS_WIFI_SCAN = 41,
+    SYS_WIFI_CONNECT = 42,
+    SYS_WIFI_STATUS = 43,
 };
+
+int wifi_scan(struct wifi_ap *out, size_t max_aps);
+int wifi_connect(const char *iface, const char *ssid, const char *passphrase);
+int wifi_status(struct wifi_status *out);
 
 #define TNU_IOCTL_FB_GETINFO 0x544e4601u
 #define TNU_IOCTL_TTY_GETSIZE 0x544e5401u

@@ -17,6 +17,7 @@ void keyboard_debug_stats(void);
 int keyboard_set_layout(const char *name);
 const char *keyboard_current_layout(void);
 const char *keyboard_available_layouts(void);
+int keyboard_is_ctrl_down(void);
 
 #define KEY_UP     0x101
 #define KEY_DOWN   0x102
