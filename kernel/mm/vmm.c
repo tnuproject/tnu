@@ -4,10 +4,16 @@
 
 extern uint64_t pml4_table[];
 
-#define PTE_PRESENT 0x001ULL
+#define PTE_PRESENT  0x001ULL
 #define PTE_WRITABLE 0x002ULL
-#define PTE_USER 0x004ULL
-#define PTE_HUGE 0x080ULL
+#define PTE_USER     0x004ULL
+/* PWT bit — selects Write-Combining memory type when PAT is configured
+ * (PAT entry 1 = WC is the BIOS/UEFI default on virtually all x86_64 systems). */
+#define PTE_PWT      0x008ULL
+#define PTE_HUGE     0x080ULL
+
+/* VMM_FLAG_WC (0x008) maps to PTE_PWT for Write-Combining. */
+#define VMM_WC_FLAG  0x008ULL
 
 #define PAGE_TABLE_ENTRIES 512
 #define HUGE_PAGE_SIZE (2ULL * 1024ULL * 1024ULL)
@@ -87,7 +93,14 @@ static int map_huge_identity(uintptr_t addr, uint64_t flags)
 
     uint64_t *pd = table_from_entry(pdpt[pdpt_index]);
     if (!(pd[pd_index] & PTE_PRESENT)) {
-        pd[pd_index] = aligned | PTE_PRESENT | PTE_WRITABLE | PTE_HUGE | flags;
+        /* Translate VMM_FLAG_WC (bit 3) → PTE_PWT (bit 3) for huge-page PDE.
+         * For 2MiB huge pages the PAT bit is bit 12 of the PDE, but PWT alone
+         * is sufficient to select WC on systems where PAT[1]=WC (the default). */
+        uint64_t pte_flags = flags & ~VMM_WC_FLAG; /* strip our logical flag */
+        if (flags & VMM_WC_FLAG) {
+            pte_flags |= PTE_PWT;                  /* apply hardware bit */
+        }
+        pd[pd_index] = aligned | PTE_PRESENT | PTE_WRITABLE | PTE_HUGE | pte_flags;
     } else {
         pd[pd_index] |= flags;
     }

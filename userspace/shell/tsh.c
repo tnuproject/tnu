@@ -104,6 +104,7 @@ int main(int argc, char **argv)
         print(getuid() == 0 ? "# " : "$ ");
         read_line(line, sizeof(line));
         if (strcmp(line, "exit") == 0) {
+            sync(); /* flush TFS to disk before leaving */
             return 0;
         }
         if (line[0]) {

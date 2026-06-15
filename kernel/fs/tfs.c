@@ -414,12 +414,35 @@ static int gpt_find_root_lba(const char *device, uint64_t *out_lba)
         return -1;
     }
 
-    uint8_t entries_sector[TFS_SECTOR_SIZE];
-    if (block_read(device, gpt->partition_entry_lba, entries_sector, sizeof(entries_sector)) < 0) {
+    /* GPT partition entries start at partition_entry_lba.  Each entry is
+     * partition_entry_size bytes (typically 128).  We want partition #2
+     * (index 1 in 0-based array), which is at byte offset:
+     *   partition_entry_size * 1
+     * from the start of the entries array.  Since entries may span multiple
+     * sectors, we calculate the sector offset and byte offset within that
+     * sector, then read the correct sector and extract the entry. */
+    uint32_t entry_size = gpt->partition_entry_size;
+    if (entry_size == 0 || entry_size > TFS_SECTOR_SIZE) {
         return -1;
     }
+
+    /* Partition #2 is at array index 1 */
+    uint64_t entry_offset_bytes = (uint64_t)entry_size * 1;
+    uint64_t entry_sector_lba = gpt->partition_entry_lba + entry_offset_bytes / TFS_SECTOR_SIZE;
+    size_t entry_offset_in_sector = (size_t)(entry_offset_bytes % TFS_SECTOR_SIZE);
+
+    uint8_t entries_sector[TFS_SECTOR_SIZE];
+    if (block_read(device, entry_sector_lba, entries_sector, sizeof(entries_sector)) < 0) {
+        return -1;
+    }
+
+    /* Ensure the entry fits within the sector we just read */
+    if (entry_offset_in_sector + entry_size > TFS_SECTOR_SIZE) {
+        return -1;
+    }
+
     const struct gpt_entry_min *entry =
-        (const struct gpt_entry_min *)(entries_sector + gpt->partition_entry_size); /* partition #2 */
+        (const struct gpt_entry_min *)(entries_sector + entry_offset_in_sector);
     if (entry->first_lba == 0) {
         return -1;
     }
@@ -443,5 +466,86 @@ int tfs_mount_installed_root(void)
             return 0;
         }
     }
+    return -1;
+}
+
+/*
+ * tfs_attach_persistent_disk — called after a RAM-module boot.
+ *
+ * When the kernel boots from a GRUB-supplied root.tfs module (because the disk
+ * mount failed or was skipped), the in-memory VFS is populated but
+ * persistent_enabled is false.  Any user changes are therefore lost on reboot.
+ *
+ * This function scans the same disk candidates as tfs_mount_installed_root.
+ * For each candidate it reads the GPT to locate the root partition and checks
+ * whether that partition already holds a valid TFS image.  If it does, it
+ * re-enables persistence pointing at that partition and immediately syncs the
+ * current in-memory VFS back to disk so the two are in sync.
+ *
+ * If the partition holds something other than TFS (e.g. it was freshly
+ * formatted by sysinstall but never written yet), the function still attaches
+ * the device and writes a fresh TFS image — making the first sync effectively
+ * an install step that handles "first-boot after sysinstall" transparently.
+ */
+int tfs_attach_persistent_disk(void)
+{
+    /* Already persistent — nothing to do. */
+    if (persistent_enabled) {
+        return 0;
+    }
+
+    static const char *const candidates[] = { "sda", "sdb", "sdc", "sdd" };
+    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
+        const char *dev = candidates[i];
+        if (!block_device_find(dev)) {
+            continue;
+        }
+
+        uint64_t lba = TFS_DEFAULT_ROOT_LBA;
+        if (gpt_find_root_lba(dev, &lba) < 0) {
+            lba = TFS_DEFAULT_ROOT_LBA;
+        }
+
+        /* Check if the partition sector is readable. */
+        uint8_t sector[TFS_SECTOR_SIZE];
+        if (block_read(dev, lba, sector, sizeof(sector)) < 0) {
+            continue;
+        }
+
+        /* Accept both a pre-existing TFS image and a blank partition. */
+        const struct tfs_header *hdr = (const struct tfs_header *)sector;
+        bool has_tfs = (memcmp(hdr->magic, TFS_MAGIC, TFS_MAGIC_LEN) == 0 &&
+                        hdr->version == TFS_VERSION);
+
+        /* Point persistence at this device. */
+        strncpy(persistent_device, dev, sizeof(persistent_device) - 1);
+        persistent_device[sizeof(persistent_device) - 1] = '\0';
+        persistent_start_lba = lba;
+        last_image_size = 0;
+        persistent_enabled = true;
+        auto_sync_enabled = true;
+
+        if (has_tfs) {
+            log_info("tfs", "attach: existing TFS on %s@LBA%llu — enabling persistence",
+                     dev, (unsigned long long)lba);
+        } else {
+            log_info("tfs", "attach: blank partition on %s@LBA%llu — writing initial TFS image",
+                     dev, (unsigned long long)lba);
+        }
+
+        /* Write the current in-memory VFS to disk immediately so the on-disk
+         * copy matches what the user sees, regardless of what was there before. */
+        if (tfs_sync() == 0) {
+            return 0;
+        }
+
+        /* Sync failed — disable persistence to avoid silent data loss. */
+        log_warn("tfs", "attach: initial sync failed for %s@LBA%llu — disabling persistence",
+                 dev, (unsigned long long)lba);
+        persistent_enabled = false;
+        auto_sync_enabled = false;
+        persistent_device[0] = '\0';
+    }
+
     return -1;
 }

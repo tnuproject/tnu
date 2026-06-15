@@ -606,6 +606,12 @@ static int perform_installation(const char *disk_device, uint64_t disk_size_sect
         return 1;
     }
 
+    /* Flush the in-memory TFS image to disk so any changes made during
+     * installation (e.g. writing /etc/fstab) are stored persistently. */
+    printf("\nStep 5: Syncing filesystem...\n");
+    sync();
+    printf("  Filesystem synced.\n");
+
     printf("\nInstallation complete. Reboot and select %s in firmware/boot menu.\n", disk_device);
     return 0;
 }

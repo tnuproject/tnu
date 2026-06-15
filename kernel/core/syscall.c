@@ -9,6 +9,7 @@
 #include <tnu/string.h>
 #include <tnu/syscall.h>
 #include <tnu/syscall_disposition.h>
+#include <tnu/tfs.h>
 #include <tnu/user.h>
 #include <tnu/vfs.h>
 #include <tnu/block.h>
@@ -1289,6 +1290,16 @@ static long sys_block_sync(uint32_t index)
 }
 
 
+static uint64_t syscall_encode_result(long value, uint64_t flags)
+{
+    /*
+     * Encoded syscall return:
+     * low  32 bits = return value
+     * high 32 bits = syscall disposition flags
+     */
+    return ((uint64_t)flags << 32) | ((uint32_t)value);
+}
+
 static long sys_login(const char *user_ptr, const char *password_ptr)
 {
     char name[USER_NAME_MAX + 1];
@@ -1479,7 +1490,13 @@ long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
         return sys_exec_image((const char *)a0, (int)a1, (char **)a2);
     case SYS_WAIT:
         return -1;
+    case SYS_SYNC:
+        return (long)tfs_sync();
     case SYS_EXIT:
+        /* Flush the persistent TFS before the process exits so that any
+         * changes made during this session are not lost if the user shuts
+         * down without an explicit sync call. */
+        tfs_sync_if_mounted();
         process_exit(proc, (int)a0);
         return (long)syscall_encode_result((long)a0, SYSCALL_RET_TO_KERNEL);
 

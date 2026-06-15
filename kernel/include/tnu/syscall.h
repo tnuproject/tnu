@@ -42,6 +42,8 @@ enum syscall_number {
     SYS_BLOCK_WRITE = 34,
     SYS_BLOCK_SYNC = 35,
     SYS_LOGIN = 36,
+    /* Flush the persistent TFS image to disk immediately. */
+    SYS_SYNC  = 37,
 };
 
 #define TNU_IOCTL_FB_GETINFO 0x544e4601u

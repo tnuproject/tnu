@@ -4,6 +4,9 @@
 #include <tnu/types.h>
 
 void *memset(void *dest, int value, size_t n);
+/* Fill 'count' uint32_t words starting at 'dest' with 'value'.
+ * Faster than memset for framebuffer pixel fills: uses 'rep stosl'. */
+void *memset32(void *dest, uint32_t value, size_t count);
 void *memcpy(void *dest, const void *src, size_t n);
 void *memmove(void *dest, const void *src, size_t n);
 int memcmp(const void *a, const void *b, size_t n);

@@ -7,6 +7,10 @@
 #define PAGE_SIZE 4096UL
 #define VMM_FLAG_WRITABLE 0x002ULL
 #define VMM_FLAG_USER     0x004ULL
+/* Write-Combining: PWT=1, PCD=0 on a PAT-enabled CPU selects WC memory type.
+ * Use this for the linear framebuffer so bulk stores are coalesced by the CPU
+ * write-combining buffers instead of going out as individual MMIO transactions. */
+#define VMM_FLAG_WC       0x008ULL
 
 struct memory_stats {
     uint64_t total_bytes;

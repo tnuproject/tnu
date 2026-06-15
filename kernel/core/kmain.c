@@ -225,6 +225,21 @@ void arch_entry(uint32_t magic, uintptr_t mbi_addr)
         boot_warn();
     }
 
+    /*
+     * Persistence attachment: if we booted from a RAM module (tfs_mount_image)
+     * rather than from disk (tfs_mount_installed_root), try to find an
+     * installed TFS partition and attach it so changes survive reboots.
+     * On a live-CD with no installed disk this returns -1 silently.
+     */
+    if (!tfs_is_persistent()) {
+        boot_begin("TFS persistence attach");
+        if (tfs_attach_persistent_disk() == 0) {
+            boot_ok();
+        } else {
+            boot_warn();
+        }
+    }
+
     /* Recreate volatile device nodes after mounting root, so /dev is always live. */
     boot_begin("Device filesystem refresh");
     devfs_init();

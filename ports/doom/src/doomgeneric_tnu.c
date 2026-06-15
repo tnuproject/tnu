@@ -121,7 +121,8 @@ static void checkKeys(void)
 void DG_Init(void)
 {
     fb_fd  = open("/dev/fb0", O_WRONLY);
-    kbd_fd = open("/dev/input/kbd", O_RDONLY);
+    /* Open keyboard in NON-BLOCKING mode to prevent hangs in checkKeys() */
+    kbd_fd = open("/dev/input/kbd", O_RDONLY | O_NONBLOCK);
 
     if (fb_fd >= 0) {
         struct syscall_fb_info info;
@@ -190,10 +191,49 @@ void DG_DrawFrame(void)
 void DG_SleepMs(uint32_t ms)
 {
     if (ms == 0) return;
+
+    /* Use nanosleep syscall if available (preferred), otherwise fall back to
+     * a bounded busy-wait with yield to prevent infinite loops on systems
+     * where uptime_ms might be stuck at 0 or overflow. */
+    struct {
+        int64_t tv_sec;
+        int64_t tv_nsec;
+    } req;
+    req.tv_sec = (int64_t)(ms / 1000);
+    req.tv_nsec = (int64_t)((ms % 1000) * 1000000);
+    
+    /* Try nanosleep first (SYS_NANOSLEEP = 29) */
+    long ret = tnu_syscall(29, (long)&req, 0, 0, 0, 0, 0);
+    if (ret == 0) return;
+
+    /* Fallback: bounded busy-wait with early exit if uptime doesn't advance.
+     * This prevents infinite loops when uptime_ms is broken or stuck at 0. */
     uint64_t start = (uint64_t)tnu_syscall(SYS_UPTIME_MS, 0, 0, 0, 0, 0, 0);
-    uint64_t end   = start + ms;
-    while ((uint64_t)tnu_syscall(SYS_UPTIME_MS, 0, 0, 0, 0, 0, 0) < end)
+    if (start == 0) {
+        /* Timer not initialized yet — just yield once and return */
         __asm__ volatile("pause");
+        return;
+    }
+
+    uint64_t end = start + ms;
+    uint32_t iterations = 0;
+    uint64_t last_time = start;
+
+    while ((uint64_t)tnu_syscall(SYS_UPTIME_MS, 0, 0, 0, 0, 0, 0) < end) {
+        __asm__ volatile("pause");
+        
+        /* Safety: if we've iterated 100000 times without time advancing,
+         * assume the timer is stuck and break out to prevent hang. */
+        if (++iterations > 100000) {
+            uint64_t now = (uint64_t)tnu_syscall(SYS_UPTIME_MS, 0, 0, 0, 0, 0, 0);
+            if (now == last_time) {
+                /* Time is stuck — abort sleep to prevent infinite loop */
+                break;
+            }
+            last_time = now;
+            iterations = 0;
+        }
+    }
 }
 
 uint32_t DG_GetTicksMs(void)

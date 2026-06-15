@@ -22,6 +22,9 @@
 #ifndef O_EXCL
 #define O_EXCL   0x800
 #endif
+#ifndef O_NONBLOCK
+#define O_NONBLOCK 0x4000
+#endif
 
 int open(const char *path, int flags, ...);
 

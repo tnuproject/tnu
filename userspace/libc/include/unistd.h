@@ -68,6 +68,10 @@ uint64_t uptime_ms(void);
 /* memory */
 void *sbrk(intptr_t increment);
 
+/* sync — flush all pending filesystem writes to disk.
+ * On TNU this flushes the persistent TFS image. */
+int sync(void);
+
 #define _PC_PIPE_BUF 1
 
 void _exit(int status) __attribute__((noreturn));

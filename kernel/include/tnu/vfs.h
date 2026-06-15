@@ -14,6 +14,7 @@
 #define VFS_O_TRUNC  0x200
 #define VFS_O_APPEND 0x400
 #define VFS_O_EXCL   0x800
+#define VFS_O_NONBLOCK 0x4000
 
 #define VFS_S_IFDIR  0040000
 #define VFS_S_IFREG  0100000
