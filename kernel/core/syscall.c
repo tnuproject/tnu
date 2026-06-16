@@ -791,6 +791,9 @@ static long sys_access(const char *path, int mode)
 
 static long sys_readdir(int fd, struct syscall_dirent *out)
 {
+    if (!uptr_ok(out, sizeof(*out))) {
+        return -1;
+    }
     struct process *proc = process_current();
     struct file_descriptor *file = process_get_fd(proc, fd);
     if (!file || !out || !file->node || file->node->type != VFS_NODE_DIR) {
@@ -1710,6 +1713,9 @@ long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
         return vfs_normalize((const char *)a0, proc->cwd, proc->cwd, sizeof(proc->cwd));
     }
     case SYS_GETCWD:
+        if ((size_t)a1 == 0 || !uptr_ok((void *)a0, (size_t)a1)) {
+            return -1;
+        }
         strncpy((char *)a0, proc->cwd, (size_t)a1);
         return 0;
     case SYS_MKDIR:
@@ -1748,6 +1754,9 @@ long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
         return vfs_unlink(normal, "/");
     }
     case SYS_STAT:
+        if (!uptr_ok((void *)a1, sizeof(struct vfs_stat))) {
+            return -1;
+        }
         return vfs_stat((const char *)a0, proc->cwd, (struct vfs_stat *)a1);
     case SYS_FSTAT:
         return sys_fstat((int)a0, (struct vfs_stat *)a1);
