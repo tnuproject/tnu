@@ -1,6 +1,6 @@
 # Tiramisù
 
-[Image](https://raw.githubusercontent.com/tnuproject/tnu/refs/heads/main/assets/screenshot.png)
+![Image](https://raw.githubusercontent.com/tnuproject/tnu/refs/heads/main/assets/screenshot.png)
 
 ## What is TNU/Tiramisu?
 
