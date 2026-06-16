@@ -162,8 +162,8 @@ $(KERNEL): $(KERNEL_OBJS) kernel/linker.ld $(GENERATED_VERSION)
 	@mkdir -p $(dir $@)
 	$(CC) $(KERNEL_CFLAGS) $(KERNEL_LDFLAGS) -o $@ $(KERNEL_OBJS) -lgcc
 	$(GRUB_FILE) --is-x86-multiboot2 $@
-	@$(READELF) -h $@ | grep -q '$(ELF_CLASS_RE)' || { $(READELF) -h $@; echo "error: $@ is not the expected $(ARCH)-class kernel"; false; }
-	@$(READELF) -h $@ | grep -q '$(ELF_MACHINE_RE)' || { $(READELF) -h $@; echo "error: $@ is not the expected $(ARCH) machine type"; false; }
+	@LC_ALL=C $(READELF) -h $@ | grep -q '$(ELF_CLASS_RE)' || { LC_ALL=C $(READELF) -h $@; echo "error: $@ is not the expected $(ARCH)-class kernel"; false; }
+	@LC_ALL=C $(READELF) -h $@ | grep -q '$(ELF_MACHINE_RE)' || { LC_ALL=C $(READELF) -h $@; echo "error: $@ is not the expected $(ARCH) machine type"; false; }
 
 $(BUILD)/obj/kernel/%.o: kernel/%.c $(KERNEL_HEADERS)
 	@mkdir -p $(dir $@)
@@ -285,7 +285,7 @@ $(INSTALL_IMAGE): $(KERNEL) $(ROOTFS) $(GENERATED_GRUB) $(EFI_BOOT)
 	mkdir -p $(BUILD)/install-iso/boot/grub/fonts $(BUILD)/install-iso/EFI/BOOT
 	cp $(KERNEL) $(BUILD)/install-iso/boot/kernel.elf
 	$(GRUB_FILE) --is-x86-multiboot2 $(BUILD)/install-iso/boot/kernel.elf
-	@$(READELF) -h $(BUILD)/install-iso/boot/kernel.elf | grep -q '$(ELF_CLASS_RE)' || { $(READELF) -h $(BUILD)/install-iso/boot/kernel.elf; echo "error: install kernel is not the expected $(ARCH)-class kernel"; false; }
+	@LC_ALL=C $(READELF) -h $(BUILD)/install-iso/boot/kernel.elf | grep -q '$(ELF_CLASS_RE)' || { LC_ALL=C $(READELF) -h $(BUILD)/install-iso/boot/kernel.elf; echo "error: install kernel is not the expected $(ARCH)-class kernel"; false; }
 	$(READELF) -l $(BUILD)/install-iso/boot/kernel.elf | grep -q 'LOAD'
 	cp $(ROOTFS) $(BUILD)/install-iso/boot/root.tfs
 	cp $(GENERATED_GRUB) $(BUILD)/install-iso/boot/grub/grub.cfg
@@ -303,7 +303,7 @@ $(ISO): $(KERNEL) $(ROOTFS) $(GENERATED_GRUB) $(EFI_BOOT) $(INSTALL_IMAGE)
 	mkdir -p $(BUILD)/iso/boot/grub/fonts $(BUILD)/iso/EFI/BOOT
 	cp $(KERNEL) $(BUILD)/iso/boot/kernel.elf
 	$(GRUB_FILE) --is-x86-multiboot2 $(BUILD)/iso/boot/kernel.elf
-	@$(READELF) -h $(BUILD)/iso/boot/kernel.elf | grep -q '$(ELF_CLASS_RE)' || { $(READELF) -h $(BUILD)/iso/boot/kernel.elf; echo "error: ISO kernel is not the expected $(ARCH)-class kernel"; false; }
+	@LC_ALL=C $(READELF) -h $(BUILD)/iso/boot/kernel.elf | grep -q '$(ELF_CLASS_RE)' || { LC_ALL=C $(READELF) -h $(BUILD)/iso/boot/kernel.elf; echo "error: ISO kernel is not the expected $(ARCH)-class kernel"; false; }
 	$(READELF) -l $(BUILD)/iso/boot/kernel.elf | grep -q 'LOAD'
 	cp $(ROOTFS) $(BUILD)/iso/boot/root.tfs
 	cp $(INSTALL_IMAGE) $(BUILD)/iso/boot/install.img
@@ -377,8 +377,8 @@ ports-patch-doom: ports-fetch-doom-upstream
 
 verify-kernel: $(KERNEL)
 	$(GRUB_FILE) --is-x86-multiboot2 $(KERNEL)
-	$(READELF) -h $(KERNEL) | grep -q 'Class:.*ELF64'
-	$(READELF) -h $(KERNEL) | grep -q 'Machine:.*Advanced Micro Devices X86-64'
+	@LC_ALL=C $(READELF) -h $(KERNEL) | grep -q '$(ELF_CLASS_RE)' || { LC_ALL=C $(READELF) -h $(KERNEL); echo "error: $(KERNEL) is not the expected $(ARCH)-class kernel"; false; }
+	@LC_ALL=C $(READELF) -h $(KERNEL) | grep -q '$(ELF_MACHINE_RE)' || { LC_ALL=C $(READELF) -h $(KERNEL); echo "error: $(KERNEL) is not the expected $(ARCH) machine type"; false; }
 
 verify-iso: $(ISO)
 	$(ISOINFO) -i $(ISO) -R -f | grep -qx '/boot/kernel.elf'

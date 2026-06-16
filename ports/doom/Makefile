@@ -45,9 +45,12 @@ DOOM_OBJS := $(patsubst $(UPSTREAM)/%.c, \
              ../../build/obj/ports/doom/upstream/%.o, $(DOOM_SRCS))
 TNU_OBJ   := ../../build/obj/ports/doom/doomgeneric_tnu.o
 
-.PHONY: all clean fetch
+.PHONY: all build clean fetch
 
-all: fetch ../../build/user/doom
+all: fetch
+	$(MAKE) build
+
+build: ../../build/user/doom
 
 fetch: $(UPSTREAM)/doomgeneric.h
 $(UPSTREAM)/doomgeneric.h:
