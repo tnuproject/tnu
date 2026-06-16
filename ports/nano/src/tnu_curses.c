@@ -42,6 +42,8 @@ static int ungetch_len = 0;
 /* color pair table: [fg, bg] */
 static short cpairs[COLOR_PAIRS][2];
 
+static void tnu_puts(const char *s);
+
 static void restore_terminal(void)
 {
     if (raw_active) {
