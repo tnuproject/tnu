@@ -28,6 +28,11 @@ struct util_help {
     const char *help;
 };
 
+/* Forward declarations */
+static int cmd_shutdown(int argc, char **argv);
+static int cmd_reboot(int argc, char **argv);
+static int cmd_sync(int argc, char **argv);
+
 static const struct util_help help_topics[] = {
     { "echo", "echo [-n] [ARG...]", "Print arguments separated by spaces." },
     { "pwd", "pwd", "Print the current working directory." },
@@ -644,6 +649,47 @@ static int cmd_wifi(int argc, char **argv)
     println("wifi: unknown command");
     return 1;
 }
+static int cmd_shutdown(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+    
+    println("Shutting down system...");
+    sync();
+    if (shutdown() < 0) {
+        println("shutdown: permission denied (requires root)");
+        return 1;
+    }
+    return 0;
+}
+
+static int cmd_reboot(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+    
+    println("Rebooting system...");
+    sync();
+    if (reboot() < 0) {
+        println("reboot: permission denied (requires root)");
+        return 1;
+    }
+    return 0;
+}
+
+static int cmd_sync(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+    
+    println("Syncing filesystem to disk...");
+    if (sync() < 0) {
+        println("sync: failed");
+        return 1;
+    }
+    println("Sync complete.");
+    return 0;
+}
 
 int main(int argc, char **argv)
 {
@@ -679,11 +725,13 @@ int main(int argc, char **argv)
     if (strcmp(cmd, "kill") == 0) { println("usage: kill PID"); return 1; }
     if (strcmp(cmd, "chmod") == 0) return cmd_chmod(argc, argv);
     if (strcmp(cmd, "stat") == 0) return cmd_stat(argc, argv);
+    if (strcmp(cmd, "shutdown") == 0) return cmd_shutdown(argc, argv);
+    if (strcmp(cmd, "reboot") == 0) return cmd_reboot(argc, argv);
+    if (strcmp(cmd, "sync") == 0) return cmd_sync(argc, argv);
     if (strcmp(cmd, "chown") == 0) { println("usage: chown USER FILE"); return 1; }
     if (strcmp(cmd, "cp") == 0 || strcmp(cmd, "mv") == 0 ||
         strcmp(cmd, "mount") == 0 ||
-        strcmp(cmd, "dmesg") == 0 ||
-        strcmp(cmd, "reboot") == 0 || strcmp(cmd, "shutdown") == 0) {
+        strcmp(cmd, "dmesg") == 0) {
         println("utility unavailable from userspace");
         return 1;
     }

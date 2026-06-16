@@ -255,7 +255,15 @@ int sync(void)
 {
     return (int)tnu_syscall(SYS_SYNC, 0, 0, 0, 0, 0, 0);
 }
+int shutdown(void)
+{
+    return (int)tnu_syscall(44, 0, 0, 0, 0, 0, 0);
+}
 
+int reboot(void)
+{
+    return (int)tnu_syscall(45, 0, 0, 0, 0, 0, 0);
+}
 int wifi_scan(struct wifi_ap *out, size_t max_aps)
 {
     return (int)tnu_syscall(SYS_WIFI_SCAN, (long)out, (long)max_aps, 0, 0, 0, 0);

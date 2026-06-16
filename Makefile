@@ -59,7 +59,8 @@ DOOM_UPSTREAM_VIDEO ?= ports/doom/upstream/i_video.c
 BUILD := build
 KERNEL := $(BUILD)/kernel.elf
 ROOTFS := $(BUILD)/root.tfs
-ISO := $(BUILD)/$(TNU_ISO_NAME)
+# ISO filename reflects the actual architecture being built
+ISO := $(BUILD)/$(PROJECT)-$(TNU_VERSION)-$(ARCH).iso
 EFI_BOOT := $(BUILD)/BOOTX64.EFI
 INSTALL_IMAGE := $(BUILD)/install.img
 GENERATED := $(BUILD)/generated
@@ -100,7 +101,7 @@ USER_LIB := $(BUILD)/user/libtnu.a
 
 COREUTIL_NAMES := cat chmod chown clear cp date dmesg echo hostname \
 	id ifconfig keymap kill ls mkdir mount mv xedit netstat ping ps pwd reboot rm route dhcp \
-	shutdown stat sysfetch time timezone touch uname uptime usb whoami wifi
+	shutdown stat sysfetch sync time timezone touch uname uptime usb whoami wifi
 
 IWN_FW_SRC := $(shell find freebsd-src/sys/contrib/dev/iwn freebsd-src/sys/contrib/dev/wpi -maxdepth 1 -name '*.fw.uu' 2>/dev/null | sort)
 IWM_FW_SRC := $(shell find freebsd-src/sys/contrib/dev/iwm -maxdepth 1 -name '*.fw' 2>/dev/null | sort)

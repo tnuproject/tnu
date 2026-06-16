@@ -18,6 +18,7 @@
 #include <arch/cpu.h>
 #include <arch/keyboard.h>
 #include <arch/pit.h>
+#include <arch/power.h>
 
 /* Validate that a user-supplied pointer and length are within user address space */
 static bool uptr_ok(const void *ptr, size_t len)
@@ -1796,7 +1797,11 @@ long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
     case SYS_WAIT:
         return -1;
     case SYS_SYNC:
-        return (long)tfs_sync();
+        /* Force a sync regardless of auto_sync_enabled */
+        if (tfs_is_persistent()) {
+            return (long)tfs_sync();
+        }
+        return 0;
     case SYS_MMAP:
         return sys_mmap((int)a0, (size_t)a1, (int)a2, (int)a3, (int)a4, (off_t)a5);
     case SYS_SELECT:
@@ -1848,6 +1853,30 @@ long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
         }
         return net_wifi_status(out);
     }
+    case SYS_SHUTDOWN:
+        /* Only root can shutdown the system */
+        if (!is_root(proc)) {
+            return -1;
+        }
+        /* Force sync before shutdown */
+        if (tfs_is_persistent()) {
+            tfs_sync();
+        }
+        power_shutdown();
+        return 0; /* never reached */
+    
+    case SYS_REBOOT:
+        /* Only root can reboot the system */
+        if (!is_root(proc)) {
+            return -1;
+        }
+        /* Force sync before reboot */
+        if (tfs_is_persistent()) {
+            tfs_sync();
+        }
+        power_reboot();
+        return 0; /* never reached */
+    
     case SYS_EXIT:
         /* Flush the persistent TFS before the process exits so that any
          * changes made during this session are not lost if the user shuts

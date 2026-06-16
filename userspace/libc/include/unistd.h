@@ -72,6 +72,10 @@ void *sbrk(intptr_t increment);
  * On TNU this flushes the persistent TFS image. */
 int sync(void);
 
+/* Power management - requires root privileges */
+int shutdown(void);
+int reboot(void);
+
 #define _PC_PIPE_BUF 1
 
 void _exit(int status) __attribute__((noreturn));

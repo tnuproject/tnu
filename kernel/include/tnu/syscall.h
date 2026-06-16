@@ -53,6 +53,9 @@ enum syscall_number {
     SYS_WIFI_SCAN = 41,
     SYS_WIFI_CONNECT = 42,
     SYS_WIFI_STATUS = 43,
+    /* Power management */
+    SYS_SHUTDOWN = 44,
+    SYS_REBOOT = 45,
 };
 
 #define TNU_IOCTL_FB_GETINFO 0x544e4601u
