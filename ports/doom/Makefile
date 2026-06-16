@@ -32,6 +32,13 @@ DOOM_SRCS := $(filter-out \
     $(UPSTREAM)/icon.c, \
     $(wildcard $(UPSTREAM)/*.c))
 
+# Ensure core game entrypoints are always linked.
+# doomgeneric/doomgeneric.c and d_main.c define the actual engine entrypoints
+# (doomgeneric_Create / doomgeneric_Tick / DG_ScreenBuffer). Do not add them
+# if they are already included by the upstream wildcard above.
+# (The filter-out list below already excludes several backends; it should still
+# keep the core files.)
+
 TNU_SRC  := src/doomgeneric_tnu.c
 
 DOOM_OBJS := $(patsubst $(UPSTREAM)/%.c, \
