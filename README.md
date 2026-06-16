@@ -30,6 +30,7 @@ Install the required tools on Linux or WSL:
 - "grub-file"
 - "xorriso"
 - "isoinfo"
+- "mtools" / "mformat"
 - "qemu-system-x86_64"
 - "python3"
 

@@ -45,6 +45,7 @@ GRUB_FONT ?= /usr/share/grub/unicode.pf2
 ISOINFO ?= isoinfo
 READELF ?= readelf
 XORRISO ?= xorriso
+MFORMAT ?= mformat
 GIT ?= git
 PATCH ?= patch
 
@@ -291,6 +292,7 @@ $(INSTALL_IMAGE): $(KERNEL) $(ROOTFS) $(GENERATED_GRUB) $(EFI_BOOT)
 	cp $(GENERATED_GRUB) $(BUILD)/install-iso/boot/grub/grub.cfg
 	cp $(GRUB_FONT) $(BUILD)/install-iso/boot/grub/fonts/unicode.pf2
 	cp $(EFI_BOOT) $(BUILD)/install-iso/EFI/BOOT/BOOTX64.EFI
+	@command -v $(MFORMAT) >/dev/null 2>&1 || { echo "error: $(GRUB_MKRESCUE) needs $(MFORMAT) from mtools; install the mtools package"; false; }
 	$(GRUB_MKRESCUE) -V TNU_BOOT -o $@ $(BUILD)/install-iso
 	$(ISOINFO) -i $@ -R -f | grep -qx '/boot/kernel.elf'
 	$(ISOINFO) -i $@ -R -f | grep -qx '/boot/root.tfs'
@@ -310,6 +312,7 @@ $(ISO): $(KERNEL) $(ROOTFS) $(GENERATED_GRUB) $(EFI_BOOT) $(INSTALL_IMAGE)
 	cp $(GENERATED_GRUB) $(BUILD)/iso/boot/grub/grub.cfg
 	cp $(GRUB_FONT) $(BUILD)/iso/boot/grub/fonts/unicode.pf2
 	cp $(EFI_BOOT) $(BUILD)/iso/EFI/BOOT/BOOTX64.EFI
+	@command -v $(MFORMAT) >/dev/null 2>&1 || { echo "error: $(GRUB_MKRESCUE) needs $(MFORMAT) from mtools; install the mtools package"; false; }
 	$(GRUB_MKRESCUE) -V TNU_BOOT -o $@ $(BUILD)/iso
 	$(ISOINFO) -i $@ -R -f | grep -qx '/boot/kernel.elf'
 	$(ISOINFO) -i $@ -R -f | grep -qx '/boot/root.tfs'
