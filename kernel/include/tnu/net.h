@@ -12,11 +12,19 @@
 #define WIFI_IOCTL_STATUS  _IOR('w', 0x03, struct wifi_status)
 
 struct wifi_ap {
-    char ssid[32];
+    char ssid[33];
     uint8_t bssid[6];
+    uint8_t channel;
     int8_t rssi;
     uint16_t flags;
 };
+
+#define WIFI_AP_PRIVACY  (1u << 0)
+#define WIFI_AP_HIDDEN   (1u << 1)
+#define WIFI_AP_WEP      (1u << 2)
+#define WIFI_AP_WPA      (1u << 3)
+#define WIFI_AP_WPA2     (1u << 4)
+#define WIFI_AP_WPA3     (1u << 5)
 
 struct wifi_connect_req {
     char ssid[32];

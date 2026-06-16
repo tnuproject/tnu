@@ -199,17 +199,6 @@ static bool is_wifi(const struct pci_device *dev)
     return dev->class_code == 0x02 && dev->subclass == 0x80;
 }
 
-/* Find the next available net_iface slot, or NULL if none available */
-struct net_iface *find_free_iface(void)
-{
-    for (size_t i = 0; i < NET_IFACE_MAX; i++) {
-        if (!ifaces[i].driver) {
-            return &ifaces[i];
-        }
-    }
-    return NULL;
-}
-
 static bool is_intel_wifi(const struct pci_device *dev)
 {
     return is_wifi(dev) && dev->vendor_id == 0x8086;
@@ -1462,8 +1451,9 @@ int net_wifi_scan_results(struct wifi_ap *out, size_t max_aps)
             memset(&out[count], 0, sizeof(out[count]));
             strncpy(out[count].ssid, ap->ssid, sizeof(out[count].ssid) - 1);
             memcpy(out[count].bssid, ap->bssid, sizeof(out[count].bssid));
+            out[count].channel = ap->channel;
             out[count].rssi = ap->rssi;
-            out[count].flags = ap->privacy ? 1u : 0u;
+            out[count].flags = ap->security_flags;
             count++;
         }
     }

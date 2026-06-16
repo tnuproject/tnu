@@ -31,6 +31,7 @@ struct iwlwifi_ap {
     uint8_t channel;
     int8_t rssi;
     bool privacy;
+    uint16_t security_flags;
 };
 
 struct iwlwifi_state {
@@ -150,7 +151,6 @@ int iwlwifi_start(struct net_iface *iface);
 int iwlwifi_scan(struct net_iface *iface);
 int iwlwifi_associate(struct net_iface *iface, const char *ssid, const char *passphrase);
 const struct iwlwifi_state *iwlwifi_state_for(const struct net_iface *iface);
-int iwlwifi_init(void);
 void iwlwifi_exit(void);
 
 #endif

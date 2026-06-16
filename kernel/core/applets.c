@@ -1290,6 +1290,16 @@ static bool wifi_arg_present(int argc, char **argv, const char *name)
     return false;
 }
 
+static const char *wifi_security_name(uint16_t flags)
+{
+    if (flags & WIFI_AP_WPA3) return "WPA3";
+    if (flags & WIFI_AP_WPA2) return "WPA2";
+    if (flags & WIFI_AP_WPA) return "WPA";
+    if (flags & WIFI_AP_WEP) return "WEP";
+    if (flags & WIFI_AP_PRIVACY) return "Protected";
+    return "Open";
+}
+
 static int wifi_save_credentials(const char *iface, const char *ssid,
                                  const char *passphrase)
 {
@@ -1314,7 +1324,8 @@ static int wifi_save_credentials(const char *iface, const char *ssid,
 
 static int cmd_wifi(int argc, char **argv)
 {
-    if (argc == 1 || (argc == 2 && strcmp(argv[1], "status") == 0)) {
+    if (argc == 1 || (argc == 2 &&
+        (strcmp(argv[1], "status") == 0 || strcmp(argv[1], "debug") == 0))) {
         procfs_refresh();
         bool found = false;
         for (size_t i = 0; i < net_iface_count(); i++) {
@@ -1382,7 +1393,7 @@ static int cmd_wifi(int argc, char **argv)
                                         ap->bssid[0], ap->bssid[1], ap->bssid[2],
                                         ap->bssid[3], ap->bssid[4], ap->bssid[5],
                                         ap->channel,
-                                        ap->privacy ? "wpa/wep" : "open");
+                                        wifi_security_name(ap->security_flags));
                             }
                         }
                     } else {
@@ -1405,15 +1416,32 @@ static int cmd_wifi(int argc, char **argv)
         if (rc == -1) {
             kprintf("wifi: no Wi-Fi device detected\n");
         } else if (rc == 0 || rc == -4) {
-            kprintf("wifi: scan completed\n");
+            struct wifi_ap aps[32];
+            int count = net_wifi_scan_results(aps, sizeof(aps) / sizeof(aps[0]));
+            if (count <= 0) {
+                kprintf("wifi: scan completed, no APs decoded\n");
+            } else {
+                kprintf("%-32s %-6s %-9s %-3s %s\n",
+                        "SSID", "SIGNAL", "SECURITY", "CH", "BSSID");
+                for (int i = 0; i < count; i++) {
+                    const char *ssid = aps[i].ssid[0] ? aps[i].ssid : "<hidden>";
+                    kprintf("%-32s %4d   %-9s %3u %02x:%02x:%02x:%02x:%02x:%02x\n",
+                            ssid,
+                            aps[i].rssi,
+                            wifi_security_name(aps[i].flags),
+                            aps[i].channel,
+                            aps[i].bssid[0], aps[i].bssid[1], aps[i].bssid[2],
+                            aps[i].bssid[3], aps[i].bssid[4], aps[i].bssid[5]);
+                }
+            }
         } else if (rc == -3) {
             kprintf("wifi: iwlwifi attached, but command transport is not ready\n");
         } else if (rc == -6) {
-            kprintf("wifi: modern Intel scan command queue is not complete yet\n");
+            kprintf("wifi: modern Intel scan command failed\n");
         } else if (rc == -7) {
-            kprintf("wifi: legacy Intel scan command/RX parser is not complete yet\n");
+            kprintf("wifi: legacy Intel scan command/RX parser failed\n");
         } else if (rc == -9) {
-            kprintf("wifi: scan not supported on this device yet (MVM command set not implemented)\n");
+            kprintf("wifi: scan command failed on this device\n");
         } else if (rc == -10) {
             kprintf("wifi: scan completed but no APs were decoded\n");
         } else {
@@ -1476,48 +1504,60 @@ static int cmd_wifi(int argc, char **argv)
             return 1;
         }
 
+        kprintf("wifi: scanning/authenticating/associating with %s...\n", ssid);
         int rc = net_wifi_connect(iface_name, ssid, passphrase);
         if (rc == -1) {
             kprintf("wifi: no such Wi-Fi interface: %s\n", iface_name);
         } else if (rc == -3) {
-            kprintf("wifi: iwlwifi attach is online, but firmware/scan/WPA association is not complete yet\n");
+            kprintf("wifi: iwlwifi attach is online, but firmware startup failed\n");
         } else if (rc == -4) {
             kprintf("wifi: associated, but DHCP failed\n");
         } else if (rc == -6) {
-            kprintf("wifi: modern Intel command/RX/TX transport is not complete yet\n");
+            kprintf("wifi: modern Intel command/RX/TX transport failed\n");
         } else if (rc == -7) {
-            kprintf("wifi: legacy Intel scan/association commands are not complete yet\n");
+            kprintf("wifi: legacy Intel scan/association commands failed\n");
         } else if (rc == -8) {
-            kprintf("wifi: WPA passphrase support is not complete yet\n");
+            kprintf("wifi: this network requires a WPA passphrase\n");
         } else if (rc == -10) {
-            kprintf("wifi: SSID not found (MVM devices not yet supported, or AP out of range)\n");
+            kprintf("wifi: SSID not found or AP out of range\n");
         } else if (rc == -11) {
             kprintf("wifi: 802.11 authentication failed or timed out\n");
         } else if (rc == -12) {
             kprintf("wifi: 802.11 association failed or timed out\n");
         } else if (rc == -13) {
-            kprintf("wifi: associated, but Ethernet-over-802.11 data path is not complete yet\n");
+            kprintf("wifi: associated, but Ethernet-over-802.11 data path failed\n");
         } else if (rc == -14) {
             kprintf("wifi: WPA timed out waiting for message 1\n");
         } else if (rc == -15) {
             kprintf("wifi: WPA timed out waiting for message 3\n");
         } else if (rc == -16) {
-            kprintf("wifi: WPA pairwise CCMP key install failed\n");
+            kprintf("wifi: WPA pairwise CCMP setup failed\n");
         } else if (rc == -17) {
             kprintf("wifi: WPA PTK installed; CCMP data encryption is not online yet\n");
         } else {
             kprintf("wifi: connect needs the Intel Wi-Fi firmware/MAC layer before association can work\n");
         }
-        if (rc == 0 && save) {
-            int save_rc = wifi_save_credentials(iface_name, ssid, passphrase);
-            if (save_rc < 0) {
-                kprintf("wifi: connected, but could not save /etc/wifi/%s.conf (%d)\n",
-                        iface_name, save_rc);
+        if (rc == 0) {
+            const struct net_iface *iface = net_iface_find(iface_name);
+            char ip[32], gw[32], dns[32];
+            net_format_ipv4(iface ? iface->ipv4 : 0, ip, sizeof(ip));
+            net_format_ipv4(iface ? iface->gateway : 0, gw, sizeof(gw));
+            net_format_ipv4(iface ? iface->dns_server : 0, dns, sizeof(dns));
+            kprintf("wifi: connected\n");
+            kprintf("IP: %s\n", ip);
+            kprintf("Gateway: %s\n", gw);
+            kprintf("DNS: %s\n", dns);
+            if (save) {
+                int save_rc = wifi_save_credentials(iface_name, ssid, passphrase);
+                if (save_rc < 0) {
+                    kprintf("wifi: connected, but could not save /etc/wifi/%s.conf (%d)\n",
+                            iface_name, save_rc);
+                }
             }
         }
         return rc == 0 ? 0 : 1;
     }
-    kprintf("usage: wifi [status|scan|start IFACE|connect [IFACE] SSID [PASSPHRASE] [--password PASSPHRASE] [--no-save]]\n");
+    kprintf("usage: wifi [status|debug|scan|start IFACE|connect [IFACE] SSID [PASSPHRASE] [--password PASSPHRASE] [--no-save]]\n");
     return 1;
 }
 
@@ -1770,7 +1810,7 @@ static const struct applet_command applets[] = {
       "Print detected USB controller/device information." },
     { "ping", cmd_ping, "ping HOST|IPv4",
       "Send ICMP echo requests through the kernel network stack." },
-    { "wifi", cmd_wifi, "wifi [status|scan|start IFACE|connect [IFACE] SSID [--password PASS]]",
+    { "wifi", cmd_wifi, "wifi [status|debug|scan|start IFACE|connect [IFACE] SSID [--password PASS]]",
       "Inspect and manage Wi-Fi. Starting, connecting, and saving credentials require root." },
     { "xedit", cmd_xedit, "xedit FILE",
       "Open the simple line editor and save replacement text." },

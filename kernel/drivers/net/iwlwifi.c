@@ -27,9 +27,6 @@
 #include <tnu/string.h>
 #include <tnu/vfs.h>
 
-/* Forward declaration - defined in net.c */
-struct net_iface *find_free_iface(void);
-
 /*
  * Native TNU iwlwifi foundation.
  *
@@ -637,7 +634,7 @@ struct mvm_time_event_notif {
 } __attribute__((packed));
 
 /* SCAN_OFFLOAD_REQUEST_CMD (0x51) — LMAC scan */
-#define MVM_SCAN_MAX_CHANNELS   14
+#define MVM_SCAN_MAX_CHANNELS   40
 #define MVM_PROBE_OPTION_MAX    20
 
 struct mvm_scan_channel_cfg_lmac {
@@ -733,7 +730,7 @@ struct mvm_alive_resp_v3 {
     uint16_t status;    /* 0xCAFE=OK, 0xDEAD=error */
     uint16_t flags;
     struct mvm_lmac_alive lmac_data;
-    uint8_t  umac_pad[20]; /* umac_alive placeholder */
+    uint8_t  umac_pad[20]; /* reserved UMAC alive payload bytes */
 } __attribute__((packed));
 
 /* PHY DB storage — one entry per section type */
@@ -816,8 +813,8 @@ static const struct iwl_device_info iwl_devices[] = {
     { 0x095a, "7265", "iwlwifi-7265-17.ucode" },
     { 0x095b, "7265", "iwlwifi-7265-17.ucode" },
     /* Intel 8260 (uses 8000C firmware) */
-    { 0x24f3, "8260", "iwlwifi-8265-22.ucode" },
-    { 0x24f4, "8260", "iwlwifi-8265-22.ucode" },
+    { 0x24f3, "8260", "iwlwifi-8000C-36.ucode" },
+    { 0x24f4, "8260", "iwlwifi-8000C-36.ucode" },
     /* Intel 8265 */
     { 0x24fd, "8265", "iwlwifi-8265-22.ucode" },
     /* Intel 9260 */
@@ -878,7 +875,7 @@ static const char *iwl_firmware_prefix_for_family(const char *family,
     if (strcmp(family, "3168") == 0) return "iwlwifi-3168-";
     if (strcmp(family, "7260") == 0) return "iwlwifi-7260-";
     if (strcmp(family, "7265") == 0) return "iwlwifi-7265-";
-    if (strcmp(family, "8260") == 0) return "iwlwifi-8265-";
+    if (strcmp(family, "8260") == 0) return "iwlwifi-8000C-";
     if (strcmp(family, "8265") == 0) return "iwlwifi-8265-";
     if (strcmp(family, "9260") == 0) return "iwlwifi-9260-";
     if (strcmp(family, "9560") == 0) return "iwlwifi-9260-";
@@ -1050,9 +1047,10 @@ static uint16_t iwl_default_rxchain(void)
 
 static void iwl_cache_ap(struct iwlwifi_state *st, const char *ssid,
                          uint8_t ssid_len, const uint8_t bssid[IEEE80211_ADDR_LEN],
-                         uint8_t channel, bool privacy, int8_t rssi)
+                         uint8_t channel, bool privacy, uint16_t security_flags,
+                         int8_t rssi)
 {
-    if (!ssid || ssid_len == 0 || ssid_len > 32 || !bssid) {
+    if (!ssid || ssid_len > 32 || !bssid) {
         return;
     }
 
@@ -1075,19 +1073,75 @@ static void iwl_cache_ap(struct iwlwifi_state *st, const char *ssid,
     memset(ap, 0, sizeof(*ap));
     ap->valid = true;
     ap->ssid_len = ssid_len;
-    memcpy(ap->ssid, ssid, ssid_len);
-    ap->ssid[ssid_len] = '\0';
+    if (ssid_len == 0) {
+        strncpy(ap->ssid, "<hidden>", sizeof(ap->ssid) - 1);
+    } else {
+        memcpy(ap->ssid, ssid, ssid_len);
+        ap->ssid[ssid_len] = '\0';
+    }
     memcpy(ap->bssid, bssid, IEEE80211_ADDR_LEN);
     ap->channel = channel;
     ap->privacy = privacy;
+    ap->security_flags = security_flags;
     ap->rssi = rssi;
     if (is_new && st->ap_count < IWLWIFI_AP_CACHE_MAX) {
         st->ap_count++;
     }
-    log_info("iwlwifi", "AP %s bssid=%02x:%02x:%02x:%02x:%02x:%02x ch=%u privacy=%s",
+    log_info("iwlwifi", "AP %s bssid=%02x:%02x:%02x:%02x:%02x:%02x ch=%u security=%04x",
              ap->ssid, ap->bssid[0], ap->bssid[1], ap->bssid[2],
              ap->bssid[3], ap->bssid[4], ap->bssid[5],
-             ap->channel, ap->privacy ? "yes" : "no");
+             ap->channel, ap->security_flags);
+}
+
+static uint16_t iwl_security_from_rsn(const uint8_t *ie, size_t len)
+{
+    uint16_t flags = WIFI_AP_PRIVACY | WIFI_AP_WPA2;
+    if (!ie || len < 8) {
+        return flags;
+    }
+
+    const uint8_t rsn_oui[3] = { 0x00, 0x0f, 0xac };
+    size_t off = 2; /* version */
+    if (off + 4 > len) {
+        return flags;
+    }
+    off += 4; /* group cipher */
+    if (off + 2 > len) {
+        return flags;
+    }
+    uint16_t pairwise_count = le16_at(ie + off);
+    off += 2 + (size_t)pairwise_count * 4;
+    if (off + 2 > len) {
+        return flags;
+    }
+    uint16_t akm_count = le16_at(ie + off);
+    off += 2;
+    bool saw_psk = false;
+    bool saw_sae = false;
+    for (uint16_t i = 0; i < akm_count && off + 4 <= len; i++, off += 4) {
+        if (memcmp(ie + off, rsn_oui, 3) != 0) {
+            continue;
+        }
+        if (ie[off + 3] == 2) {
+            saw_psk = true;
+        } else if (ie[off + 3] == 8) {
+            saw_sae = true;
+        }
+    }
+    if (saw_sae) {
+        flags |= WIFI_AP_WPA3;
+    }
+    if (saw_psk || !saw_sae) {
+        flags |= WIFI_AP_WPA2;
+    }
+    return flags;
+}
+
+static bool iwl_ie_is_wpa_vendor(const uint8_t *ie, size_t len)
+{
+    static const uint8_t wpa_oui_type[4] = { 0x00, 0x50, 0xf2, 0x01 };
+    return ie && len >= sizeof(wpa_oui_type) &&
+           memcmp(ie, wpa_oui_type, sizeof(wpa_oui_type)) == 0;
 }
 
 static void iwl_parse_mgmt_frame(struct iwlwifi_state *st, const uint8_t *frame,
@@ -1137,6 +1191,8 @@ static void iwl_parse_mgmt_frame(struct iwlwifi_state *st, const uint8_t *frame,
     const uint8_t *ssid = NULL;
     uint8_t ssid_len = 0;
     uint8_t channel = 0;
+    uint16_t security_flags = (capability & IEEE80211_CAPINFO_PRIVACY) ?
+                              WIFI_AP_PRIVACY : 0;
 
     while (ies + 2 <= end) {
         uint8_t id = ies[0];
@@ -1150,16 +1206,28 @@ static void iwl_parse_mgmt_frame(struct iwlwifi_state *st, const uint8_t *frame,
             ssid_len = elen;
         } else if (id == IEEE80211_ELEMID_DSPARMS && elen >= 1) {
             channel = ies[0];
+        } else if (id == IEEE80211_ELEMID_RSN) {
+            security_flags |= iwl_security_from_rsn(ies, elen);
+        } else if (id == 221 && iwl_ie_is_wpa_vendor(ies, elen)) {
+            security_flags |= WIFI_AP_PRIVACY | WIFI_AP_WPA;
         }
         ies += elen;
     }
 
-    if (ssid && ssid_len) {
+    if (security_flags == WIFI_AP_PRIVACY) {
+        security_flags |= WIFI_AP_WEP;
+    }
+    if (ssid && ssid_len == 0) {
+        security_flags |= WIFI_AP_HIDDEN;
+    }
+
+    if (ssid) {
         char ssid_text[33];
         memcpy(ssid_text, ssid, ssid_len);
         ssid_text[ssid_len] = '\0';
         iwl_cache_ap(st, ssid_text, ssid_len, hdr->addr3, channel,
-                     (capability & IEEE80211_CAPINFO_PRIVACY) != 0, 0);
+                     (capability & IEEE80211_CAPINFO_PRIVACY) != 0,
+                     security_flags, 0);
     }
 }
 
@@ -1577,7 +1645,7 @@ static int iwl_handle_eapol_key(struct iwlwifi_state *st, const struct net_iface
             log_warn("iwlwifi", "%s could not transmit WPA msg4", iface->name);
             return -4;
         }
-        log_warn("iwlwifi", "%s verified WPA msg3 and transmitted msg4; GTK unwrap is next",
+        log_warn("iwlwifi", "%s verified WPA msg3 and transmitted msg4; GTK unwrap not available",
                  iface->name);
         return 0;
     }
@@ -2803,7 +2871,9 @@ static int iwl_mvm_mac_ctx_cmd(struct iwlwifi_state *st,
     cmd.protection_flags  = 0;
     cmd.cck_short_preamble = 0;
     cmd.short_slot        = 0x10; /* short slot enabled */
-    cmd.filter_flags      = MVM_MAC_FILTER_ACCEPT_GRP | MVM_MAC_FILTER_ACCEPT_BEACON;
+    cmd.filter_flags      = MVM_MAC_FILTER_ACCEPT_GRP |
+                            MVM_MAC_FILTER_ACCEPT_BEACON |
+                            MVM_MAC_FILTER_DIS_DECRYPT;
 
     /* AC QoS defaults from iwm_mac_ctxt_cmd_common() in FreeBSD */
     static const struct { uint16_t cw_min; uint16_t cw_max; uint8_t aifsn; uint8_t fifo; } ac_def[4] = {
@@ -2930,18 +3000,24 @@ static int iwl_mvm_scan(struct iwlwifi_state *st, const struct net_iface *iface,
     }
     /* 2. PHY context ADD on ch 1 */
     if (iwl_mvm_phy_ctx_cmd(st, 1, MVM_CTXT_ACTION_ADD) < 0) {
+        iwl_mvm_mac_ctx_cmd(st, iface, NULL, MVM_CTXT_ACTION_REMOVE, false, 0, 0);
         return -1;
     }
     /* 3. Binding ADD */
     if (iwl_mvm_binding_cmd(st, MVM_CTXT_ACTION_ADD) < 0) {
+        iwl_mvm_phy_ctx_cmd(st, 1, MVM_CTXT_ACTION_REMOVE);
+        iwl_mvm_mac_ctx_cmd(st, iface, NULL, MVM_CTXT_ACTION_REMOVE, false, 0, 0);
         return -1;
     }
 
     /* 4. Build LMAC scan request */
-    static const uint8_t channels_24[] = {
-        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13
+    static const uint8_t channels[] = {
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+        36, 40, 44, 48, 52, 56, 60, 64,
+        100, 104, 108, 112, 116, 120, 124, 128,
+        132, 136, 140
     };
-    uint8_t nchan = sizeof(channels_24);
+    uint8_t nchan = sizeof(channels);
     if (nchan > MVM_SCAN_MAX_CHANNELS) nchan = MVM_SCAN_MAX_CHANNELS;
 
     /* LMAC scan command + channel data (variable part after fixed header) */
@@ -2990,7 +3066,7 @@ static int iwl_mvm_scan(struct iwlwifi_state *st, const struct net_iface *iface,
         chs[i].flags        = (ssid && ssid[0]) ?
                               (0x1u | ((1u << 1) - 1u) << 1) : /* active + ssid0 */
                               0; /* passive */
-        chs[i].channel_num  = channels_24[i];
+        chs[i].channel_num  = channels[i];
         chs[i].iter_count   = 1;
         chs[i].iter_interval = 0;
     }
@@ -3574,6 +3650,18 @@ static int iwl_install_pairwise_ccmp_key(struct iwlwifi_state *st,
 {
     if (!st || !ap || !st->wpa_ptk_ready) {
         return -1;
+    }
+    if (st->modern_transport) {
+        /*
+         * The MVM path keeps decryption disabled in the firmware MAC context
+         * and uses TNU's software CCMP for RX/TX.  Sending the old DVM
+         * ADD_NODE key command to modern firmware can fail after a successful
+         * WPA handshake and prevent DHCP from ever starting.
+         */
+        log_info("iwlwifi", "enabled software pairwise CCMP for %02x:%02x:%02x:%02x:%02x:%02x",
+                 ap->bssid[0], ap->bssid[1], ap->bssid[2],
+                 ap->bssid[3], ap->bssid[4], ap->bssid[5]);
+        return 0;
     }
     struct iwl_node_info node;
     memset(&node, 0, sizeof(node));
@@ -4246,7 +4334,7 @@ int iwlwifi_attach(struct net_iface *iface, const struct pci_device *dev)
     log_info("iwlwifi", "%s Intel %s device=%04x mmio=%p hw_rev=%08x rf_id=%08x",
              iface->name, st->family, dev->device_id, (void *)mmio, st->hw_rev, st->rf_id);
     if (st->firmware_loaded && st->modern_transport) {
-        log_info("iwlwifi", "%s firmware is available; modern DMA/RX/TX bring-up is enabled experimentally",
+        log_info("iwlwifi", "%s firmware is available; modern DMA/RX/TX bring-up is enabled",
                  iface->name);
     } else if (st->firmware_loaded) {
         log_info("iwlwifi", "%s firmware is staged; DMA upload and queues are enabled",
@@ -4264,55 +4352,6 @@ const struct iwlwifi_state *iwlwifi_state_for(const struct net_iface *iface)
         return NULL;
     }
     return iface->driver_data;
-}
-
-/* ---------------------------------------------------------------------
- *  Driver entry point – called from kmain.c after PCI subsystem is ready.
- * --------------------------------------------------------------------- */
-int iwlwifi_init(void)
-{
-    size_t dev_count = pci_count();
-    int attached = 0;
-
-    for (size_t i = 0; i < dev_count; i++) {
-        const struct pci_device *dev = pci_get(i);
-        if (!dev) continue;
-
-        if (!iwlwifi_is_supported(dev)) {
-            continue;
-        }
-
-        /* Find a free network interface slot */
-        struct net_iface *iface = find_free_iface();
-        if (!iface) {
-            log_warn("iwlwifi", "no free net_iface slots for device %04x:%04x",
-                     dev->vendor_id, dev->device_id);
-            continue;
-        }
-
-        /* Initialize interface structure */
-        memset(iface, 0, sizeof(*iface));
-        ksnprintf(iface->name, sizeof(iface->name), "wlan%zu", attached);
-        iface->type = NET_IFACE_WIFI;
-        iface->pci_vendor = dev->vendor_id;
-        iface->pci_device = dev->device_id;
-
-        int ret = iwlwifi_attach(iface, dev);
-        if (ret == 0) {
-            attached++;
-            log_info("iwlwifi", "%s attached successfully", iface->name);
-        } else {
-            log_warn("iwlwifi", "%s attach failed (%d)", iface->name, ret);
-        }
-    }
-
-    if (attached == 0) {
-        log_warn("iwlwifi", "no devices attached");
-        return -1;
-    }
-
-    log_info("iwlwifi", "driver initialized, %d device(s) attached", attached);
-    return 0;
 }
 
 /* ---------------------------------------------------------------------
