@@ -26,7 +26,10 @@ FEATURE_CHECKS = {
     "locale_minimal": lambda: (ROOT / "userspace/libc/include/locale.h").exists(),
     "heap_syscall": lambda: "SYS_BRK" in (ROOT / "userspace/libc/include/tnu/syscall.h").read_text(),
     "tcp": lambda: "IP_PROTO_TCP" in (ROOT / "kernel/drivers/net/net.c").read_text(),
-    "sockets": lambda: (ROOT / "userspace/libc/include/sys/socket.h").exists(),
+    "sockets": lambda: "SYS_SOCKET" in (ROOT / "kernel/include/tnu/syscall.h").read_text()
+    and "errno = ENOSYS" not in re.search(
+        r"int socket\(.*?int bind", (ROOT / "userspace/libc/src/posix_stubs.c").read_text(), re.S
+    ).group(0),
     "select_poll": lambda: (ROOT / "userspace/libc/include/sys/select.h").exists() or (ROOT / "userspace/libc/include/poll.h").exists(),
     "tls_or_no_tls_profile": lambda: False,
     "mmap": lambda: (ROOT / "userspace/libc/include/sys/mman.h").exists(),
@@ -41,6 +44,25 @@ FEATURE_CHECKS = {
     "xorg": lambda: False,
     "http_client": lambda: False,
     "font_rendering": lambda: False,
+    "fork_or_spawn_profile": lambda: "pid_t fork(void)" in (ROOT / "userspace/libc/src/posix_extra.c").read_text()
+    and "errno = ENOSYS" not in re.search(
+        r"pid_t fork\(.*?int pipe", (ROOT / "userspace/libc/src/posix_extra.c").read_text(), re.S
+    ).group(0),
+    "pipe": lambda: "int pipe" in (ROOT / "userspace/libc/src/posix_extra.c").read_text()
+    and "errno = ENOSYS" not in re.search(
+        r"int pipe\(.*?pid_t waitpid", (ROOT / "userspace/libc/src/posix_extra.c").read_text(), re.S
+    ).group(0),
+    "filesystem_rename_unlink": lambda: "int unlink" in (ROOT / "userspace/libc/src/syscall.c").read_text()
+    and "int rename" in (ROOT / "userspace/libc/src/syscall.c").read_text(),
+    "stat_lstat_fstat": lambda: "int stat" in (ROOT / "userspace/libc/src/syscall.c").read_text()
+    and "int lstat" in (ROOT / "userspace/libc/src/syscall.c").read_text()
+    and "int fstat" in (ROOT / "userspace/libc/src/syscall.c").read_text(),
+    "environment": lambda: "getenv" in (ROOT / "userspace/libc/include/stdlib.h").read_text(),
+    "time": lambda: (ROOT / "userspace/libc/include/time.h").exists(),
+    "crypto_hashes": lambda: (ROOT / "userspace/libc/include/openssl/sha.h").exists()
+    or "SHA1" in (ROOT / "kernel/lib/crypto.c").read_text(),
+    "zlib": lambda: (ROOT / "userspace/libc/include/zlib.h").exists()
+    or (ROOT / "ports/zlib").exists(),
 }
 
 

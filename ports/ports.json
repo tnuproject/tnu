@@ -57,6 +57,38 @@
       ]
     },
     {
+      "name": "git",
+      "kind": "vcs",
+      "upstream": "Git",
+      "source": "https://github.com/git/git.git",
+      "license": "GPL-2.0-only",
+      "target_binary": "/usr/bin/git",
+      "required_features": [
+        "exec",
+        "tcp",
+        "sockets",
+        "dns",
+        "select_poll",
+        "fork_or_spawn_profile",
+        "pipe",
+        "filesystem_read",
+        "filesystem_write",
+        "filesystem_rename_unlink",
+        "stat_lstat_fstat",
+        "environment",
+        "time",
+        "crypto_hashes",
+        "zlib"
+      ],
+      "dependencies": [
+        "libc",
+        "zlib",
+        "openssl-or-tiny-sha1",
+        "curl-optional-for-http-transport",
+        "pcre2-optional"
+      ]
+    },
+    {
       "name": "curl",
       "kind": "network-tool",
       "upstream": "curl",

@@ -978,15 +978,25 @@ void net_init(void)
             e1000_init_iface(iface, dev) == 0) {
             continue;
         }
-        if (type == NET_IFACE_WIFI && iwlwifi_is_supported(dev) &&
-            iwlwifi_attach(iface, dev) == 0) {
-            continue;
+        if (type == NET_IFACE_WIFI && is_intel_wifi(dev)) {
+            if (iwlwifi_is_supported(dev)) {
+                int rc = iwlwifi_attach(iface, dev);
+                if (rc == 0) {
+                    continue;
+                }
+                log_warn("iwlwifi", "%s Intel device=%04x attach failed (%d)",
+                         iface->name, dev->device_id, rc);
+            } else {
+                log_warn("iwlwifi", "%s Intel device=%04x is not in the iwlwifi device table",
+                         iface->name, dev->device_id);
+            }
         }
 
         iface->up = false;
         iface->link = false;
         if (is_intel_wifi(dev)) {
-            iface->driver = "iwlwifi-pending";
+            iface->driver = iwlwifi_is_supported(dev) ? "iwlwifi-pending"
+                                                      : "iwlwifi-unsupported";
         } else if (is_realtek_wifi(dev)) {
             iface->driver = "rtw-pending";
         } else {
@@ -995,8 +1005,11 @@ void net_init(void)
         log_info("net", "%s %02x:%02x.%u vendor=%04x device=%04x driver=%s",
                  iface->name, dev->bus, dev->slot, dev->function,
                  dev->vendor_id, dev->device_id, iface->driver);
-        if (type == NET_IFACE_WIFI) {
-            log_warn("wifi", "%s detected, but firmware loading, 802.11 MAC, and WPA association are not complete",
+        if (type == NET_IFACE_WIFI && strcmp(iface->driver, "iwlwifi-unsupported") == 0) {
+            log_warn("wifi", "%s detected, but Intel device=%04x is not mapped to a firmware family",
+                     iface->name, dev->device_id);
+        } else if (type == NET_IFACE_WIFI) {
+            log_warn("wifi", "%s detected, but iwlwifi attach did not complete",
                      iface->name);
         }
     }

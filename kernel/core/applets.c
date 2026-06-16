@@ -1400,8 +1400,14 @@ static int cmd_wifi(int argc, char **argv)
                         kprintf("%s: firmware %s missing; install it under /lib/firmware/iwlwifi\n",
                                 iface->name, st && st->firmware_name ? st->firmware_name : "unknown");
                     }
+                } else if (strcmp(iface->driver, "iwlwifi-pending") == 0) {
+                    kprintf("%s: iwlwifi attach failed; check dmesg for firmware/MMIO/device details\n",
+                            iface->name);
+                } else if (strcmp(iface->driver, "iwlwifi-unsupported") == 0) {
+                    kprintf("%s: Intel Wi-Fi device %04x is not mapped to an iwlwifi firmware family\n",
+                            iface->name, iface->pci_device);
                 } else {
-                    kprintf("%s: association offline; Wi-Fi needs firmware and 802.11 MAC support\n",
+                    kprintf("%s: association offline; Wi-Fi needs a supported driver\n",
                             iface->name);
                 }
             }

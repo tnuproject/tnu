@@ -3,7 +3,9 @@
  *
  * This file contains the complete iwlwifi driver implementation for TNU.
  * It supports both DVM (old) and MVM (new) firmware transports for Intel
- * wireless devices (3160, 7260, 7265, 8260, 8265, 9260, 9560).
+ * wireless devices (3160, 7260, 7265, 8260, 8265, 9000, 9260, 9560,
+ * AX200/AX201/AX210-class adapters, and newer firmware families present in
+ * the Tiramisu firmware bundle).
  *
  * The driver:
  * - Loads firmware from /lib/firmware/iwlwifi/
@@ -817,12 +819,29 @@ static const struct iwl_device_info iwl_devices[] = {
     { 0x24f4, "8260", "iwlwifi-8000C-36.ucode" },
     /* Intel 8265 */
     { 0x24fd, "8265", "iwlwifi-8265-22.ucode" },
+    /* Intel 9000 family */
+    { 0x271b, "9000", "iwlwifi-9000-pu-b0-jf-b0-38.ucode" },
+    { 0x271c, "9000", "iwlwifi-9000-pu-b0-jf-b0-38.ucode" },
     /* Intel 9260 */
     { 0x2526, "9260", "iwlwifi-9260-th-b0-jf-b0-34.ucode" },
     /* Intel 9560 */
     { 0x9df0, "9560", "iwlwifi-9260-th-b0-jf-b0-34.ucode" },
     { 0xa370, "9560", "iwlwifi-9260-th-b0-jf-b0-34.ucode" },
     { 0x31dc, "9560", "iwlwifi-9260-th-b0-jf-b0-34.ucode" },
+    /* Intel Wi-Fi 6/6E CNVio/PCIe families */
+    { 0x2723, "cc-a0", "iwlwifi-cc-a0-59.ucode" },        /* AX200 */
+    { 0x2725, "ty-a0", "iwlwifi-ty-a0-gf-a0-59.ucode" },  /* AX210 */
+    { 0x06f0, "QuZ",   "iwlwifi-QuZ-a0-hr-b0-59.ucode" },
+    { 0x34f0, "QuZ",   "iwlwifi-QuZ-a0-hr-b0-59.ucode" }, /* AX201 */
+    { 0x4df0, "QuZ",   "iwlwifi-QuZ-a0-hr-b0-59.ucode" },
+    { 0xa0f0, "QuZ",   "iwlwifi-QuZ-a0-hr-b0-59.ucode" },
+    { 0x7af0, "so-a0", "iwlwifi-so-a0-gf-a0-72.ucode" },  /* AX211 */
+    { 0x51f0, "so-a0", "iwlwifi-so-a0-gf-a0-72.ucode" },  /* AX411 */
+    /* Intel Wi-Fi 7 firmware families shipped in rootfs */
+    { 0x272b, "bz",    "iwlwifi-bz-b0-fm-c0-92.ucode" },
+    { 0x272c, "bz",    "iwlwifi-bz-b0-fm-c0-92.ucode" },
+    { 0x7e40, "ma",    "iwlwifi-ma-b0-gf-a0-89.ucode" },
+    { 0x7e70, "gl",    "iwlwifi-gl-c0-fm-c0-92.ucode" },
 };
 
 static const struct iwl_device_info *find_device(uint16_t id)
@@ -877,8 +896,17 @@ static const char *iwl_firmware_prefix_for_family(const char *family,
     if (strcmp(family, "7265") == 0) return "iwlwifi-7265-";
     if (strcmp(family, "8260") == 0) return "iwlwifi-8000C-";
     if (strcmp(family, "8265") == 0) return "iwlwifi-8265-";
+    if (strcmp(family, "9000") == 0) return "iwlwifi-9000-";
     if (strcmp(family, "9260") == 0) return "iwlwifi-9260-";
     if (strcmp(family, "9560") == 0) return "iwlwifi-9260-";
+    if (strcmp(family, "cc-a0") == 0) return "iwlwifi-cc-a0-";
+    if (strcmp(family, "Qu") == 0) return "iwlwifi-Qu-";
+    if (strcmp(family, "QuZ") == 0) return "iwlwifi-QuZ-";
+    if (strcmp(family, "ty-a0") == 0) return "iwlwifi-ty-a0-";
+    if (strcmp(family, "so-a0") == 0) return "iwlwifi-so-a0-";
+    if (strcmp(family, "bz") == 0) return "iwlwifi-bz-";
+    if (strcmp(family, "ma") == 0) return "iwlwifi-ma-";
+    if (strcmp(family, "gl") == 0) return "iwlwifi-gl-";
     return requested;
 }
 
@@ -959,6 +987,20 @@ static bool iwl_device_uses_modern_transport(const struct iwl_device_info *info)
     /* All devices in our table use MVM transport */
     (void)info;
     return info != NULL;
+}
+
+static bool iwl_family_needs_apmg(const char *family)
+{
+    if (!family) {
+        return false;
+    }
+    return strcmp(family, "3160") == 0 ||
+           strcmp(family, "3165") == 0 ||
+           strcmp(family, "3168") == 0 ||
+           strcmp(family, "7260") == 0 ||
+           strcmp(family, "7265") == 0 ||
+           strcmp(family, "8260") == 0 ||
+           strcmp(family, "8265") == 0;
 }
 
 static uint32_t le32_at(const uint8_t *p)
@@ -1761,6 +1803,11 @@ static bool iwl_validate_tlv_firmware(struct iwlwifi_state *st)
     return true;
 }
 
+static void iwl_insert_fw_section_sorted(struct iwlwifi_fw_section *sections,
+                                         size_t *count, uint64_t *total_bytes,
+                                         uint32_t offset, const uint8_t *data,
+                                         uint32_t size);
+
 static bool iwl_parse_tlv_sections(struct iwlwifi_state *st)
 {
     const uint8_t *ptr = st->firmware_data + IWL_TLV_HEADER_SIZE;
@@ -1840,30 +1887,32 @@ static bool iwl_parse_tlv_sections(struct iwlwifi_state *st)
                 break;
             case IWL_TLV_SEC_RT:
                 if (len > 4 && st->runtime_section_count < IWLWIFI_FW_SECTION_MAX) {
-                    struct iwlwifi_fw_section *sec =
-                        &st->runtime_sections[st->runtime_section_count++];
-                    sec->offset = le32_at(ptr);
-                    sec->data = ptr + 4;
-                    sec->size = len - 4;
-                    st->runtime_section_bytes += sec->size;
+                    uint32_t sec_offset = le32_at(ptr);
+                    const uint8_t *sec_data = ptr + 4;
+                    uint32_t sec_size = len - 4;
+                    iwl_insert_fw_section_sorted(st->runtime_sections,
+                                                 &st->runtime_section_count,
+                                                 &st->runtime_section_bytes,
+                                                 sec_offset, sec_data, sec_size);
                     if (!st->runtime_ucode.text) {
-                        st->runtime_ucode.text = sec->data;
+                        st->runtime_ucode.text = sec_data;
                     }
-                    st->runtime_ucode.text_size += sec->size;
+                    st->runtime_ucode.text_size += sec_size;
                 }
                 break;
             case IWL_TLV_SEC_INIT:
                 if (len > 4 && st->init_section_count < IWLWIFI_FW_SECTION_MAX) {
-                    struct iwlwifi_fw_section *sec =
-                        &st->init_sections[st->init_section_count++];
-                    sec->offset = le32_at(ptr);
-                    sec->data = ptr + 4;
-                    sec->size = len - 4;
-                    st->init_section_bytes += sec->size;
+                    uint32_t sec_offset = le32_at(ptr);
+                    const uint8_t *sec_data = ptr + 4;
+                    uint32_t sec_size = len - 4;
+                    iwl_insert_fw_section_sorted(st->init_sections,
+                                                 &st->init_section_count,
+                                                 &st->init_section_bytes,
+                                                 sec_offset, sec_data, sec_size);
                     if (!st->init_ucode.text) {
-                        st->init_ucode.text = sec->data;
+                        st->init_ucode.text = sec_data;
                     }
-                    st->init_ucode.text_size += sec->size;
+                    st->init_ucode.text_size += sec_size;
                 }
                 break;
             default:
@@ -1888,6 +1937,28 @@ static bool iwl_parse_tlv_sections(struct iwlwifi_state *st)
                  st->tlv_flags);
     }
     return st->firmware_parsed;
+}
+
+static void iwl_insert_fw_section_sorted(struct iwlwifi_fw_section *sections,
+                                         size_t *count, uint64_t *total_bytes,
+                                         uint32_t offset, const uint8_t *data,
+                                         uint32_t size)
+{
+    if (!sections || !count || !total_bytes || !data || size == 0 ||
+        *count >= IWLWIFI_FW_SECTION_MAX) {
+        return;
+    }
+
+    size_t pos = *count;
+    while (pos > 0 && sections[pos - 1].offset > offset) {
+        sections[pos] = sections[pos - 1];
+        pos--;
+    }
+    sections[pos].offset = offset;
+    sections[pos].data = data;
+    sections[pos].size = size;
+    (*count)++;
+    *total_bytes += size;
 }
 
 static bool iwl_validate_legacy_firmware(struct iwlwifi_state *st)
@@ -2361,8 +2432,7 @@ static int iwl_apm_init(struct iwlwifi_state *st)
      * From FreeBSD if_iwm_pcie_trans.c: iwm_apm_init() runs APMG for
      * device_family < IWM_DEVICE_FAMILY_9000.
      */
-    bool needs_apmg = strcmp(st->family, "9260") != 0 &&
-                      strcmp(st->family, "9560") != 0;
+    bool needs_apmg = iwl_family_needs_apmg(st->family);
     if (needs_apmg) {
         rc = iwl_nic_lock(st);
         if (rc < 0) {
@@ -3708,10 +3778,17 @@ static int iwl_dma_load_section(struct iwlwifi_state *st, uint32_t dst,
     iwl_nic_unlock(st);
 
     uint32_t seen = 0;
-    if (!iwl_wait_int(st, IWL_INT_FH_TX | IWL_FH_INT_TX_CHNL(0) |
-                          IWL_FH_INT_TX_CHNL(1), &seen, 500)) {
+    if (!iwl_wait_int(st, IWL_INT_FH_TX | IWL_FH_INT_TX_CHNL(IWL_SRVC_DMACHNL) |
+                          IWL_FH_INT_TX_CHNL(0) | IWL_FH_INT_TX_CHNL(1),
+                      &seen, 500)) {
         log_warn("iwlwifi", "firmware DMA section dst=%08x size=%u timed out/int=%08x",
                  dst, size, seen);
+        if (seen & IWL_INT_SW_ERR) {
+            log_warn("iwlwifi", "firmware reported software error while loading dst=%08x", dst);
+        }
+        if (seen & IWL_INT_HW_ERR) {
+            log_warn("iwlwifi", "hardware error while loading firmware dst=%08x", dst);
+        }
         return -3;
     }
     return 0;

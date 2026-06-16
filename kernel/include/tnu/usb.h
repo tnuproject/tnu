@@ -30,5 +30,6 @@ size_t usb_controller_count(void);
 const struct usb_controller_info *usb_controller_get(size_t index);
 const char *usb_controller_type_name(enum usb_controller_type type);
 bool usb_hid_keyboard_ready(void);
+void usb_hid_keyboard_handle_report(const uint8_t report[8]);
 
 #endif

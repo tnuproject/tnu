@@ -896,6 +896,16 @@ void keyboard_handle_irq(void)
     keyboard_poll();
 }
 
+void keyboard_inject_set1_scancode(uint8_t scancode)
+{
+    process_set1_scancode(scancode);
+}
+
+void keyboard_inject_extended_set1_scancode(uint8_t scancode)
+{
+    process_extended_scancode(scancode);
+}
+
 int keyboard_getchar(void)
 {
     int c;
