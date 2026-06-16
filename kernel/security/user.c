@@ -340,14 +340,21 @@ int user_del(const char *name)
 
 int user_set_password(const char *name, const char *password)
 {
-    if (!name || !password || strlen(password) < 1) {
+    if (!name || !password) {
         return -1;
     }
     for (size_t i = 0; i < users_len; i++) {
         if (strcmp(users[i].name, name) == 0) {
-            users[i].salt = make_salt(name, users[i].uid) ^ (uint32_t)strlen(password);
-            users[i].password_hash = hash_password(users[i].salt, password);
-            users[i].password_set = true;
+            users[i].salt = make_salt(name, users[i].uid);
+            /* An empty passwd input intentionally clears the password. */
+            if (password[0] == '\0') {
+                users[i].password_hash = 0;
+                users[i].password_set = false;
+            } else {
+                users[i].salt ^= (uint32_t)strlen(password);
+                users[i].password_hash = hash_password(users[i].salt, password);
+                users[i].password_set = true;
+            }
             rebuild_shadow();
             return 0;
         }

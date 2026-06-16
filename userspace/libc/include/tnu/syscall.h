@@ -56,6 +56,9 @@ enum syscall_number {
     SYS_WIFI_SCAN = 41,
     SYS_WIFI_CONNECT = 42,
     SYS_WIFI_STATUS = 43,
+    SYS_SHUTDOWN = 44,
+    SYS_REBOOT = 45,
+    SYS_SET_PASSWORD = 46,
 };
 
 int wifi_scan(struct wifi_ap *out, size_t max_aps);

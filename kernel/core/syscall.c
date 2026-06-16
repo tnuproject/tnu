@@ -1634,6 +1634,29 @@ static long sys_login(const char *user_ptr, const char *password_ptr)
     return 0;
 }
 
+static long sys_set_password(const char *user_ptr, const char *password_ptr)
+{
+    char name[USER_NAME_MAX + 1];
+    char password[128];
+    struct process *proc = process_current();
+
+    if (!proc ||
+        copy_user_string_bounded(user_ptr, name, sizeof(name)) < 0 ||
+        copy_user_string_bounded(password_ptr, password, sizeof(password)) < 0) {
+        return -1;
+    }
+
+    const struct user_record *target = user_find_name(name);
+    if (!target) {
+        return -1;
+    }
+    /* Match passwd(1): root may change any account, everyone else only their own. */
+    if (!is_root(proc) && proc->uid != target->uid) {
+        return -1;
+    }
+    return user_set_password(name, password);
+}
+
 long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
                       uint64_t a3, uint64_t a4, uint64_t a5)
 {
@@ -1877,7 +1900,9 @@ long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
         }
         power_reboot();
         return 0; /* never reached */
-    
+
+    case SYS_SET_PASSWORD:
+        return sys_set_password((const char *)a0, (const char *)a1);
     case SYS_EXIT:
         /* Flush the persistent TFS before the process exits so that any
          * changes made during this session are not lost if the user shuts
