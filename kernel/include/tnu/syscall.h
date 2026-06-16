@@ -56,6 +56,7 @@ enum syscall_number {
     /* Power management */
     SYS_SHUTDOWN = 44,
     SYS_REBOOT = 45,
+    SYS_SET_PASSWORD = 46,
 };
 
 #define TNU_IOCTL_FB_GETINFO 0x544e4601u

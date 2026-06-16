@@ -2,11 +2,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <fcntl.h>
+#include <tnu/syscall.h>
 
 #define PASSWD_PATH "/etc/passwd"
-#define SHADOW_PATH "/etc/shadow"
-#define TMP_PATH    "/etc/shadow.tmp"
+
+long tnu_syscall(long n, long a0, long a1, long a2, long a3, long a4, long a5);
 
 static void strip_newline(char *s)
 {
@@ -60,19 +60,38 @@ static int user_exists(const char *name)
     return 0;
 }
 
+static int set_password(const char *user, const char *password)
+{
+    return (int)tnu_syscall(SYS_SET_PASSWORD, (long)user, (long)password, 0, 0, 0, 0);
+}
+
 int main(int argc, char **argv)
 {
+    char current_user[64];
     char user[64];
-    if (argc >= 2) {
-        strncpy(user, argv[1], sizeof(user) - 1);
-        user[sizeof(user) - 1] = '\0';
-    } else if (username_for_uid(getuid(), user, sizeof(user)) < 0) {
+    if (argc > 2) {
+        printf("usage: passwd [USER]\n");
+        return 1;
+    }
+    if (username_for_uid(getuid(), current_user, sizeof(current_user)) < 0) {
         printf("passwd: cannot determine current user\n");
         return 1;
     }
 
+    if (argc >= 2) {
+        strncpy(user, argv[1], sizeof(user) - 1);
+        user[sizeof(user) - 1] = '\0';
+    } else {
+        strncpy(user, current_user, sizeof(user) - 1);
+        user[sizeof(user) - 1] = '\0';
+    }
+
     if (!user_exists(user)) {
         printf("passwd: unknown user: %s\n", user);
+        return 1;
+    }
+    if (getuid() != 0 && strcmp(user, current_user) != 0) {
+        printf("passwd: permission denied for %s\n", user);
         return 1;
     }
 
@@ -89,42 +108,14 @@ int main(int argc, char **argv)
         printf("passwd: passwords do not match\n");
         return 1;
     }
-
-    FILE *in = fopen(SHADOW_PATH, "r");
-    FILE *out = fopen(TMP_PATH, "w");
-    if (!out) {
-        printf("passwd: cannot write %s\n", TMP_PATH);
+    if (set_password(user, p1) < 0) {
+        printf("passwd: failed to update %s\n", user);
         return 1;
     }
-
-    int updated = 0;
-    char line[256];
-    if (in) {
-        while (fgets(line, sizeof(line), in)) {
-            char copy[256];
-            strncpy(copy, line, sizeof(copy) - 1);
-            copy[sizeof(copy) - 1] = '\0';
-            char *colon = strchr(copy, ':');
-            if (colon) *colon = '\0';
-            if (strcmp(copy, user) == 0) {
-                fprintf(out, "%s:%s\n", user, p1);
-                updated = 1;
-            } else {
-                fputs(line, out);
-            }
-        }
-        fclose(in);
+    if (p1[0] == '\0') {
+        printf("passwd: cleared password for %s\n", user);
+    } else {
+        printf("passwd: updated %s\n", user);
     }
-    if (!updated) {
-        fprintf(out, "%s:%s\n", user, p1);
-    }
-    fclose(out);
-
-    remove(SHADOW_PATH);
-    if (rename(TMP_PATH, SHADOW_PATH) < 0) {
-        printf("passwd: cannot replace %s\n", SHADOW_PATH);
-        return 1;
-    }
-    printf("passwd: updated %s\n", user);
     return 0;
 }
