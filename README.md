@@ -35,26 +35,25 @@ Install the required tools on Linux or WSL:
 
 Build the system and generate the bootable ISO:
 
-make all
+`make all`
 
 **Run it using QEMU:**
 
-make run
+`make run`
 
 **Verify the generated image:**
 
-make verify
+`make verify`
 
 **Output**
 
 The generated ISO will be available at:
 
-build/<project>-<version>-<arch>.iso
+`build/<project>-<version>-<arch>.iso`
 
 The ISO includes the kernel, boot configuration, root filesystem, and UEFI boot files.
-
 Disable Secure Boot when testing on physical hardware.
 
 **License**
 
-See "LICENSE".
+See [LICENSE](LICENSE).
