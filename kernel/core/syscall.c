@@ -1797,11 +1797,12 @@ long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
     case SYS_WAIT:
         return -1;
     case SYS_SYNC:
-        /* Force a sync regardless of auto_sync_enabled */
-        if (tfs_is_persistent()) {
-            return (long)tfs_sync();
+        /* Force a sync regardless of auto_sync_enabled.
+         * tfs_sync() handles all internal checks (device exists, etc.) */
+        if (!tfs_is_persistent()) {
+            return 0;
         }
-        return 0;
+        return (long)tfs_sync();
     case SYS_MMAP:
         return sys_mmap((int)a0, (size_t)a1, (int)a2, (int)a3, (int)a4, (off_t)a5);
     case SYS_SELECT:

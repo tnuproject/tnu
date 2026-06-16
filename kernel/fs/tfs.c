@@ -173,10 +173,27 @@ static int write_image_to_disk(uint8_t *image, size_t image_size)
 
 int tfs_sync(void)
 {
-    if (!persistent_enabled || !persistent_device[0] || sync_in_progress) {
+    if (!persistent_enabled) {
+        log_info("tfs", "sync: not persistent, skipping");
         return 0;
     }
+    if (!persistent_device[0]) {
+        log_info("tfs", "sync: no device configured, skipping");
+        return 0;
+    }
+    if (sync_in_progress) {
+        log_info("tfs", "sync: already in progress, skipping");
+        return 0;
+    }
+    
+    /* Verify device exists */
+    if (!block_device_find(persistent_device)) {
+        log_warn("tfs", "sync: device %s not found", persistent_device);
+        return -1;
+    }
 
+    log_info("tfs", "sync: starting sync to %s@LBA%llu", 
+             persistent_device, (unsigned long long)persistent_start_lba);
     sync_in_progress = true;
 
     /*

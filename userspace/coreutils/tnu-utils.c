@@ -682,12 +682,15 @@ static int cmd_sync(int argc, char **argv)
     (void)argc;
     (void)argv;
     
-    println("Syncing filesystem to disk...");
-    if (sync() < 0) {
-        println("sync: failed");
+    int result = sync();
+    if (result < 0) {
+        println("sync: failed (error writing to disk)");
+        println("Check kernel logs with: dmesg | grep tfs");
         return 1;
     }
-    println("Sync complete.");
+    if (result == 0) {
+        println("Sync complete.");
+    }
     return 0;
 }
 

@@ -249,8 +249,8 @@ int login_session(const char *user, const char *password)
 }
 
 /* sync() — flush the persistent TFS image to disk immediately.
- * Returns 0 on success, -1 if the filesystem is not persistent or the
- * write failed. */
+ * Returns 0 on success or if filesystem is not persistent,
+ * -1 if a write error occurred. */
 int sync(void)
 {
     return (int)tnu_syscall(SYS_SYNC, 0, 0, 0, 0, 0, 0);
