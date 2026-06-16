@@ -300,8 +300,10 @@ ports-preflight:
 
 ports-fetch: ports-fetch-core ports-fetch-nano ports-fetch-freedoom ports-fetch-doom-upstream ports-patch-doom
 
+# ports-fetch-core: fetch core dependencies.
+# Xorg is not required for the current TNU console-only workflow.
 ports-fetch-core:
-	$(HOSTPY) tools/ports_fetch.py xorg
+	@echo "ports-fetch-core: skipping xorg"
 
 ports-fetch-nano:
 	@mkdir -p $(dir $(NANO_UPSTREAM_DIR))
