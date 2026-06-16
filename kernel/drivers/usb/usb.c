@@ -83,7 +83,8 @@ void usb_init(void)
     if (!controller_count) {
         log_info("usb", "no USB controller detected");
     } else {
-        log_info("usb", "native USB HID is not ready; firmware legacy PS/2 may still expose keyboards");
+        log_info("usb", "USB HID keyboard support is not yet implemented");
+        log_info("usb", "Use PS/2 keyboard emulation (firmware legacy mode) for now");
     }
 }
 

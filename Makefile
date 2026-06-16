@@ -1,13 +1,36 @@
+# Tiramisu OS Makefile
+# Build for x86_64 (default) or i386:
+#   make                    # Build x86_64 (default)
+#   make ARCH=i386          # Build 32-bit i386
+#   make ARCH=x86_64        # Build 64-bit x86_64 (explicit)
+
 include version.mk
 
-ARCH := $(TNU_ARCH)
+# Allow architecture override: make ARCH=i386 or make ARCH=x86_64
+ARCH ?= $(TNU_ARCH)
 PROJECT := $(TNU_PROJECT)
 
-ifeq ($(origin CC),default)
-CC := $(shell command -v x86_64-elf-gcc >/dev/null 2>&1 && echo x86_64-elf-gcc || echo gcc)
-endif
-ifeq ($(origin AR),default)
-AR := $(shell command -v x86_64-elf-ar >/dev/null 2>&1 && echo x86_64-elf-ar || echo ar)
+# Set architecture-specific compiler if cross-compiling
+ifeq ($(ARCH),i386)
+    ifeq ($(origin CC),default)
+        CC := $(shell command -v i686-elf-gcc >/dev/null 2>&1 && echo i686-elf-gcc || echo gcc)
+    endif
+    ifeq ($(origin AR),default)
+        AR := $(shell command -v i686-elf-ar >/dev/null 2>&1 && echo i686-elf-ar || echo ar)
+    endif
+    ARCH_BITS := 32
+    ARCH_M_FLAG := -m32
+    ARCH_DIR := x86
+else
+    ifeq ($(origin CC),default)
+        CC := $(shell command -v x86_64-elf-gcc >/dev/null 2>&1 && echo x86_64-elf-gcc || echo gcc)
+    endif
+    ifeq ($(origin AR),default)
+        AR := $(shell command -v x86_64-elf-ar >/dev/null 2>&1 && echo x86_64-elf-ar || echo ar)
+    endif
+    ARCH_BITS := 64
+    ARCH_M_FLAG := -m64
+    ARCH_DIR := x86_64
 endif
 HOSTPY ?= python3
 QEMU ?= qemu-system-x86_64
@@ -43,16 +66,18 @@ GENERATED := $(BUILD)/generated
 GENERATED_VERSION := $(GENERATED)/include/tnu/version.h
 GENERATED_GRUB := $(GENERATED)/boot/grub/grub.cfg
 
-KERNEL_CFLAGS := -std=gnu11 -O2 -g -Wall -Wextra -ffreestanding \
-	-fno-stack-protector -fno-stack-check -fno-pic -fno-omit-frame-pointer \
-	-fno-builtin -m64 -mno-red-zone -mgeneral-regs-only \
-	-I$(GENERATED)/include -Ikernel/include -Ikernel/arch/x86_64/include
+KERNEL_CFLAGS := -std=gnu11 -Os -g -Wall -Wextra -ffreestanding \
+	-fno-stack-protector -fno-stack-check -fno-pic -fomit-frame-pointer \
+	-fno-builtin $(ARCH_M_FLAG) -mno-red-zone -mgeneral-regs-only \
+	-ffunction-sections -fdata-sections \
+	-I$(GENERATED)/include -Ikernel/include -Ikernel/arch/$(ARCH_DIR)/include
 KERNEL_ASFLAGS := $(KERNEL_CFLAGS)
 KERNEL_LDFLAGS := -T kernel/linker.ld -nostdlib -static -no-pie \
-	-Wl,-z,max-page-size=0x1000 -Wl,--build-id=none
+	-Wl,-z,max-page-size=0x1000 -Wl,--build-id=none \
+	-Wl,--gc-sections
 
 USER_CFLAGS := -std=gnu11 -O2 -g -Wall -Wextra -ffreestanding \
-	-fno-stack-protector -fno-builtin -fno-pic -m64 -mno-red-zone \
+	-fno-stack-protector -fno-builtin -fno-pic $(ARCH_M_FLAG) -mno-red-zone \
 	-Iuserspace/libc/include -Ikernel/include
 USER_LDFLAGS := -T userspace/linker.ld -nostdlib -static -no-pie \
 	-Wl,-z,max-page-size=0x1000
@@ -60,7 +85,7 @@ USER_LDFLAGS := -T userspace/linker.ld -nostdlib -static -no-pie \
 KERNEL_C := $(shell find kernel -name '*.c' | sort)
 # tss.c is automatically included by the recursive kernel source scan
 KERNEL_S := $(shell find kernel -name '*.S' | sort)
-KERNEL_HEADERS := $(shell find kernel/include kernel/arch/x86_64/include -name '*.h' | sort) \
+KERNEL_HEADERS := $(shell find kernel/include kernel/arch/$(ARCH_DIR)/include -name '*.h' 2>/dev/null | sort) \
 	$(GENERATED_VERSION)
 KERNEL_OBJS := $(patsubst %.c,$(BUILD)/obj/%.o,$(KERNEL_C)) \
 	$(patsubst %.S,$(BUILD)/obj/%.o,$(KERNEL_S))

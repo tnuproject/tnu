@@ -111,8 +111,8 @@ int ext2_mkfs(void *image, size_t size, const char *label)
     const uint32_t blocks = (uint32_t)(size / block_size);
     const uint32_t inodes = 1024;
     const uint32_t inode_table_blocks = div_round_up_u32(inodes * EXT2_GOOD_OLD_INODE_SIZE, block_size);
-    const uint32_t first_data_block = 1;
-    const uint32_t super_block = 1;
+    const uint32_t first_data_block __attribute__((unused)) = 1;
+    const uint32_t super_block __attribute__((unused)) = 1;
     const uint32_t gd_block = 2;
     const uint32_t block_bitmap_block = 3;
     const uint32_t inode_bitmap_block = 4;

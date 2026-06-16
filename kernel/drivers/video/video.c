@@ -82,7 +82,7 @@ int video_init(void)
 /**
  * parse_vesa_framebuffer - Parse VESA framebuffer from Multiboot2
  */
-static int parse_vesa_framebuffer(const struct multiboot_tag_framebuffer *fb_tag)
+static int parse_vesa_framebuffer(__attribute__((unused)) const struct multiboot_tag_framebuffer *fb_tag)
 {
     const struct boot_info *boot = boot_info_get();
     

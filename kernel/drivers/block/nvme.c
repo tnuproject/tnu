@@ -106,12 +106,12 @@ static int nvme_identify(struct nvme_device *dev);
 static int nvme_read(struct nvme_device *dev, uint64_t lba, void *buf, size_t bytes);
 static int nvme_write(struct nvme_device *dev, uint64_t lba, const void *buf, size_t bytes);
 
-static uint8_t nvme_read8(struct nvme_device *dev, uint32_t offset)
+static uint8_t __attribute__((unused)) nvme_read8(struct nvme_device *dev, uint32_t offset)
 {
     return inb((uint16_t)(dev->bar0 + offset));
 }
 
-static uint16_t nvme_read16(struct nvme_device *dev, uint32_t offset)
+static uint16_t __attribute__((unused)) nvme_read16(struct nvme_device *dev, uint32_t offset)
 {
     return inw((uint16_t)(dev->bar0 + offset));
 }

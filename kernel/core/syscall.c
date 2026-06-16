@@ -225,7 +225,7 @@ static uintptr_t boot_modules_end_in_range(uintptr_t start, uintptr_t end)
     return max_end;
 }
 
-static void clear_user_range_preserving_boot_modules(uintptr_t start, uintptr_t end)
+static void __attribute__((unused)) clear_user_range_preserving_boot_modules(uintptr_t start, uintptr_t end)
 {
     const struct boot_info *boot = boot_info_get();
     uintptr_t cur = start;
@@ -396,7 +396,7 @@ static int tty_try_read_byte(struct process *proc)
     return tty_encode_key(ch, proc);
 }
 
-static int input_try_read_raw_key(void)
+static int __attribute__((unused)) input_try_read_raw_key(void)
 {
     for (;;) {
         int ch = keyboard_try_getchar();
@@ -1582,7 +1582,6 @@ static long sys_mmap(int fd, size_t length, int prot, int flags, int fd_arg, off
     /* Map the physical framebuffer into user address space.
      * We use a fixed virtual address range for mmap regions:
      * 0x50000000 - 0x60000000 (256 MB window for mmaps). */
-    uintptr_t user_virt_base = 0x50000000UL;
     
     /* Round up to page boundary */
     size_t map_size = (fb_size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
