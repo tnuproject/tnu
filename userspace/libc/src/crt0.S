@@ -1,6 +1,7 @@
 .section .text
 .global _start
 .extern main
+.extern exit
 
 _start:
     xorq %rbp, %rbp
@@ -9,8 +10,7 @@ _start:
     andq $-16, %rsp
     call main
     movq %rax, %rdi
-    movq $7, %rax
-    syscall
+    call exit
 1:
     hlt
     jmp 1b

@@ -71,6 +71,8 @@ void *sbrk(intptr_t increment);
 /* sync — flush all pending filesystem writes to disk.
  * On TNU this flushes the persistent TFS image. */
 int sync(void);
+int fsync(int fd);
+int fdatasync(int fd);
 
 /* Power management - requires root privileges */
 int shutdown(void);

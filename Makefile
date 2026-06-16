@@ -50,10 +50,6 @@ GIT ?= git
 PATCH ?= patch
 
 # Upstream source mirrors used only when the local clones are missing.
-# GNU nano official source repo: https://www.nano-editor.org/git.php
-NANO_UPSTREAM_URL ?= https://git.savannah.gnu.org/git/nano.git
-NANO_UPSTREAM_DIR ?= ports/nano/upstream
-
 # Freedoom official GitHub repo: https://github.com/freedoom/freedoom
 FREEDOOM_UPSTREAM_URL ?= https://github.com/freedoom/freedoom.git
 FREEDOOM_UPSTREAM_DIR ?= ports/doom/freedoom
@@ -339,14 +335,7 @@ ports-fetch-core:
 	@echo "ports-fetch-core: skipping xorg"
 
 ports-fetch-nano:
-	@mkdir -p $(dir $(NANO_UPSTREAM_DIR))
-	@if [ -d "$(NANO_UPSTREAM_DIR)/.git" ]; then \
-		echo "nano upstream already cloned at $(NANO_UPSTREAM_DIR)"; \
-	else \
-		echo "cloning GNU nano upstream into $(NANO_UPSTREAM_DIR)"; \
-		rm -rf "$(NANO_UPSTREAM_DIR)"; \
-		$(GIT) clone --depth 1 "$(NANO_UPSTREAM_URL)" "$(NANO_UPSTREAM_DIR)"; \
-	fi
+	$(MAKE) -C ports/nano fetch
 
 ports-fetch-freedoom:
 	@mkdir -p $(dir $(FREEDOOM_UPSTREAM_DIR))

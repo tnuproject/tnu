@@ -26,6 +26,7 @@ void *realloc(void *ptr, size_t size);
 void free(void *ptr);
 int system(const char *command);
 int putenv(char *string);
+int atexit(void (*function)(void));
 void exit(int code) __attribute__((noreturn));
 
 #endif

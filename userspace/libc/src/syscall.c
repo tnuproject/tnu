@@ -4,6 +4,30 @@
 #include <unistd.h>
 #include <fcntl.h>
 
+#define ATEXIT_MAX 16
+
+static void (*atexit_handlers[ATEXIT_MAX])(void);
+static int atexit_count;
+
+int atexit(void (*function)(void))
+{
+    if (!function || atexit_count >= ATEXIT_MAX) {
+        return -1;
+    }
+    atexit_handlers[atexit_count++] = function;
+    return 0;
+}
+
+static void run_atexit_handlers(void)
+{
+    while (atexit_count > 0) {
+        void (*handler)(void) = atexit_handlers[--atexit_count];
+        if (handler) {
+            handler();
+        }
+    }
+}
+
 long tnu_syscall(long n, long a0, long a1, long a2, long a3, long a4, long a5)
 {
     long ret;
@@ -100,6 +124,7 @@ int wait(int pid)
 
 void exit(int code)
 {
+    run_atexit_handlers();
     tnu_syscall(SYS_EXIT, code, 0, 0, 0, 0, 0);
     for (;;) {
     }
@@ -255,6 +280,18 @@ int sync(void)
 {
     return (int)tnu_syscall(SYS_SYNC, 0, 0, 0, 0, 0, 0);
 }
+
+int fsync(int fd)
+{
+    (void)fd;
+    return sync();
+}
+
+int fdatasync(int fd)
+{
+    return fsync(fd);
+}
+
 int shutdown(void)
 {
     return (int)tnu_syscall(44, 0, 0, 0, 0, 0, 0);

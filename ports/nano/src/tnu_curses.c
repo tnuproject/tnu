@@ -12,12 +12,7 @@
 #include <errno.h>
 #include <sys/ioctl.h>
 #include <termios.h>
-#include <fcntl.h>
-#include <poll.h>
-
-#ifndef O_NONBLOCK
-#define O_NONBLOCK 04000
-#endif
+#include <signal.h>
 
 /* ------------------------------------------------------------------ */
 /* Global state                                                         */
@@ -34,7 +29,9 @@ int LINES = 24;
 bool resized = false;
 
 static struct termios orig_tio;
+static struct termios raw_tio;
 static bool raw_active = false;
+static bool cleanup_registered = false;
 static bool colors_started = false;
 
 /* key pushback buffer */
@@ -44,6 +41,33 @@ static int ungetch_len = 0;
 
 /* color pair table: [fg, bg] */
 static short cpairs[COLOR_PAIRS][2];
+
+static void restore_terminal(void)
+{
+    if (raw_active) {
+        tcsetattr(STDIN_FILENO, TCSANOW, &orig_tio);
+        raw_active = false;
+    }
+    tnu_puts("\x1b[0m\x1b[?25h");
+}
+
+static void fatal_signal(int sig)
+{
+    restore_terminal();
+    _exit(128 + sig);
+}
+
+static void install_cleanup(void)
+{
+    if (cleanup_registered) {
+        return;
+    }
+    atexit(restore_terminal);
+    signal(SIGINT, fatal_signal);
+    signal(SIGTERM, fatal_signal);
+    signal(SIGABRT, fatal_signal);
+    cleanup_registered = true;
+}
 
 /* ------------------------------------------------------------------ */
 /* ANSI helpers                                                         */
@@ -111,6 +135,7 @@ static void get_term_size(void)
 WINDOW *initscr(void)
 {
     get_term_size();
+    install_cleanup();
 
     _stdscr.rows  = LINES; _stdscr.cols  = COLS;
     /* topwin/midwin/footwin are owned by nano's global.c */
@@ -120,13 +145,13 @@ WINDOW *initscr(void)
 
     /* raw mode */
     tcgetattr(STDIN_FILENO, &orig_tio);
-    struct termios t = orig_tio;
-    t.c_lflag &= (unsigned)~(ECHO | ICANON | ISIG | IEXTEN);
-    t.c_iflag &= (unsigned)~(IXON | ICRNL);
-    t.c_oflag &= (unsigned)~OPOST;
-    t.c_cc[VMIN]  = 1;
-    t.c_cc[VTIME] = 0;
-    tcsetattr(STDIN_FILENO, TCSANOW, &t);
+    raw_tio = orig_tio;
+    raw_tio.c_lflag &= (unsigned)~(ECHO | ICANON | IEXTEN);
+    raw_tio.c_iflag &= (unsigned)~(IXON | ICRNL);
+    raw_tio.c_oflag &= (unsigned)~OPOST;
+    raw_tio.c_cc[VMIN]  = 1;
+    raw_tio.c_cc[VTIME] = 0;
+    tcsetattr(STDIN_FILENO, TCSANOW, &raw_tio);
     raw_active = true;
 
     /* hide cursor, clear screen */
@@ -136,11 +161,8 @@ WINDOW *initscr(void)
 
 int endwin(void)
 {
-    tnu_puts("\x1b[0m\x1b[2J\x1b[H\x1b[?25h");
-    if (raw_active) {
-        tcsetattr(STDIN_FILENO, TCSANOW, &orig_tio);
-        raw_active = false;
-    }
+    tnu_puts("\x1b[0m\x1b[2J\x1b[H");
+    restore_terminal();
     return OK;
 }
 
@@ -432,50 +454,27 @@ int use_default_colors(void) { return OK; }
 /* Input                                                                */
 /* ------------------------------------------------------------------ */
 
-static int kbd_fd = -1;
-
-static int open_kbd(void)
-{
-    if (kbd_fd >= 0) return kbd_fd;
-    kbd_fd = open("/dev/input/kbd", O_RDONLY | O_NONBLOCK);
-    return kbd_fd;
-}
-
-static int try_read_kbd(void)
-{
-    int fd = open_kbd();
-    if (fd < 0) return ERR;
-
-    uint16_t event;
-    ssize_t r = read(fd, &event, sizeof(event));
-    if (r != sizeof(event)) return ERR;
-
-    /* Ignore release events (bit 15 set) */
-    if (event & 0x8000) return ERR;
-
-    return (int)(event & 0x7fff);
-}
-
-/* Map TNU special keys to ncurses KEY_* */
-static int map_tnu_key(int k)
-{
-    if (k == 0x101) return KEY_UP;
-    if (k == 0x102) return KEY_DOWN;
-    if (k == 0x103) return KEY_LEFT;
-    if (k == 0x104) return KEY_RIGHT;
-    if (k == 0x105) return KEY_HOME;
-    if (k == 0x106) return KEY_END;
-    if (k == 0x107) return KEY_DC;
-    if (k == 0x108) return 3;  /* CTRL+C */
-    return k;
-}
-
 static int read_byte(void)
 {
     unsigned char c;
     ssize_t r = read(STDIN_FILENO, &c, 1);
     if (r != 1) return ERR;
     return (int)c;
+}
+
+static int read_timed_byte(unsigned deciseconds)
+{
+    struct termios saved = raw_tio;
+    struct termios timed = raw_tio;
+    timed.c_cc[VMIN] = 0;
+    timed.c_cc[VTIME] = deciseconds ? deciseconds : 1;
+    tcsetattr(STDIN_FILENO, TCSANOW, &timed);
+
+    unsigned char c = 0;
+    ssize_t r = read(STDIN_FILENO, &c, 1);
+
+    tcsetattr(STDIN_FILENO, TCSANOW, &saved);
+    return r == 1 ? (int)c : ERR;
 }
 
 int wgetch(WINDOW *win)
@@ -485,29 +484,35 @@ int wgetch(WINDOW *win)
     if (ungetch_len > 0)
         return ungetch_buf[--ungetch_len];
 
-    /* Use poll to wait for input */
-    struct pollfd pfd = { .fd = STDIN_FILENO, .events = POLLIN };
-    int ret = poll(&pfd, 1, -1); /* block indefinitely */
-    if (ret <= 0) return ERR;
-
     /* Simple blocking read from stdin */
     int c = read_byte();
     if (c == ERR) return ERR;
 
     /* Handle escape sequences for special keys */
     if (c == 27) { /* ESC */
-        /* Try to read sequence - use non-blocking read for next char */
-        unsigned char seq[8];
-        ssize_t n = read(STDIN_FILENO, seq, sizeof(seq));
-        if (n > 0 && seq[0] == '[' && n >= 2) {
-            switch (seq[1]) {
+        int first = read_timed_byte(1);
+        if (first == ERR) {
+            return 27;
+        }
+        if (first == '[') {
+            int second = read_timed_byte(1);
+            if (second == ERR) {
+                return 27;
+            }
+            switch (second) {
             case 'A': return KEY_UP;
             case 'B': return KEY_DOWN;
             case 'C': return KEY_RIGHT;
             case 'D': return KEY_LEFT;
             case 'H': return KEY_HOME;
             case 'F': return KEY_END;
+            case '3':
+                if (read_timed_byte(1) == '~') return KEY_DC;
+                return KEY_DC;
             }
+        }
+        if (first >= 0) {
+            ungetch(first);
         }
         return 27;
     }

@@ -38,9 +38,12 @@ NANO_OBJS := $(patsubst $(UPSTREAM)/src/%.c, \
              ../../build/obj/ports/nano/upstream/%.o, $(NANO_SRCS))
 SHIM_OBJ  := ../../build/obj/ports/nano/tnu_curses.o
 
-.PHONY: all clean fetch patch
+.PHONY: all build clean fetch patch
 
-all: fetch patch ../../build/user/nano
+all: fetch patch
+	$(MAKE) build
+
+build: ../../build/user/nano
 
 # Clone nano from GitHub if not present
 fetch: $(UPSTREAM)/src/nano.c
