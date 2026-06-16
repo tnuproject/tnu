@@ -1,5 +1,7 @@
 # Tiramisù
 
+[Image](https://raw.githubusercontent.com/tnuproject/tnu/refs/heads/main/assets/screenshot.png)
+
 ## What is TNU/Tiramisu?
 
 TNU (Tiramisu) is a free, open-source, community-driven kernel project aiming to become a complete and reliable *nix-like operating system.
