@@ -92,6 +92,16 @@ void cpu_init_fpu(void)
     __asm__ volatile("fninit");
 }
 
+void cpu_set_fs_base(uint64_t base)
+{
+    wrmsr(0xc0000100, base);
+}
+
+uint64_t cpu_get_fs_base(void)
+{
+    return rdmsr(0xc0000100);
+}
+
 void syscall_init(void)
 {
     enum {

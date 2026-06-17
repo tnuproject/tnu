@@ -102,7 +102,7 @@ USER_LIB := $(BUILD)/user/libtnu.a
 
 COREUTIL_NAMES := cat chmod chown clear cp date dmesg echo hostname \
 	id ifconfig keymap kill ls mkdir mount mv xedit netstat ping ps pwd reboot rm route dhcp \
-	shutdown stat sysfetch sync time timezone touch uname uptime usb whoami wifi
+	shutdown stat sysfetch sync time timezone tirux touch uname uptime usb whoami wifi
 
 IWN_FW_SRC := $(shell find freebsd-src/sys/contrib/dev/iwn freebsd-src/sys/contrib/dev/wpi -maxdepth 1 -name '*.fw.uu' 2>/dev/null | sort)
 IWM_FW_SRC := $(shell find freebsd-src/sys/contrib/dev/iwm -maxdepth 1 -name '*.fw' 2>/dev/null | sort)
@@ -165,6 +165,15 @@ $(KERNEL): $(KERNEL_OBJS) kernel/linker.ld $(GENERATED_VERSION)
 $(BUILD)/obj/kernel/%.o: kernel/%.c $(KERNEL_HEADERS)
 	@mkdir -p $(dir $@)
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
+
+$(BUILD)/obj/kernel/compat/linux/syscall/linux_syscall_table.o: \
+	kernel/compat/linux/syscall/linux_syscall_table.c \
+	kernel/compat/linux/syscall/linux_syscall.tbl \
+	tools/gen_linux_syscalls.py \
+	$(KERNEL_HEADERS)
+	$(HOSTPY) tools/gen_linux_syscalls.py kernel/compat/linux/syscall/linux_syscall.tbl kernel/compat/linux/syscall/linux_syscall_table.c
+	@mkdir -p $(dir $@)
+	$(CC) $(KERNEL_CFLAGS) -c kernel/compat/linux/syscall/linux_syscall_table.c -o $@
 
 $(BUILD)/obj/kernel/%.o: kernel/%.S $(KERNEL_HEADERS)
 	@mkdir -p $(dir $@)

@@ -7,6 +7,7 @@
 #include <tnu/block.h>
 #include <tnu/console.h>
 #include <tnu/elf.h>
+#include <tnu/linux_compat.h>
 #include <tnu/log.h>
 #include <tnu/memory.h>
 #include <tnu/multiboot2.h>
@@ -80,6 +81,8 @@ static const struct shell_builtin_doc shell_builtin_docs[] = {
       "Authenticate and switch the current shell session to USER." },
     { "exec", "exec PATH [ARG...]",
       "Execute an ELF userspace program directly." },
+    { "linux-run", "linux-run PATH [ARG...]",
+      "Execute a Linux ELF binary through the Linux compatibility layer." },
     { "history", "history",
       "Print the shell command history." },
     { "env", "env",
@@ -1140,6 +1143,32 @@ static int cmd_exec(int argc, char **argv)
     return (int)rc;
 }
 
+static int cmd_linux_run(int argc, char **argv)
+{
+    if (argc < 2) {
+        kprintf("usage: linux-run PATH [ARG...]\n");
+        return 1;
+    }
+    long rc = linux_run_binary(argv[1], argc - 1, argv + 1);
+    if (rc == -2) {
+        kprintf("linux-run: no such Linux binary: %s\n", argv[1]);
+        return 127;
+    }
+    if (rc == -8) {
+        kprintf("linux-run: unsupported or invalid Linux ELF: %s\n", argv[1]);
+        return 126;
+    }
+    if (rc == -38) {
+        kprintf("linux-run: Linux ABI feature not implemented yet\n");
+        return 126;
+    }
+    if (rc < 0) {
+        kprintf("linux-run: failed: %s (%ld)\n", argv[1], rc);
+        return 126;
+    }
+    return (int)rc;
+}
+
 static int cmd_history(int argc, char **argv)
 {
     (void)argc;
@@ -1352,7 +1381,8 @@ static int cmd_sudo(int argc, char **argv)
 
 static const struct command commands[] = {
     { "help", cmd_help },       { "cd", cmd_cd },             { "login", cmd_login },
-    { "exec", cmd_exec },       { "history", cmd_history },   { "env", cmd_env },
+    { "exec", cmd_exec },       { "linux-run", cmd_linux_run },
+    { "history", cmd_history }, { "env", cmd_env },
     { "set", cmd_set },         { "sh", cmd_sh },             { "sudo", cmd_sudo },
     { "sysinstall", cmd_sysinstall },
 };

@@ -87,6 +87,13 @@ void procfs_refresh(void)
     process_each(proc_process_visitor, buf);
     vfs_write_file("/proc/processes", "/", buf, strlen(buf));
 
+    strcpy(buf,
+           "rootfs / tfs rw 0 0\n"
+           "proc /proc proc rw,nosuid,nodev,noexec 0 0\n"
+           "devtmpfs /dev devtmpfs rw,nosuid 0 0\n"
+           "tmpfs /tmp tmpfs rw,nosuid,nodev 0 0\n");
+    vfs_write_file("/proc/mounts", "/", buf, strlen(buf));
+
     strcpy(buf, "Iface\tType\tDriver\tState\tLink\tIPv4\tGateway\tRX-pkts\tTX-pkts\tMAC\n");
     for (size_t i = 0; i < net_iface_count(); i++) {
         const struct net_iface *iface = net_iface_get(i);
@@ -148,6 +155,9 @@ void procfs_init(void)
     make_proc("/proc/framebuffer");
     make_proc("/proc/usb");
     make_proc("/proc/processes");
+    vfs_mkdir("/proc/self", "/", VFS_S_IFDIR | 0555, 0, 0);
+    vfs_mkdir("/proc/self/fd", "/", VFS_S_IFDIR | 0555, 0, 0);
+    make_proc("/proc/mounts");
     vfs_mkdir("/proc/net", "/", VFS_S_IFDIR | 0555, 0, 0);
     make_proc("/proc/net/dev");
     make_proc("/proc/net/route");

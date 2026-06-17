@@ -2,6 +2,7 @@
 #include <tnu/elf.h>
 #include <tnu/framebuffer.h>
 #include <tnu/log.h>
+#include <tnu/linux_compat.h>
 #include <tnu/memory.h>
 #include <tnu/multiboot2.h>
 #include <tnu/net.h>
@@ -128,6 +129,8 @@ static bool path_is_public_device(const char *normal)
 {
     return strcmp(normal, "/dev/null") == 0 ||
            strcmp(normal, "/dev/zero") == 0 ||
+           strcmp(normal, "/dev/random") == 0 ||
+           strcmp(normal, "/dev/urandom") == 0 ||
            strcmp(normal, "/dev/tty") == 0 ||
            strcmp(normal, "/dev/console") == 0;
 }
@@ -582,6 +585,19 @@ static long sys_read(int fd, void *buf, size_t count)
         }
         if (strcmp(file->node->name, "zero") == 0) {
             memset(buf, 0, count);
+            return (long)count;
+        }
+        if (strcmp(file->node->name, "random") == 0 ||
+            strcmp(file->node->name, "urandom") == 0) {
+            uint8_t *p = buf;
+            uint64_t x = pit_get_ticks() ^ (uint64_t)(uintptr_t)buf ^
+                         ((uint64_t)process_current()->pid << 32);
+            for (size_t i = 0; i < count; i++) {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                p[i] = (uint8_t)x;
+            }
             return (long)count;
         }
         if (strcmp(file->node->name, "tty") == 0 || strcmp(file->node->name, "console") == 0) {
@@ -1665,6 +1681,10 @@ long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
     (void)a5;
 
     struct process *proc = process_current();
+
+    if (proc && proc->personality == LINUX_PERSONALITY) {
+        return linux_syscall_entry(number, a0, a1, a2, a3, a4, a5);
+    }
 
     if (user_exec_active && number != SYS_EXIT &&
         (!proc || proc->signal_disposition[SIGINT_NUMBER] == SIGNAL_DISPOSITION_DEFAULT) &&
