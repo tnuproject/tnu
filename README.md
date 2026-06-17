@@ -1,4 +1,6 @@
-# Tiramisù
+# Tiramisù/tnu
+
+![GitHub stars](https://img.shields.io/github/stars/tnuproject/tnu?style=for-the-badge&logo=github) ![GitHub forks](https://img.shields.io/github/forks/tnuproject/tnu?style=for-the-badge&logo=github) ![GitHub issues](https://img.shields.io/github/issues/tnuproject/tnu?style=for-the-badge&logo=github) ![Last commit](https://img.shields.io/github/last-commit/tnuproject/tnu?style=for-the-badge&logo=github)
 
 ![Image](https://raw.githubusercontent.com/tnuproject/tnu/refs/heads/main/assets/screenshot.png)
 
