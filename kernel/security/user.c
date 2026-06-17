@@ -61,6 +61,32 @@ static uint64_t parse_hex64(const char *s)
     return value;
 }
 
+bool user_name_valid(const char *name)
+{
+    if (!name || !name[0]) {
+        return false;
+    }
+    for (size_t i = 0; name[i]; i++) {
+        char c = name[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') || c == '_' || c == '-')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+uint32_t user_next_uid(void)
+{
+    uint32_t max_uid = 999;
+    for (size_t i = 0; i < users_len; i++) {
+        if (users[i].uid > max_uid) {
+            max_uid = users[i].uid;
+        }
+    }
+    return max_uid + 1;
+}
+
 static void add_record(const char *name, uint32_t uid, uint32_t gid,
                        const char *home, const char *shell)
 {
@@ -305,7 +331,8 @@ const struct user_record *user_find_uid(uint32_t uid)
 
 int user_add(const char *name, uint32_t uid, uint32_t gid)
 {
-    if (!name || user_find_name(name) || users_len >= MAX_USERS) {
+    if (!user_name_valid(name) || user_find_name(name) ||
+        user_find_uid(uid) || users_len >= MAX_USERS) {
         return -1;
     }
     char home[USER_HOME_MAX + 1];
@@ -324,10 +351,13 @@ int user_del(const char *name)
 {
     for (size_t i = 0; i < users_len; i++) {
         if (strcmp(users[i].name, name) == 0 && users[i].uid != 0) {
+            bool deleting_current = current_user == i;
             memmove(&users[i], &users[i + 1], (users_len - i - 1) * sizeof(users[0]));
             users_len--;
-            if (current_user >= users_len) {
+            if (deleting_current || current_user >= users_len) {
                 current_user = 0;
+            } else if (current_user > i) {
+                current_user--;
             }
             rebuild_passwd();
             rebuild_group();

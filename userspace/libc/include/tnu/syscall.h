@@ -59,6 +59,8 @@ enum syscall_number {
     SYS_SHUTDOWN = 44,
     SYS_REBOOT = 45,
     SYS_SET_PASSWORD = 46,
+    SYS_ADD_USER = 47,
+    SYS_DEL_USER = 48,
 };
 
 int wifi_scan(struct wifi_ap *out, size_t max_aps);

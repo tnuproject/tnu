@@ -1657,6 +1657,35 @@ static long sys_set_password(const char *user_ptr, const char *password_ptr)
     return user_set_password(name, password);
 }
 
+static long sys_add_user(const char *user_ptr)
+{
+    char name[USER_NAME_MAX + 1];
+    struct process *proc = process_current();
+
+    if (!proc || !is_root(proc) ||
+        copy_user_string_bounded(user_ptr, name, sizeof(name)) < 0) {
+        return -1;
+    }
+    if (!user_name_valid(name)) {
+        return -1;
+    }
+
+    uint32_t uid = user_next_uid();
+    return user_add(name, uid, uid);
+}
+
+static long sys_del_user(const char *user_ptr)
+{
+    char name[USER_NAME_MAX + 1];
+    struct process *proc = process_current();
+
+    if (!proc || !is_root(proc) ||
+        copy_user_string_bounded(user_ptr, name, sizeof(name)) < 0) {
+        return -1;
+    }
+    return user_del(name);
+}
+
 long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
                       uint64_t a3, uint64_t a4, uint64_t a5)
 {
@@ -1903,6 +1932,10 @@ long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
 
     case SYS_SET_PASSWORD:
         return sys_set_password((const char *)a0, (const char *)a1);
+    case SYS_ADD_USER:
+        return sys_add_user((const char *)a0);
+    case SYS_DEL_USER:
+        return sys_del_user((const char *)a0);
     case SYS_EXIT:
         /* Flush the persistent TFS before the process exits so that any
          * changes made during this session are not lost if the user shuts

@@ -1721,7 +1721,11 @@ static int cmd_useradd(int argc, char **argv)
         kprintf("usage: useradd NAME\n");
         return 1;
     }
-    uint32_t uid = 1000 + (uint32_t)user_count();
+    if (!user_name_valid(argv[1])) {
+        kprintf("useradd: invalid username\n");
+        return 1;
+    }
+    uint32_t uid = user_next_uid();
     if (user_add(argv[1], uid, uid) < 0) {
         kprintf("useradd: failed\n");
         return 1;
