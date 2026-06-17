@@ -82,7 +82,7 @@ syscall_entry:
     movq saved_user_rflags(%rip), %r11
     orq  $0x200, %r11      /* ensure IF is set in restored RFLAGS */
 
-    movq $0x1b, %rdx
+    xorq %rdx, %rdx
     movw %dx, %ds
     movw %dx, %es
 
@@ -138,7 +138,7 @@ arch_enter_user:
     movq %rsp, saved_kernel_rsp(%rip)
     movq %rsp, saved_exec_rsp(%rip)
 
-    movq $0x1b, %rdx
+    xorq %rdx, %rdx
     movw %dx, %ds
     movw %dx, %es
 
