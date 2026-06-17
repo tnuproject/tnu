@@ -1,33 +1,13 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <tnu/syscall.h>
 
-static int filter_colon_file(const char *path, const char *tmp, const char *name)
+long tnu_syscall(long n, long a0, long a1, long a2, long a3, long a4, long a5);
+
+static int del_user(const char *name)
 {
-    FILE *in = fopen(path, "r");
-    FILE *out = fopen(tmp, "w");
-    if (!out) return -1;
-    int removed = 0;
-    char line[256];
-    if (in) {
-        while (fgets(line, sizeof(line), in)) {
-            char copy[256];
-            strncpy(copy, line, sizeof(copy) - 1);
-            copy[sizeof(copy) - 1] = '\0';
-            char *colon = strchr(copy, ':');
-            if (colon) *colon = '\0';
-            if (strcmp(copy, name) == 0) {
-                removed = 1;
-                continue;
-            }
-            fputs(line, out);
-        }
-        fclose(in);
-    }
-    fclose(out);
-    remove(path);
-    rename(tmp, path);
-    return removed;
+    return (int)tnu_syscall(SYS_DEL_USER, (long)name, 0, 0, 0, 0, 0);
 }
 
 int main(int argc, char **argv)
@@ -40,10 +20,7 @@ int main(int argc, char **argv)
         printf("userdel: refusing to remove root\n");
         return 1;
     }
-    int removed = filter_colon_file("/etc/passwd", "/etc/passwd.tmp", argv[1]);
-    filter_colon_file("/etc/shadow", "/etc/shadow.tmp", argv[1]);
-    filter_colon_file("/etc/group", "/etc/group.tmp", argv[1]);
-    if (removed <= 0) {
+    if (del_user(argv[1]) < 0) {
         printf("userdel: unknown user: %s\n", argv[1]);
         return 1;
     }

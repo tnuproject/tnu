@@ -25,6 +25,8 @@ int user_login(const char *name);
 int user_login_password(const char *name, const char *password);
 const struct user_record *user_find_name(const char *name);
 const struct user_record *user_find_uid(uint32_t uid);
+bool user_name_valid(const char *name);
+uint32_t user_next_uid(void);
 int user_add(const char *name, uint32_t uid, uint32_t gid);
 int user_del(const char *name);
 int user_set_password(const char *name, const char *password);
