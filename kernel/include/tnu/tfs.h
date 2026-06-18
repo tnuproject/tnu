@@ -64,6 +64,7 @@ int tfs_mount_image(const void *image, size_t size);
  * allocator, but makes /etc/passwd, /etc/shadow, /home and user files persist. */
 int tfs_mount_disk(const char *device, uint64_t start_lba);
 int tfs_mount_installed_root(void);
+int tfs_install_current_root(const char *device, uint64_t start_lba);
 int tfs_sync(void);
 bool tfs_is_persistent(void);
 void tfs_set_auto_sync(bool enabled);

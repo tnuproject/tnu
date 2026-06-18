@@ -10,10 +10,8 @@ TNU is intended to build on Linux or WSL with standard OS-development tools.
 - `grub-file`
 - `grub-mkrescue`
 - `grub-mkstandalone`
-- `grub-install` for real disk installs from `sysinstall`
 - `xorriso`
 - `isoinfo`
-- `mkfs.vfat` from `dosfstools` for `sysinstall` ESP formatting
 - `python3`
 - `qemu-system-x86_64` for `make run`
 

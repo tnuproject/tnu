@@ -65,6 +65,7 @@ enum syscall_number {
     SYS_SEND = 50,
     SYS_RECV = 51,
     SYS_WIFI_DISCONNECT = 52,
+    SYS_TFS_INSTALL_ROOT = 53,
 };
 
 int wifi_scan(struct wifi_ap *out, size_t max_aps);

@@ -252,7 +252,7 @@ $(BUILD)/user/doom: $(USER_LIB) $(USER_CRT) userspace/linker.ld \
 		USER_CRT="$(abspath $(USER_CRT))" \
 		USER_LIB="$(abspath $(USER_LIB))"
 
-rootfs: userspace version-files firmware-iwlwifi
+rootfs: userspace version-files firmware-iwlwifi $(KERNEL) $(EFI_BOOT)
 	rm -rf $(BUILD)/rootfs
 	mkdir -p $(BUILD)/rootfs
 	cp -a rootfs/. $(BUILD)/rootfs/
@@ -260,9 +260,12 @@ rootfs: userspace version-files firmware-iwlwifi
 	cp ascii.txt $(BUILD)/rootfs/etc/sysfetch-logo
 	mkdir -p $(BUILD)/rootfs/bin $(BUILD)/rootfs/sbin $(BUILD)/rootfs/usr/bin \
 		$(BUILD)/rootfs/usr/games $(BUILD)/rootfs/usr/share/games/doom \
+		$(BUILD)/rootfs/boot $(BUILD)/rootfs/EFI/BOOT \
 		$(BUILD)/rootfs/lib/modules \
 		$(BUILD)/rootfs/lib/firmware/iwlwifi \
 		$(BUILD)/rootfs/usr/linux
+	cp $(KERNEL) $(BUILD)/rootfs/boot/kernel.elf
+	cp $(EFI_BOOT) $(BUILD)/rootfs/EFI/BOOT/BOOTX64.EFI
 	cp $(BUILD)/user/init $(BUILD)/rootfs/sbin/init
 	cp $(BUILD)/user/tsh $(BUILD)/rootfs/bin/tsh
 	cp $(BUILD)/user/tsh $(BUILD)/rootfs/bin/sh

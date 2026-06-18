@@ -341,6 +341,43 @@ bool tfs_is_persistent(void)
     return persistent_enabled;
 }
 
+int tfs_install_current_root(const char *device, uint64_t start_lba)
+{
+    if (!device || !block_device_find(device)) {
+        return -1;
+    }
+
+    char old_device[sizeof(persistent_device)];
+    strncpy(old_device, persistent_device, sizeof(old_device) - 1);
+    old_device[sizeof(old_device) - 1] = '\0';
+    uint64_t old_lba = persistent_start_lba;
+    size_t old_size = last_image_size;
+    bool old_persistent = persistent_enabled;
+    bool old_auto_sync = auto_sync_enabled;
+
+    strncpy(persistent_device, device, sizeof(persistent_device) - 1);
+    persistent_device[sizeof(persistent_device) - 1] = '\0';
+    persistent_start_lba = start_lba;
+    persistent_enabled = true;
+    auto_sync_enabled = false;
+
+    int rc = tfs_sync();
+    if (rc == 0) {
+        auto_sync_enabled = true;
+        log_info("tfs", "installed current root to %s@LBA%llu",
+                 persistent_device, (unsigned long long)persistent_start_lba);
+        return 0;
+    }
+
+    strncpy(persistent_device, old_device, sizeof(persistent_device) - 1);
+    persistent_device[sizeof(persistent_device) - 1] = '\0';
+    persistent_start_lba = old_lba;
+    last_image_size = old_size;
+    persistent_enabled = old_persistent;
+    auto_sync_enabled = old_auto_sync;
+    return rc;
+}
+
 void tfs_set_auto_sync(bool enabled)
 {
     auto_sync_enabled = enabled;

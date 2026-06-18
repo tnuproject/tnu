@@ -1897,6 +1897,17 @@ long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
             return 0;
         }
         return (long)tfs_sync();
+    case SYS_TFS_INSTALL_ROOT:
+    {
+        if (!proc || !is_root(proc) || !uptr_ok((const void *)a0, 1)) {
+            return -1;
+        }
+        char dev[32];
+        if (copy_user_string_bounded((const char *)a0, dev, sizeof(dev)) < 0) {
+            return -1;
+        }
+        return (long)tfs_install_current_root(dev, (uint64_t)a1);
+    }
     case SYS_MMAP:
         return sys_mmap((int)a0, (size_t)a1, (int)a2, (int)a3, (int)a4, (off_t)a5);
     case SYS_SELECT:
