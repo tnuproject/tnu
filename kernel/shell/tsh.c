@@ -1202,6 +1202,13 @@ static int run_linux_transparent(const char *linux_path, int argc, char **argv)
         kprintf("%s: Linux execution failed (%ld)\n", argv[0], rc);
         return 126;
     }
+    if (rc == 139) {
+        kprintf("%s: Linux process faulted before completing (SIGSEGV)\n", argv[0]);
+        return 139;
+    }
+    if (rc != 0) {
+        kprintf("%s: Linux process exited with status %ld\n", argv[0], rc);
+    }
     return (int)rc;
 }
 
