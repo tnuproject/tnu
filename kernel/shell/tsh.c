@@ -35,6 +35,7 @@ struct env_pair {
 };
 
 static const char *env_get_value(const char *key);
+static int env_set_value(const char *key, const char *value);
 static bool shell_can_execute_node(struct vfs_node *node);
 static bool bin_entry_exists(const char *name);
 static struct vfs_node *resolve_command_node(const char *command, char *resolved, size_t resolved_size);
@@ -60,6 +61,7 @@ static char *script_arg_argv[ARGV_MAX];
 static char shell_clipboard[LINE_MAX];
 
 static const char *env_get_value(const char *key);
+static int env_set_value(const char *key, const char *value);
 static bool shell_can_execute_node(struct vfs_node *node);
 static bool bin_entry_exists(const char *name);
 static struct vfs_node *resolve_command_node(const char *command, char *resolved, size_t resolved_size);
@@ -69,6 +71,12 @@ struct shell_builtin_doc {
     const char *name;
     const char *usage;
     const char *help;
+};
+
+struct help_path_ctx {
+    size_t column;
+    const char *seen[64];
+    size_t seen_count;
 };
 
 static const struct shell_builtin_doc shell_builtin_docs[] = {
@@ -112,9 +120,11 @@ static void read_file_text(const char *path, char *out, size_t out_size, const c
 
 static void strip_first_newline(char *out)
 {
-    char *nl = strchr(out, '\n');
-    if (nl) {
-        *nl = '\0';
+    for (char *p = out; *p; ++p) {
+        if (*p == '\r' || *p == '\n') {
+            *p = '\0';
+            break;
+        }
     }
 }
 
@@ -925,22 +935,40 @@ static int expand_args(int argc, char **argv, char **expanded,
 
 static void help_command_emit(struct vfs_node *node, void *ctx)
 {
-    size_t *column = ctx;
+    struct help_path_ctx *help = ctx;
     if (!node || node->type != VFS_NODE_FILE || !shell_can_execute_node(node)) {
         return;
     }
-    kprintf("  %s", node->name);
-    (*column)++;
-    if ((*column % 6) == 0) {
+    for (size_t i = 0; i < sizeof(shell_builtin_docs) / sizeof(shell_builtin_docs[0]); i++) {
+        if (strcmp(node->name, shell_builtin_docs[i].name) == 0) {
+            return;
+        }
+    }
+    if (tnu_applet_is_command(node->name)) {
+        return;
+    }
+    for (size_t i = 0; i < help->seen_count; i++) {
+        if (strcmp(help->seen[i], node->name) == 0) {
+            return;
+        }
+    }
+    if (help->seen_count < sizeof(help->seen) / sizeof(help->seen[0])) {
+        help->seen[help->seen_count++] = node->name;
+    }
+    kprintf("  %-12s", node->name);
+    help->column++;
+    if ((help->column % 4) == 0) {
         kprintf("\n");
     }
 }
 
-static void help_list_path_commands(void)
+static size_t help_list_external_commands(void)
 {
     const char *path = shell_path();
     char dir[VFS_PATH_MAX];
-    size_t column = 0;
+    struct help_path_ctx ctx;
+
+    memset(&ctx, 0, sizeof(ctx));
 
     while (*path) {
         size_t n = 0;
@@ -951,16 +979,66 @@ static void help_list_path_commands(void)
         dir[n] = '\0';
         struct vfs_node *node = vfs_lookup(dir[0] ? dir : ".", process_current()->cwd);
         if (node && node->type == VFS_NODE_DIR) {
-            vfs_list(node, help_command_emit, &column);
+            vfs_list(node, help_command_emit, &ctx);
         }
         path += n;
         if (*path == ':') {
             path++;
         }
     }
-    if (column % 6 != 0) {
+    if (ctx.column % 4 != 0) {
         kprintf("\n");
     }
+    return ctx.column;
+}
+
+static void help_print_topic(const char *usage, const char *help)
+{
+    kprintf("Usage: %s\n", usage);
+    kprintf("  %s\n", help);
+}
+
+static void help_print_builtin_summary(void)
+{
+    for (size_t i = 0; i < sizeof(shell_builtin_docs) / sizeof(shell_builtin_docs[0]); i++) {
+        kprintf("  %-12s%s\n", shell_builtin_docs[i].name, shell_builtin_docs[i].help);
+    }
+}
+
+static void help_print_name_grid(const char *list)
+{
+    size_t column = 0;
+    char name[32];
+
+    while (list && *list) {
+        size_t len = 0;
+        while (*list == ' ') {
+            list++;
+        }
+        while (*list && *list != ' ' && len + 1 < sizeof(name)) {
+            name[len++] = *list++;
+        }
+        while (*list && *list != ' ') {
+            list++;
+        }
+        if (len == 0) {
+            continue;
+        }
+        name[len] = '\0';
+        kprintf("  %-12s", name);
+        column++;
+        if ((column % 4) == 0) {
+            kprintf("\n");
+        }
+    }
+    if (column % 4 != 0) {
+        kprintf("\n");
+    }
+}
+
+static void help_print_applet_summary(void)
+{
+    help_print_name_grid(tnu_applet_list());
 }
 
 static int cmd_help(int argc, char **argv)
@@ -973,8 +1051,7 @@ static int cmd_help(int argc, char **argv)
         const char *name = command_basename(argv[1]);
         for (size_t i = 0; i < sizeof(shell_builtin_docs) / sizeof(shell_builtin_docs[0]); i++) {
             if (strcmp(name, shell_builtin_docs[i].name) == 0) {
-                kprintf("Usage: %s\n\n%s\n", shell_builtin_docs[i].usage,
-                        shell_builtin_docs[i].help);
+                help_print_topic(shell_builtin_docs[i].usage, shell_builtin_docs[i].help);
                 return 0;
             }
         }
@@ -991,18 +1068,14 @@ static int cmd_help(int argc, char **argv)
         kprintf("help: no help topic for %s\n", argv[1]);
         return 1;
     }
-    kprintf("Tiramisu shell builtins:\n");
-    for (size_t i = 0; i < sizeof(shell_builtin_docs) / sizeof(shell_builtin_docs[0]); i++) {
-        kprintf("  %s", shell_builtin_docs[i].name);
-        if ((i + 1) % 6 == 0) {
-            kprintf("\n");
-        }
+    kprintf("Builtins:\n");
+    help_print_builtin_summary();
+    kprintf("\nApplets:\n");
+    help_print_applet_summary();
+    kprintf("\nExternal executables:\n");
+    if (help_list_external_commands() == 0) {
+        kprintf("  (none)\n");
     }
-    if (sizeof(shell_builtin_docs) / sizeof(shell_builtin_docs[0]) % 6 != 0) {
-        kprintf("\n");
-    }
-    kprintf("PATH executables:\n");
-    help_list_path_commands();
     kprintf("Use 'help COMMAND' or 'COMMAND --help' for details.\n");
     return 0;
 }
@@ -2071,6 +2144,8 @@ static int run_tokens(int argc, char **argv)
 
 static void init_env(void)
 {
+    char locale[32];
+
     env_count = 0;
     strcpy(envs[env_count].key, "PATH");
     strcpy(envs[env_count++].value, DEFAULT_EXEC_PATH);
@@ -2078,6 +2153,14 @@ static void init_env(void)
     strcpy(envs[env_count++].value, "/bin/tsh");
     strcpy(envs[env_count].key, "TERM");
     strcpy(envs[env_count++].value, "tnu-vga");
+
+    read_file_text("/etc/locale", locale, sizeof(locale), "en_US");
+    strip_first_newline(locale);
+    if (!locale[0]) {
+        strcpy(locale, "en_US");
+    }
+    env_set_value("LANG", locale);
+    env_set_value("LC_ALL", locale);
 }
 
 static void init_keymap(void)

@@ -19,6 +19,7 @@
 #include <tnu/vfs.h>
 
 #define APPLET_LINE_MAX 256
+#define APPLET_LIST_MAX 512
 
 static const char sysfetch_default_logo[] =
     "___________           \n"
@@ -1834,9 +1835,25 @@ static const struct applet_command applets[] = {
 
 const char *tnu_applet_list(void)
 {
-    return "clear uname sysfetch dmesg ls pwd cat echo mkdir rm touch cp mv chmod chown stat "
-           "ps kill whoami id hostname date time uptime timezone keymap layout reboot shutdown "
-           "mount ifconfig route dhcp netstat usb ping wifi xedit passwd useradd userdel";
+    static char list[APPLET_LIST_MAX];
+    size_t pos = 0;
+
+    list[0] = '\0';
+    for (size_t i = 0; i < sizeof(applets) / sizeof(applets[0]); i++) {
+        const char *name = applets[i].name;
+        size_t name_len = strlen(name);
+
+        if (i > 0 && pos + 1 < sizeof(list)) {
+            list[pos++] = ' ';
+        }
+        if (pos + name_len >= sizeof(list)) {
+            break;
+        }
+        memcpy(list + pos, name, name_len);
+        pos += name_len;
+    }
+    list[pos] = '\0';
+    return list;
 }
 
 bool tnu_applet_is_command(const char *name)
