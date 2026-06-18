@@ -264,8 +264,7 @@ rootfs: userspace version-files firmware-iwlwifi
 			mkdir -p $(BUILD)/rootfs/lib/modules; \
 			cp -a $(LINUX_CHROOT_DIR)/lib/modules/. $(BUILD)/rootfs/lib/modules/; \
 		fi; \
-		# Fix broken symlinks that point to absolute paths \
-		find $(BUILD)/rootfs/usr/linux -xtype l -delete 2>/dev/null || true; \
+		$(HOSTPY) tools/materialize_linux_symlinks.py $(BUILD)/rootfs/usr/linux; \
 	else \
 		echo "rootfs: no Linux chroot found (run 'make linux-chroot-fetch')"; \
 	fi
