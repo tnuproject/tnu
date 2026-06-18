@@ -1107,7 +1107,9 @@ static long sys_exec_image(const char *path, int argc, char **argv)
     }
 
     user_exec_active = true;
+    uintptr_t saved_exec_rsp = arch_get_exec_rsp();
     int rc = arch_enter_user(info.entry, (uint64_t)(uintptr_t)stack);
+    arch_set_exec_rsp(saved_exec_rsp);
     user_exec_active = false;
     if (proc) {
         strncpy(proc->name, saved_name, PROCESS_NAME_MAX);

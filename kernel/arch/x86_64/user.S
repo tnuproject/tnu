@@ -155,6 +155,16 @@ arch_enter_user:
     pushq %rdi           /* RIP = entry point (1st pop) */
     iretq
 
+.global arch_get_exec_rsp
+arch_get_exec_rsp:
+    movq saved_exec_rsp(%rip), %rax
+    ret
+
+.global arch_set_exec_rsp
+arch_set_exec_rsp:
+    movq %rdi, saved_exec_rsp(%rip)
+    ret
+
 .global arch_abort_user
 arch_abort_user:
     /*

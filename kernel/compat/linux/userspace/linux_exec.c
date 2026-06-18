@@ -375,7 +375,21 @@ long linux_run_binary(const char *path, int argc, char **argv)
 
     uint64_t entry = interp ? interp->entry : main_img.entry;
     uint64_t saved_fs_base = cpu_get_fs_base();
+    /*
+     * Save and restore saved_exec_rsp around arch_enter_user.
+     *
+     * arch_enter_user writes saved_exec_rsp with the current kernel RSP before
+     * jumping into user mode.  If linux_run_binary is called recursively (e.g.
+     * the dynamic linker calls execve(59) to hand off to the real binary),
+     * the inner arch_enter_user overwrites saved_exec_rsp with its own frame,
+     * so when the inner binary exits via SYSCALL_RET_TO_KERNEL it pops the
+     * inner frame and returns cleanly — but saved_exec_rsp no longer points at
+     * the outer arch_enter_user frame.  Saving and restoring it here ensures
+     * each level of nesting has the correct return address when it exits.
+     */
+    uintptr_t saved_exec_rsp = arch_get_exec_rsp();
     int rc = arch_enter_user(entry, (uint64_t)stack);
+    arch_set_exec_rsp(saved_exec_rsp);
     cpu_set_fs_base(saved_fs_base);
     if (proc) {
         proc->personality = saved_personality;
