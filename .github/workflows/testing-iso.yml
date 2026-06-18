@@ -1,0 +1,36 @@
+name: Build Testing ISO
+
+on:
+  push:
+    branches:
+      - testing-iso
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y build-essential nasm xorriso grub-pc-bin grub-common mtools
+
+      - name: Build
+        run: make all
+
+      - name: Find ISO
+        run: |
+          echo "ISO_PATH=$(find . -name '*.iso' | head -n 1)" >> $GITHUB_ENV
+
+      - name: Upload ISO artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tiramisu-testing-iso
+          path: ${{ env.ISO_PATH }}
