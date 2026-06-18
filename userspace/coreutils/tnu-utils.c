@@ -1580,9 +1580,10 @@ static int cmd_tls(int argc, char **argv)
         return 1;
     }
     const struct tnu_tls_features *f = tnu_tls_features();
+    int selftest = tnu_tls_selftest();
     println("TLS backend status:");
     print("selftest: ");
-    println(tnu_tls_selftest() == TNU_TLS_OK ? "ok" : "failed");
+    println(selftest == TNU_TLS_OK ? "ok" : "failed");
     print_tls_feature("sha256", f->sha256);
     print_tls_feature("hkdf-sha256", f->hkdf_sha256);
     print_tls_feature("x25519", f->x25519);
@@ -1595,7 +1596,7 @@ static int cmd_tls(int argc, char **argv)
     print_tls_feature("x509", f->x509);
     print_tls_feature("ca-store", f->ca_store);
     println("trust-store-path: /etc/ssl/certs/tnu-pins.txt");
-    return (tnu_tls_selftest() == TNU_TLS_OK &&
+    return (selftest == TNU_TLS_OK &&
             f->sha256 && f->hkdf_sha256 && f->x25519 &&
             (f->aes_128_gcm || f->chacha20_poly1305) &&
             f->tls13_client_hello && f->x509 && f->ca_store) ? 0 : 1;

@@ -28,7 +28,7 @@
 
 #define NET_SOCKET_BASE 512
 #define NET_SOCKET_MAX 8
-#define TCP_RX_BUF_SIZE 8192
+#define TCP_RX_BUF_SIZE 4096
 #define TCP_MAX_PAYLOAD 1024
 #define TCP_FIN 0x01
 #define TCP_SYN 0x02

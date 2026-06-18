@@ -15,7 +15,17 @@ struct tls_url {
     uint16_t port;
 };
 
+#define TLS_AEAD_MACBUF_MAX 2048
+#define TLS_CLIENTHELLO_BODY_MAX 512
+#define TLS_CLIENTHELLO_RECORD_MAX (5 + 4 + TLS_CLIENTHELLO_BODY_MAX)
+#define TLS_RECORD_DRAIN_MAX 512
+
 static int bytes_eq(const uint8_t *a, const uint8_t *b, size_t len);
+
+static uint8_t tls_aead_macbuf[TLS_AEAD_MACBUF_MAX];
+static uint8_t tls_clienthello_body[TLS_CLIENTHELLO_BODY_MAX];
+static uint8_t tls_clienthello_record[TLS_CLIENTHELLO_RECORD_MAX];
+static uint8_t tls_record_drain[TLS_RECORD_DRAIN_MAX];
 
 static const struct tnu_tls_features tls_features = {
     .sha256 = 1,
@@ -714,10 +724,10 @@ int tnu_chacha20_poly1305_seal(const uint8_t key[32], const uint8_t nonce[12],
     chacha20_block(key, nonce, 0, otk);
     tnu_chacha20_xor(key, nonce, 1, plain, cipher, plain_len);
 
-    if (aad_len + plain_len + 32 > 2048) {
+    if (aad_len + plain_len + 32 > TLS_AEAD_MACBUF_MAX) {
         return TNU_TLS_ERR_UNSUPPORTED;
     }
-    uint8_t macbuf[2048];
+    uint8_t *macbuf = tls_aead_macbuf;
     size_t pos = 0;
     poly1305_update_padded(macbuf, &pos, aad, aad_len);
     poly1305_update_padded(macbuf, &pos, cipher, plain_len);
@@ -737,12 +747,12 @@ int tnu_chacha20_poly1305_open(const uint8_t key[32], const uint8_t nonce[12],
     if ((!cipher && cipher_len) || (!plain && cipher_len) || (!aad && aad_len)) {
         return TNU_TLS_ERR_BAD_URL;
     }
-    if (aad_len + cipher_len + 32 > 2048) {
+    if (aad_len + cipher_len + 32 > TLS_AEAD_MACBUF_MAX) {
         return TNU_TLS_ERR_UNSUPPORTED;
     }
     uint8_t otk[64];
     uint8_t calc[16];
-    uint8_t macbuf[2048];
+    uint8_t *macbuf = tls_aead_macbuf;
     size_t pos = 0;
     chacha20_block(key, nonce, 0, otk);
     poly1305_update_padded(macbuf, &pos, aad, aad_len);
@@ -920,7 +930,7 @@ static int tls_append_ext(uint8_t *buf, size_t *pos, size_t cap,
 
 static int tls_send_client_hello(int fd, const struct tls_url *url)
 {
-    uint8_t body[512];
+    uint8_t *body = tls_clienthello_body;
     size_t b = 0;
     body[b++] = 0x03;
     body[b++] = 0x03;
@@ -954,15 +964,15 @@ static int tls_send_client_hello(int fd, const struct tls_url *url)
     sni[2] = 0;
     store_be16_tls(sni + 3, (uint16_t)host_len);
     memcpy(sni + 5, url->host, host_len);
-    int rc = tls_append_ext(body, &b, sizeof(body), 0x0000, sni, host_len + 5);
+    int rc = tls_append_ext(body, &b, TLS_CLIENTHELLO_BODY_MAX, 0x0000, sni, host_len + 5);
     if (rc < 0) return rc;
 
     uint8_t versions[] = { 2, 0x03, 0x04 };
-    rc = tls_append_ext(body, &b, sizeof(body), 0x002b, versions, sizeof(versions));
+    rc = tls_append_ext(body, &b, TLS_CLIENTHELLO_BODY_MAX, 0x002b, versions, sizeof(versions));
     if (rc < 0) return rc;
 
     uint8_t groups[] = { 0, 2, 0, 0x1d };
-    rc = tls_append_ext(body, &b, sizeof(body), 0x000a, groups, sizeof(groups));
+    rc = tls_append_ext(body, &b, TLS_CLIENTHELLO_BODY_MAX, 0x000a, groups, sizeof(groups));
     if (rc < 0) return rc;
 
     uint8_t sigalgs[] = {
@@ -972,7 +982,7 @@ static int tls_send_client_hello(int fd, const struct tls_url *url)
         0x08, 0x05,
         0x04, 0x01,
     };
-    rc = tls_append_ext(body, &b, sizeof(body), 0x000d, sigalgs, sizeof(sigalgs));
+    rc = tls_append_ext(body, &b, TLS_CLIENTHELLO_BODY_MAX, 0x000d, sigalgs, sizeof(sigalgs));
     if (rc < 0) return rc;
 
     uint8_t key_share[38];
@@ -980,19 +990,19 @@ static int tls_send_client_hello(int fd, const struct tls_url *url)
     store_be16_tls(key_share + 2, 0x001d);
     store_be16_tls(key_share + 4, 32);
     tls_fill_random(key_share + 6, 32);
-    rc = tls_append_ext(body, &b, sizeof(body), 0x0033, key_share, sizeof(key_share));
+    rc = tls_append_ext(body, &b, TLS_CLIENTHELLO_BODY_MAX, 0x0033, key_share, sizeof(key_share));
     if (rc < 0) return rc;
 
     uint8_t alpn[] = {
         0, 9,
         8, 'h', 't', 't', 'p', '/', '1', '.', '1',
     };
-    rc = tls_append_ext(body, &b, sizeof(body), 0x0010, alpn, sizeof(alpn));
+    rc = tls_append_ext(body, &b, TLS_CLIENTHELLO_BODY_MAX, 0x0010, alpn, sizeof(alpn));
     if (rc < 0) return rc;
 
     store_be16_tls(body + ext_len_pos, (uint16_t)(b - ext_start));
 
-    uint8_t record[5 + 4 + sizeof(body)];
+    uint8_t *record = tls_clienthello_record;
     size_t p = 0;
     record[p++] = 22;
     record[p++] = 0x03;
@@ -1019,10 +1029,9 @@ static int tls_read_first_record(int fd, uint8_t *type_out)
         *type_out = hdr[0];
     }
     uint16_t len = ((uint16_t)hdr[3] << 8) | hdr[4];
-    uint8_t tmp[512];
     while (len) {
-        size_t want = len < sizeof(tmp) ? len : sizeof(tmp);
-        n = recv(fd, tmp, want, 0);
+        size_t want = len < TLS_RECORD_DRAIN_MAX ? len : TLS_RECORD_DRAIN_MAX;
+        n = recv(fd, tls_record_drain, want, 0);
         if (n <= 0) {
             return TNU_TLS_ERR_NETWORK;
         }
