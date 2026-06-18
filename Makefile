@@ -10,6 +10,9 @@ include version.mk
 ARCH ?= $(TNU_ARCH)
 PROJECT := $(TNU_PROJECT)
 
+# Include Alpine Linux chroot into final image
+WITH_LINUX_CHROOT ?= 1
+
 # Set architecture-specific compiler if cross-compiling
 ifeq ($(ARCH),i386)
     ifeq ($(origin CC),default)
@@ -53,7 +56,12 @@ BUILD := build
 KERNEL := $(BUILD)/kernel.elf
 ROOTFS := $(BUILD)/root.tfs
 # ISO filename reflects the actual architecture being built
-ISO := $(BUILD)/$(PROJECT)-$(TNU_VERSION)-$(ARCH).iso
+ISO_SUFFIX :=
+ifeq ($(WITH_LINUX_CHROOT),1)
+    ISO_SUFFIX := -linuxchroot
+endif
+
+ISO := $(BUILD)/$(PROJECT)-$(TNU_VERSION)-$(ARCH)$(ISO_SUFFIX).iso
 EFI_BOOT := $(BUILD)/BOOTX64.EFI
 INSTALL_IMAGE := $(BUILD)/install.img
 GENERATED := $(BUILD)/generated
@@ -105,7 +113,11 @@ LINUX_IWL_FW_SRC := $(shell find rootfs/lib/firmware rootfs/lib/firmware/iwlwifi
 	fastfetch ports-fetch-freedoom \
 	linux-chroot-fetch linux-chroot linux-chroot-packages
 
+ifeq ($(WITH_LINUX_CHROOT),1)
 all: ports-fetch linux-chroot-fetch linux-chroot-packages iso
+else
+all: ports-fetch iso
+endif
 
 kernel: $(KERNEL)
 
@@ -254,7 +266,7 @@ rootfs: userspace version-files firmware-iwlwifi
 	for name in $(COREUTIL_NAMES); do cp $(BUILD)/user/tnu-utils $(BUILD)/rootfs/bin/$$name; done
 	cp $(BUILD)/user/fastfetch $(BUILD)/rootfs/usr/bin/fastfetch
 	cp -a $(BUILD)/firmware/iwlwifi/. $(BUILD)/rootfs/lib/firmware/iwlwifi/
-	@if [ -d "$(LINUX_CHROOT_DIR)" ]; then \
+	@if [ "$(WITH_LINUX_CHROOT)" = "1" ] && [ -d "$(LINUX_CHROOT_DIR)" ]; then \
 		echo "rootfs: copying Linux chroot into rootfs/usr/linux"; \
 		rm -rf $(BUILD)/rootfs/usr/linux; \
 		mkdir -p $(BUILD)/rootfs/usr/linux; \
@@ -266,7 +278,7 @@ rootfs: userspace version-files firmware-iwlwifi
 		fi; \
 		$(HOSTPY) tools/materialize_linux_symlinks.py $(BUILD)/rootfs/usr/linux; \
 	else \
-		echo "rootfs: no Linux chroot found (run 'make linux-chroot-fetch')"; \
+		echo "rootfs: Linux chroot disabled or not present"; \
 	fi
 
 $(ROOTFS): rootfs tools/mktfs.py
@@ -455,3 +467,14 @@ linux-chroot-packages: $(LINUX_CHROOT_DIR)/bin/busybox
 linux-chroot: $(LINUX_CHROOT_DIR)/bin/busybox
 	@echo "linux-chroot: Alpine Linux chroot ready at $(LINUX_CHROOT_DIR)"
 
+
+
+.PHONY: wlinux wolinux
+
+# Build WITH Alpine Linux chroot
+wlinux:
+	$(MAKE) WITH_LINUX_CHROOT=1
+
+# Build WITHOUT Alpine Linux chroot
+wolinux:
+	$(MAKE) WITH_LINUX_CHROOT=0
