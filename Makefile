@@ -101,7 +101,7 @@ USER_CRT := $(BUILD)/obj/userspace/libc/src/crt0.o
 USER_LIB := $(BUILD)/user/libtnu.a
 
 COREUTIL_NAMES := cat chmod chown clear cp date dmesg echo hostname \
-	id ifconfig keymap kill ls mkdir mount mv xedit netstat ping ps pwd reboot rm route dhcp \
+	id ifconfig keymap kill language locale ls mkdir mount mv xedit netstat ping ps pwd reboot rm route dhcp \
 	shutdown stat sysfetch sync time timezone touch uname uptime usb whoami wifi
 
 IWN_FW_SRC := $(shell find freebsd-src/sys/contrib/dev/iwn freebsd-src/sys/contrib/dev/wpi -maxdepth 1 -name '*.fw.uu' 2>/dev/null | sort)

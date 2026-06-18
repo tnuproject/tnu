@@ -33,6 +33,14 @@ static int cmd_shutdown(int argc, char **argv);
 static int cmd_reboot(int argc, char **argv);
 static int cmd_sync(int argc, char **argv);
 
+static const char *const supported_keymaps[] = {
+    "us", "uk", "de", "fr", "it", "es", "nl", "lt", "pl", "dvorak"
+};
+
+static const char *const supported_locales[] = {
+    "en_US", "de_DE", "nl_NL", "lt_LT", "pl_PL"
+};
+
 static const struct util_help help_topics[] = {
     { "echo", "echo [-n] [ARG...]", "Print arguments separated by spaces." },
     { "pwd", "pwd", "Print the current working directory." },
@@ -49,10 +57,30 @@ static const struct util_help help_topics[] = {
     { "timezone", "timezone [ZONE]", "Show or set /etc/timezone; setting requires root." },
     { "keymap", "keymap [LAYOUT]", "Show or set /etc/keymap; setting requires root." },
     { "layout", "layout [LAYOUT]", "Alias for keymap." },
+    { "locale", "locale [NAME|list]", "Show or set /etc/locale; setting requires root." },
+    { "language", "language [NAME|list]", "Alias for locale." },
+    { "ifconfig", "ifconfig", "Print /proc/net/dev in the userspace fallback build." },
+    { "route", "route", "Print /proc/net/route in the userspace fallback build." },
+    { "netstat", "netstat", "Print /proc/net/sockstat in the userspace fallback build." },
+    { "usb", "usb", "Print /proc/usb in the userspace fallback build." },
     { "ping", "ping IPv4", "Send a minimal ICMP test when networking is available." },
     { "wifi", "wifi scan|connect IFACE SSID [PASSPHRASE]|status", "Scan, connect, and show Wi-Fi status." },
+    { "xedit", "xedit FILE", "Userspace fallback stub; full editing support is handled by the shell applet." },
+    { "clear", "clear", "Clear the terminal using ANSI escape sequences." },
+    { "date", "date", "Stub in the userspace fallback build; full date support is provided by the shell applet." },
+    { "time", "time", "Stub in the userspace fallback build; full time support is provided by the shell applet." },
+    { "ps", "ps", "Print /proc/processes in the userspace fallback build." },
+    { "kill", "kill PID", "Show the basic kill usage string in the userspace fallback build." },
     { "chmod", "chmod MODE FILE", "Change file permissions; supports octal and simple symbolic modes." },
+    { "chown", "chown USER FILE", "Userspace fallback stub; full ownership changes are handled by the shell applet." },
+    { "cp", "cp SRC DST", "Userspace fallback stub; full copy support is handled by the shell applet." },
+    { "mv", "mv SRC DST", "Userspace fallback stub; full move support is handled by the shell applet." },
+    { "mount", "mount", "Userspace fallback stub; full mount reporting is handled by the shell applet." },
+    { "dmesg", "dmesg", "Userspace fallback stub; full kernel log access is handled by the shell applet." },
     { "stat", "stat FILE", "Print file metadata." },
+    { "shutdown", "shutdown", "Request ACPI shutdown; requires root." },
+    { "reboot", "reboot", "Request reboot; requires root." },
+    { "sync", "sync", "Flush filesystem state to disk." },
 };
 
 static int show_help(const char *cmd)
@@ -61,7 +89,7 @@ static int show_help(const char *cmd)
         if (strcmp(cmd, help_topics[i].name) == 0) {
             print("Usage: ");
             println(help_topics[i].usage);
-            print("\n");
+            print("  ");
             println(help_topics[i].help);
             return 0;
         }
@@ -104,6 +132,32 @@ static int print_file(const char *path)
     }
     close(fd);
     return 0;
+}
+
+static int string_in_list(const char *value, const char *const *list, size_t count)
+{
+    if (!value) {
+        return 0;
+    }
+    for (size_t i = 0; i < count; i++) {
+        if (strcmp(value, list[i]) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void print_supported_values(const char *label, const char *const *list, size_t count)
+{
+    print(label);
+    print(": ");
+    for (size_t i = 0; i < count; i++) {
+        if (i) {
+            print(" ");
+        }
+        print(list[i]);
+    }
+    print("\n");
 }
 
 static void strip_newline(char *s)
@@ -364,7 +418,7 @@ static int cmd_uptime(void)
 
 static int write_config_line(const char *path, const char *value)
 {
-    int fd = open(path, O_CREAT | O_RDWR, 0644);
+    int fd = open(path, O_CREAT | O_RDWR | O_TRUNC, 0644);
     if (fd < 0) {
         return -1;
     }
@@ -390,15 +444,65 @@ static int cmd_timezone(int argc, char **argv)
 
 static int cmd_keymap(int argc, char **argv)
 {
-    if (argc > 1 && write_config_line("/etc/keymap", argv[1]) < 0) {
-        println("keymap: failed to update /etc/keymap");
-        return 1;
+    if (argc > 1) {
+        if (strcmp(argv[1], "list") == 0) {
+            print_supported_values("supported keymaps",
+                                   supported_keymaps,
+                                   sizeof(supported_keymaps) / sizeof(supported_keymaps[0]));
+            return 0;
+        }
+        if (!string_in_list(argv[1], supported_keymaps,
+                            sizeof(supported_keymaps) / sizeof(supported_keymaps[0]))) {
+            print("keymap: unsupported layout: ");
+            println(argv[1]);
+            print_supported_values("supported keymaps",
+                                   supported_keymaps,
+                                   sizeof(supported_keymaps) / sizeof(supported_keymaps[0]));
+            return 1;
+        }
+        if (write_config_line("/etc/keymap", argv[1]) < 0) {
+            println("keymap: failed to update /etc/keymap");
+            return 1;
+        }
     }
     char keymap[64];
     if (read_file("/etc/keymap", keymap, sizeof(keymap)) >= 0) {
         strip_newline(keymap);
         println(keymap);
     }
+    return 0;
+}
+
+static int cmd_locale(int argc, char **argv)
+{
+    if (argc > 1) {
+        if (strcmp(argv[1], "list") == 0) {
+            print_supported_values("supported locales",
+                                   supported_locales,
+                                   sizeof(supported_locales) / sizeof(supported_locales[0]));
+            return 0;
+        }
+        if (!string_in_list(argv[1], supported_locales,
+                            sizeof(supported_locales) / sizeof(supported_locales[0]))) {
+            print("locale: unsupported locale: ");
+            println(argv[1]);
+            print_supported_values("supported locales",
+                                   supported_locales,
+                                   sizeof(supported_locales) / sizeof(supported_locales[0]));
+            return 1;
+        }
+        if (write_config_line("/etc/locale", argv[1]) < 0) {
+            println("locale: failed to update /etc/locale");
+            return 1;
+        }
+    }
+    char locale[64];
+    if (read_file("/etc/locale", locale, sizeof(locale)) >= 0) {
+        strip_newline(locale);
+        println(locale);
+        return 0;
+    }
+    println("en_US");
     return 0;
 }
 
@@ -715,6 +819,7 @@ int main(int argc, char **argv)
     if (strcmp(cmd, "time") == 0) { println("time: unavailable from userspace"); return 1; }
     if (strcmp(cmd, "timezone") == 0) return cmd_timezone(argc, argv);
     if (strcmp(cmd, "keymap") == 0 || strcmp(cmd, "layout") == 0) return cmd_keymap(argc, argv);
+    if (strcmp(cmd, "locale") == 0 || strcmp(cmd, "language") == 0) return cmd_locale(argc, argv);
     if (strcmp(cmd, "ifconfig") == 0) { print_file("/proc/net/dev"); return 0; }
     if (strcmp(cmd, "route") == 0) { print_file("/proc/net/route"); return 0; }
     if (strcmp(cmd, "netstat") == 0) { print_file("/proc/net/sockstat"); return 0; }
