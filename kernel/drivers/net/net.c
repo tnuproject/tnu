@@ -3,6 +3,7 @@
 #include <tnu/log.h>
 #include <tnu/memory.h>
 #include <tnu/iwlwifi.h>
+#include <tnu/linux_driver_runtime.h>
 #include <tnu/net.h>
 #include <tnu/printf.h>
 #include <tnu/string.h>
@@ -1095,6 +1096,7 @@ void net_init(void)
 {
     iface_count = 0;
     e1000_count = 0;
+    ldr_init();
 
     struct net_iface *lo = add_iface("lo", NET_IFACE_LOOPBACK);
     if (lo) {
@@ -1119,6 +1121,9 @@ void net_init(void)
             type = NET_IFACE_WIFI;
             ksnprintf(name, sizeof(name), "wlan%u", (uint32_t)wifi_index++);
         } else {
+            if (dev && dev->vendor_id == 0x8086 && dev->class_code == 0x03) {
+                ldr_i915_probe(dev);
+            }
             continue;
         }
 
@@ -1145,6 +1150,11 @@ void net_init(void)
             } else {
                 log_warn("iwlwifi", "%s Intel device=%04x is not in the iwlwifi device table",
                          iface->name, dev->device_id);
+            }
+            if (ldr_probe_pci_netdev(iface, dev) == 0) {
+                log_info("linuxdrv", "%s will use Linux iwlwifi runtime backend when module ABI is ready",
+                         iface->name);
+                continue;
             }
         }
 
@@ -1573,6 +1583,12 @@ int net_wifi_scan(void)
                 if (last_iwl_rc == 0) {
                     iwl_transport_ready = true;
                 }
+            } else if (ldr_iface_is_linux_wifi(&ifaces[i])) {
+                saw_iwlwifi = true;
+                last_iwl_rc = ldr_wifi_scan(&ifaces[i]);
+                if (last_iwl_rc == 0) {
+                    iwl_transport_ready = true;
+                }
             }
         }
     }
@@ -1618,9 +1634,43 @@ int net_wifi_connect(const char *iface_name, const char *ssid, const char *passp
         }
         return rc == -1 ? -3 : rc;
     }
+    if (ldr_iface_is_linux_wifi(iface)) {
+        int rc = ldr_wifi_connect(iface, ssid, passphrase);
+        if (rc == 0) {
+            iface->up = true;
+            iface->link = true;
+            int dhcp = net_iface_dhcp(iface_name);
+            if (dhcp < 0) {
+                log_warn("linuxdrv", "%s Linux iwlwifi connected to '%s' but DHCP failed (%d)",
+                         iface_name, ssid, dhcp);
+                return -4;
+            }
+            return 0;
+        }
+        log_warn("linuxdrv", "%s Linux iwlwifi connect blocked (%d)", iface_name, rc);
+        return rc;
+    }
     log_warn("wifi", "%s cannot associate with '%s': firmware/MAC/WPA layer unavailable",
              iface_name, ssid ? ssid : "");
     return -2;
+}
+
+int net_wifi_disconnect(const char *iface_name)
+{
+    struct net_iface *iface = net_iface_find_mut(iface_name);
+    if (!iface || iface->type != NET_IFACE_WIFI) {
+        return -1;
+    }
+    if (strcmp(iface->driver, "iwlwifi") == 0) {
+        return iwlwifi_disconnect(iface);
+    }
+    if (ldr_iface_is_linux_wifi(iface)) {
+        return ldr_cfg80211_disconnect(iface);
+    }
+    iface->link = false;
+    iface->up = false;
+    iface->ssid = NULL;
+    return 0;
 }
 
 struct wifi_profile {
@@ -1733,6 +1783,12 @@ int net_wifi_scan_results(struct wifi_ap *out, size_t max_aps)
     size_t count = 0;
     for (size_t i = 0; i < iface_count && count < max_aps; i++) {
         if (ifaces[i].type != NET_IFACE_WIFI || strcmp(ifaces[i].driver, "iwlwifi") != 0) {
+            if (ifaces[i].type == NET_IFACE_WIFI && ldr_iface_is_linux_wifi(&ifaces[i])) {
+                int rc = ldr_wifi_scan_results(&ifaces[i], out + count, max_aps - count);
+                if (rc > 0) {
+                    count += (size_t)rc;
+                }
+            }
             continue;
         }
         const struct iwlwifi_state *st = iwlwifi_state_for(&ifaces[i]);
@@ -1765,6 +1821,9 @@ int net_wifi_status(struct wifi_status *out)
     memset(out, 0, sizeof(*out));
     for (size_t i = 0; i < iface_count; i++) {
         if (ifaces[i].type != NET_IFACE_WIFI || strcmp(ifaces[i].driver, "iwlwifi") != 0) {
+            if (ifaces[i].type == NET_IFACE_WIFI && ldr_iface_is_linux_wifi(&ifaces[i])) {
+                return ldr_wifi_status(&ifaces[i], out);
+            }
             continue;
         }
         const struct iwlwifi_state *st = iwlwifi_state_for(&ifaces[i]);

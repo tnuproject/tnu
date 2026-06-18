@@ -64,10 +64,12 @@ enum syscall_number {
     SYS_CONNECT = 49,
     SYS_SEND = 50,
     SYS_RECV = 51,
+    SYS_WIFI_DISCONNECT = 52,
 };
 
 int wifi_scan(struct wifi_ap *out, size_t max_aps);
 int wifi_connect(const char *iface, const char *ssid, const char *passphrase);
+int wifi_disconnect(const char *iface);
 int wifi_status(struct wifi_status *out);
 int resolve4(const char *host, uint32_t *out_ipv4);
 

@@ -1,6 +1,6 @@
-PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/linux/bin:/usr/linux/usr/bin
+PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/linux/bin:/usr/linux/usr/bin:/usr/linux/sbin:/usr/linux/usr/sbin
 SHELL=/bin/tsh
 HOME=/root
-# Linux compatibility: run Linux binaries via linux-run
-# Example: linux-run /usr/linux/bin/nano file.txt
+# Linux compatibility: Linux commands can be launched directly.
+# Command environment priority is controlled by /etc/priority.
 

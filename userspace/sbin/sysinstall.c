@@ -34,6 +34,9 @@
 
 #define DEFAULT_ROOTFS FS_TFS
 #define DEFAULT_ROOTFS_NAME "tfs"
+#define DEFAULT_ESP_LABEL "TIRAMISU"
+#define DEFAULT_ROOT_LABEL "TIRAMISU"
+#define SYSINSTALL_CONFIG_PATH "/etc/sysinstall.conf"
 #define ROOT_IMAGE_PATH "/boot/root.tfs"
 #define KERNEL_IMAGE_PATH "/boot/kernel.elf"
 #define BOOTX64_IMAGE_PATH "/EFI/BOOT/BOOTX64.EFI"
@@ -71,6 +74,20 @@ typedef struct {
 } disk_info_t;
 
 typedef struct {
+    root_fs_t root_fs;
+    int root_fs_set;
+    char target[64];
+    char hostname[64];
+    char username[32];
+    char esp_label[32];
+    char root_label[32];
+    int assume_yes;
+    int install_esp;
+    int install_bootloader;
+    int dry_run;
+} install_config_t;
+
+typedef struct {
     uint8_t type_guid[16];
     uint8_t partition_guid[16];
     uint64_t start_lba;
@@ -99,6 +116,18 @@ typedef struct {
 static disk_info_t disks[MAX_DISKS];
 static int disk_count = 0;
 static uint32_t rng_state = 0x544e5501u;
+
+static void config_defaults(install_config_t *cfg)
+{
+    memset(cfg, 0, sizeof(*cfg));
+    cfg->root_fs = DEFAULT_ROOTFS;
+    cfg->install_esp = 1;
+    cfg->install_bootloader = 1;
+    strncpy(cfg->hostname, "tiramisu", sizeof(cfg->hostname) - 1);
+    strncpy(cfg->username, "root", sizeof(cfg->username) - 1);
+    strncpy(cfg->esp_label, DEFAULT_ESP_LABEL, sizeof(cfg->esp_label) - 1);
+    strncpy(cfg->root_label, DEFAULT_ROOT_LABEL, sizeof(cfg->root_label) - 1);
+}
 
 static void print_header(void)
 {
@@ -158,9 +187,178 @@ static const char *root_fs_name(root_fs_t fs)
     }
 }
 
+static int parse_root_fs(const char *name, root_fs_t *out)
+{
+    if (!name || !out) {
+        return -1;
+    }
+    if (strcmp(name, "tfs") == 0) {
+        *out = FS_TFS;
+    } else if (strcmp(name, "ext2") == 0) {
+        *out = FS_EXT2;
+    } else if (strcmp(name, "ext4") == 0) {
+        *out = FS_EXT4;
+    } else if (strcmp(name, "fat32") == 0) {
+        *out = FS_FAT32;
+    } else {
+        return -1;
+    }
+    return 0;
+}
+
 static const uint8_t *root_fs_guid(root_fs_t fs)
 {
     return fs == FS_TFS ? GUID_TIRAMISU_FS : GUID_LINUX_FS;
+}
+
+static char *trim(char *s)
+{
+    while (*s == ' ' || *s == '\t' || *s == '\r' || *s == '\n') {
+        s++;
+    }
+    char *end = s + strlen(s);
+    while (end > s && (end[-1] == ' ' || end[-1] == '\t' ||
+                       end[-1] == '\r' || end[-1] == '\n')) {
+        *--end = '\0';
+    }
+    return s;
+}
+
+static int parse_bool_value(const char *value, int fallback)
+{
+    if (!value) {
+        return fallback;
+    }
+    if (strcmp(value, "1") == 0 || strcmp(value, "yes") == 0 ||
+        strcmp(value, "true") == 0 || strcmp(value, "on") == 0) {
+        return 1;
+    }
+    if (strcmp(value, "0") == 0 || strcmp(value, "no") == 0 ||
+        strcmp(value, "false") == 0 || strcmp(value, "off") == 0) {
+        return 0;
+    }
+    return fallback;
+}
+
+static void config_apply_pair(install_config_t *cfg, const char *key, const char *value)
+{
+    if (strcmp(key, "rootfs") == 0 || strcmp(key, "fs") == 0) {
+        root_fs_t fs;
+        if (strcmp(value, "ask") == 0 || strcmp(value, "interactive") == 0) {
+            cfg->root_fs_set = 0;
+        } else if (parse_root_fs(value, &fs) == 0) {
+            cfg->root_fs = fs;
+            cfg->root_fs_set = 1;
+        }
+    } else if (strcmp(key, "target") == 0) {
+        strncpy(cfg->target, value, sizeof(cfg->target) - 1);
+    } else if (strcmp(key, "hostname") == 0) {
+        strncpy(cfg->hostname, value, sizeof(cfg->hostname) - 1);
+    } else if (strcmp(key, "user") == 0 || strcmp(key, "username") == 0) {
+        strncpy(cfg->username, value, sizeof(cfg->username) - 1);
+    } else if (strcmp(key, "esp_label") == 0) {
+        strncpy(cfg->esp_label, value, sizeof(cfg->esp_label) - 1);
+    } else if (strcmp(key, "root_label") == 0) {
+        strncpy(cfg->root_label, value, sizeof(cfg->root_label) - 1);
+    } else if (strcmp(key, "confirm") == 0) {
+        cfg->assume_yes = !parse_bool_value(value, 1);
+    } else if (strcmp(key, "install_esp") == 0) {
+        cfg->install_esp = parse_bool_value(value, cfg->install_esp);
+    } else if (strcmp(key, "install_bootloader") == 0) {
+        cfg->install_bootloader = parse_bool_value(value, cfg->install_bootloader);
+    } else if (strcmp(key, "dry_run") == 0) {
+        cfg->dry_run = parse_bool_value(value, cfg->dry_run);
+    }
+}
+
+static int load_config_file(install_config_t *cfg, const char *path)
+{
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        return -1;
+    }
+
+    char buf[2048];
+    ssize_t n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (n <= 0) {
+        return -1;
+    }
+    buf[n] = '\0';
+
+    char *line = buf;
+    while (line && *line) {
+        char *next = strchr(line, '\n');
+        if (next) {
+            *next++ = '\0';
+        }
+        char *p = trim(line);
+        if (*p && *p != '#') {
+            char *eq = strchr(p, '=');
+            if (eq) {
+                *eq++ = '\0';
+                char *key = trim(p);
+                char *value = trim(eq);
+                config_apply_pair(cfg, key, value);
+            }
+        }
+        line = next;
+    }
+    return 0;
+}
+
+static void print_usage(void)
+{
+    printf("Usage: sysinstall [options]\n\n");
+    printf("Options:\n");
+    printf("  --fs tfs|ext2|ext4|fat32\n");
+    printf("  --target /dev/sdX\n");
+    printf("  --hostname NAME\n");
+    printf("  --user NAME\n");
+    printf("  --esp-label LABEL\n");
+    printf("  --root-label LABEL\n");
+    printf("  --yes\n");
+    printf("  --no-esp\n");
+    printf("  --no-bootloader\n");
+    printf("  --dry-run\n");
+}
+
+static int apply_cli(install_config_t *cfg, int argc, char **argv)
+{
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+            print_usage();
+            return 1;
+        } else if (strcmp(argv[i], "--yes") == 0 || strcmp(argv[i], "-y") == 0) {
+            cfg->assume_yes = 1;
+        } else if (strcmp(argv[i], "--dry-run") == 0) {
+            cfg->dry_run = 1;
+        } else if (strcmp(argv[i], "--no-esp") == 0) {
+            cfg->install_esp = 0;
+        } else if (strcmp(argv[i], "--no-bootloader") == 0) {
+            cfg->install_bootloader = 0;
+        } else if ((strcmp(argv[i], "--fs") == 0 || strcmp(argv[i], "--rootfs") == 0) && i + 1 < argc) {
+            if (parse_root_fs(argv[++i], &cfg->root_fs) < 0) {
+                printf("ERROR: unknown filesystem '%s'.\n", argv[i]);
+                return -1;
+            }
+            cfg->root_fs_set = 1;
+        } else if (strcmp(argv[i], "--target") == 0 && i + 1 < argc) {
+            strncpy(cfg->target, argv[++i], sizeof(cfg->target) - 1);
+        } else if (strcmp(argv[i], "--hostname") == 0 && i + 1 < argc) {
+            strncpy(cfg->hostname, argv[++i], sizeof(cfg->hostname) - 1);
+        } else if (strcmp(argv[i], "--user") == 0 && i + 1 < argc) {
+            strncpy(cfg->username, argv[++i], sizeof(cfg->username) - 1);
+        } else if (strcmp(argv[i], "--esp-label") == 0 && i + 1 < argc) {
+            strncpy(cfg->esp_label, argv[++i], sizeof(cfg->esp_label) - 1);
+        } else if (strcmp(argv[i], "--root-label") == 0 && i + 1 < argc) {
+            strncpy(cfg->root_label, argv[++i], sizeof(cfg->root_label) - 1);
+        } else {
+            printf("ERROR: unknown or incomplete option '%s'.\n", argv[i]);
+            return -1;
+        }
+    }
+    return 0;
 }
 
 static int path_is_block_or_regular(const char *path)
@@ -441,10 +639,14 @@ static int format_partition_with_tool(const char *part, root_fs_t fs, const char
     }
 }
 
-static int format_esp(const char *esp_part)
+static int format_esp(const char *esp_part, const install_config_t *cfg)
 {
+    if (!cfg->install_esp) {
+        printf("  Skipping ESP format by configuration.\n");
+        return 0;
+    }
     printf("  Formatting ESP %s as FAT32...\n", esp_part);
-    if (format_partition_with_tool(esp_part, FS_FAT32, "TIRAMISU") == 0) {
+    if (format_partition_with_tool(esp_part, FS_FAT32, cfg->esp_label) == 0) {
         return 0;
     }
     printf("  WARN: mkfs.vfat unavailable or failed; ESP formatting needs FAT32 mkfs support in the live environment.\n");
@@ -487,23 +689,30 @@ static int install_file_tree_to_root(const char *root_part, root_fs_t fs)
 }
 
 static int format_and_install_root(const char *disk_device, const char *root_part,
-                                   uint64_t disk_size_sectors, root_fs_t root_fs)
+                                   uint64_t disk_size_sectors,
+                                   const install_config_t *cfg)
 {
+    root_fs_t root_fs = cfg->root_fs;
     if (root_fs == FS_TFS) {
         printf("  Root filesystem: TFS (default, raw root.tfs image)\n");
         return install_tfs_root_raw(disk_device, disk_size_sectors);
     }
 
     printf("  Formatting root %s as %s...\n", root_part, root_fs_name(root_fs));
-    if (format_partition_with_tool(root_part, root_fs, "TIRAMISU") < 0) {
+    if (format_partition_with_tool(root_part, root_fs, cfg->root_label) < 0) {
         printf("  ERROR: mkfs for %s failed or is missing.\n", root_fs_name(root_fs));
         return -1;
     }
     return install_file_tree_to_root(root_part, root_fs);
 }
 
-static int install_bootloader(const char *esp_part)
+static int install_bootloader(const char *esp_part, const install_config_t *cfg)
 {
+    if (!cfg->install_bootloader) {
+        printf("\nSkipping bootloader installation by configuration.\n");
+        return 0;
+    }
+
     printf("\nInstalling bootloader files...\n");
     printf("  ESP: %s\n", esp_part);
 
@@ -529,12 +738,70 @@ static int install_bootloader(const char *esp_part)
     return -1;
 }
 
-static int configure_system(root_fs_t root_fs)
+static int write_text_file(const char *path, const char *text)
 {
+    int fd = open(path, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+    if (fd < 0) {
+        return -1;
+    }
+    size_t len = strlen(text);
+    size_t off = 0;
+    while (off < len) {
+        ssize_t n = write(fd, text + off, len - off);
+        if (n <= 0) {
+            close(fd);
+            return -1;
+        }
+        off += (size_t)n;
+    }
+    close(fd);
+    return 0;
+}
+
+static int configure_system(const install_config_t *cfg, const char *root_part)
+{
+    char text[512];
     printf("\nConfiguring system metadata...\n");
-    printf("  Root filesystem selected: %s\n", root_fs_name(root_fs));
-    printf("  For TFS, configuration is expected to already be inside /boot/root.tfs.\n");
-    printf("  For ext2/ext4/fat32, /etc/fstab should use the second GPT partition as /.\n");
+    printf("  Root filesystem selected: %s\n", root_fs_name(cfg->root_fs));
+    printf("  Hostname: %s\n", cfg->hostname);
+    printf("  Primary user: %s\n", cfg->username);
+
+    snprintf(text, sizeof(text), "%s\n", cfg->hostname);
+    if (write_text_file("/etc/hostname", text) < 0) {
+        printf("  WARN: could not update /etc/hostname in live root.\n");
+    }
+
+    snprintf(text, sizeof(text),
+             "%s / %s rw 0 1\n"
+             "proc /proc proc rw 0 0\n"
+             "devtmpfs /dev devtmpfs rw 0 0\n"
+             "tmpfs /tmp tmpfs rw 0 0\n",
+             cfg->root_fs == FS_TFS ? "tfs-root" : root_part,
+             root_fs_name(cfg->root_fs));
+    if (write_text_file("/etc/fstab", text) < 0) {
+        printf("  WARN: could not write /etc/fstab in live root.\n");
+    }
+
+    snprintf(text, sizeof(text),
+             "target=%s\n"
+             "rootfs=%s\n"
+             "hostname=%s\n"
+             "user=%s\n"
+             "esp_label=%s\n"
+             "root_label=%s\n",
+             cfg->target[0] ? cfg->target : "(interactive)",
+             root_fs_name(cfg->root_fs),
+             cfg->hostname,
+             cfg->username,
+             cfg->esp_label,
+             cfg->root_label);
+    if (write_text_file("/etc/sysinstall.last", text) < 0) {
+        printf("  WARN: could not write /etc/sysinstall.last in live root.\n");
+    }
+
+    if (cfg->root_fs == FS_TFS) {
+        printf("  Note: TFS target installs copy /boot/root.tfs raw; rebuild the ISO or boot installed TFS to bake new defaults into the target image.\n");
+    }
     return 0;
 }
 
@@ -559,7 +826,8 @@ static root_fs_t ask_root_filesystem(void)
     return FS_TFS;
 }
 
-static int perform_installation(const char *disk_device, uint64_t disk_size_sectors, root_fs_t root_fs)
+static int perform_installation(const char *disk_device, uint64_t disk_size_sectors,
+                                const install_config_t *cfg)
 {
     char esp_part[64];
     char root_part[64];
@@ -568,7 +836,14 @@ static int perform_installation(const char *disk_device, uint64_t disk_size_sect
     printf("\nStarting installation\n");
     printf("  Disk: %s\n", disk_device);
     printf("  ESP:  %s (FAT32, 256 MiB)\n", esp_part);
-    printf("  Root: %s (%s)\n\n", root_part, root_fs_name(root_fs));
+    printf("  Root: %s (%s)\n", root_part, root_fs_name(cfg->root_fs));
+    printf("  ESP label:  %s\n", cfg->esp_label);
+    printf("  Root label: %s\n\n", cfg->root_label);
+
+    if (cfg->dry_run) {
+        printf("Dry run selected; no disk writes performed.\n");
+        return 0;
+    }
 
     int fd = open(disk_device, O_RDWR);
     if (fd < 0) {
@@ -577,7 +852,7 @@ static int perform_installation(const char *disk_device, uint64_t disk_size_sect
     }
 
     printf("Step 1: Creating GPT partition table...\n");
-    if (create_gpt_partitions(fd, disk_size_sectors, root_fs) < 0) {
+    if (create_gpt_partitions(fd, disk_size_sectors, cfg->root_fs) < 0) {
         close(fd);
         printf("ERROR: GPT creation failed.\n");
         return 1;
@@ -585,23 +860,23 @@ static int perform_installation(const char *disk_device, uint64_t disk_size_sect
     close(fd);
 
     printf("\nStep 2: Formatting partitions...\n");
-    if (format_esp(esp_part) < 0) {
+    if (format_esp(esp_part, cfg) < 0) {
         printf("ERROR: ESP format failed.\n");
         return 1;
     }
-    if (format_and_install_root(disk_device, root_part, disk_size_sectors, root_fs) < 0) {
+    if (format_and_install_root(disk_device, root_part, disk_size_sectors, cfg) < 0) {
         printf("ERROR: root filesystem install failed.\n");
         return 1;
     }
 
     printf("\nStep 3: Installing bootloader...\n");
-    if (install_bootloader(esp_part) < 0) {
+    if (install_bootloader(esp_part, cfg) < 0) {
         printf("ERROR: bootloader installation failed.\n");
         return 1;
     }
 
     printf("\nStep 4: Configuring system...\n");
-    if (configure_system(root_fs) < 0) {
+    if (configure_system(cfg, root_part) < 0) {
         printf("ERROR: system configuration failed.\n");
         return 1;
     }
@@ -614,6 +889,24 @@ static int perform_installation(const char *disk_device, uint64_t disk_size_sect
 
     printf("\nInstallation complete. Reboot and select %s in firmware/boot menu.\n", disk_device);
     return 0;
+}
+
+static disk_info_t *find_configured_disk(const char *target)
+{
+    if (!target || !target[0]) {
+        return NULL;
+    }
+    const char *name = target;
+    if (strncmp(name, "/dev/", 5) == 0) {
+        name += 5;
+    }
+    for (int i = 0; i < disk_count; i++) {
+        const char *dev = disks[i].device;
+        if (strcmp(dev, target) == 0 || strcmp(dev + 5, name) == 0) {
+            return &disks[i];
+        }
+    }
+    return NULL;
 }
 
 static void demo_workflow(void)
@@ -629,14 +922,22 @@ static void demo_workflow(void)
 
 int main(int argc, char **argv)
 {
-    (void)argc;
-    (void)argv;
+    install_config_t cfg;
+    config_defaults(&cfg);
+    load_config_file(&cfg, SYSINSTALL_CONFIG_PATH);
+    int cli = apply_cli(&cfg, argc, argv);
+    if (cli != 0) {
+        return cli > 0 ? 0 : 1;
+    }
 
     print_header();
     printf("WARNING: this installer erases the selected disk.\n\n");
 
-    root_fs_t root_fs = ask_root_filesystem();
-    printf("Selected root filesystem: %s\n\n", root_fs_name(root_fs));
+    if (!cfg.root_fs_set) {
+        cfg.root_fs = ask_root_filesystem();
+    }
+    printf("Selected root filesystem: %s\n", root_fs_name(cfg.root_fs));
+    printf("Configuration: %s\n\n", SYSINSTALL_CONFIG_PATH);
 
     if (list_disks() == 0) {
         demo_workflow();
@@ -644,31 +945,39 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    printf("Select disk [0-%d]: ", disk_count - 1);
-    fflush(stdout);
-
     char input[32];
-    if (!fgets(input, sizeof(input), stdin)) {
-        printf("ERROR: invalid input.\n");
-        return 1;
+    disk_info_t *disk = find_configured_disk(cfg.target);
+    if (!disk) {
+        printf("Select disk [0-%d]: ", disk_count - 1);
+        fflush(stdout);
+
+        if (!fgets(input, sizeof(input), stdin)) {
+            printf("ERROR: invalid input.\n");
+            return 1;
+        }
+
+        int selected = atoi(input);
+        if (selected < 0 || selected >= disk_count) {
+            printf("ERROR: invalid disk selection.\n");
+            return 1;
+        }
+        disk = &disks[selected];
+        strncpy(cfg.target, disk->device, sizeof(cfg.target) - 1);
     }
 
-    int selected = atoi(input);
-    if (selected < 0 || selected >= disk_count) {
-        printf("ERROR: invalid disk selection.\n");
-        return 1;
-    }
-
-    disk_info_t *disk = &disks[selected];
     printf("\nSelected disk: %s\n", disk->model);
-    printf("Root filesystem: %s\n", root_fs_name(root_fs));
-    printf("\nType ERASE to continue: ");
-    fflush(stdout);
+    printf("Root filesystem: %s\n", root_fs_name(cfg.root_fs));
+    printf("Hostname: %s\n", cfg.hostname);
 
-    if (!fgets(input, sizeof(input), stdin) || strncmp(input, "ERASE", 5) != 0) {
-        printf("Installation cancelled.\n");
-        return 0;
+    if (!cfg.assume_yes && !cfg.dry_run) {
+        printf("\nType ERASE to continue: ");
+        fflush(stdout);
+
+        if (!fgets(input, sizeof(input), stdin) || strncmp(input, "ERASE", 5) != 0) {
+            printf("Installation cancelled.\n");
+            return 0;
+        }
     }
 
-    return perform_installation(disk->device, disk->size_sectors, root_fs);
+    return perform_installation(disk->device, disk->size_sectors, &cfg);
 }

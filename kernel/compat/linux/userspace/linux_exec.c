@@ -191,7 +191,7 @@ static uintptr_t build_linux_stack(const struct linux_loaded_image *main_img,
                                    const char *argv_values[])
 {
     static const char *env_values[LINUX_MAX_ENV] = {
-        "PATH=/bin:/usr/bin:/usr/local/bin",
+        "PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin",
         "HOME=/root",
         "TERM=linux",
         "SHELL=/bin/sh",

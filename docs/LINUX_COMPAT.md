@@ -23,6 +23,24 @@ The kernel shell (`tsh`) provides a `linux-run` builtin command:
 # linux-run /usr/linux/usr/bin/nano file.txt
 ```
 
+Linux commands can also be launched directly from `tsh`. Command resolution is
+controlled by `/etc/priority`:
+
+```text
+linux: 99999
+tnu: 1
+```
+
+Higher weight wins. With the default above, typing `ls` prefers
+`/usr/linux/bin/ls` or `/usr/linux/usr/bin/ls` over Tiramisu's applet when that
+Linux command exists. Explicit paths are respected, so `/bin/ls` still means the
+Tiramisu path and `/usr/linux/bin/ls` still means the Linux path.
+
+Tiramisu branding and system-management commands always keep native priority:
+`sysfetch`, `hostname`, `login`, `useradd`, `userdel`, `passwd`, `init`, `sh`,
+`tsh`, `uname`, `tirux`, `shutdown`, `reboot`, `sync`, `keymap`, `timezone`,
+and `layout`.
+
 ## Linux Chroot
 
 TNU fetches an Alpine Linux minirootfs during `make all`:
@@ -31,6 +49,10 @@ TNU fetches an Alpine Linux minirootfs during `make all`:
 make linux-chroot-fetch    # Downloads Alpine minirootfs
 make linux-chroot-packages # Installs nano, fastfetch and freedoom via apk
 ```
+
+`make all` runs both targets before building the ISO. The build stops if
+`/usr/bin/nano` or `/usr/bin/fastfetch` are missing from the Alpine chroot, so
+the final `/usr/linux` environment is not silently shipped half-prepared.
 
 The chroot is installed at `/usr/linux` in the TNU rootfs.
 

@@ -1,0 +1,4 @@
+tfs-root / tfs rw 0 1
+proc /proc proc rw 0 0
+devtmpfs /dev devtmpfs rw 0 0
+tmpfs /tmp tmpfs rw 0 0

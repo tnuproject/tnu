@@ -1887,8 +1887,12 @@ long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
     case SYS_WIFI_SCAN: {
         struct wifi_ap *out = (struct wifi_ap *)a0;
         size_t max_aps = (size_t)a1;
-        if (!uptr_ok(out, max_aps * sizeof(*out)) || max_aps > 64) {
+        if (max_aps > 64 || !uptr_ok(out, max_aps * sizeof(*out))) {
             return -1;
+        }
+        int scan = net_wifi_scan();
+        if (scan < 0) {
+            return scan;
         }
         return net_wifi_scan_results(out, max_aps);
     }
@@ -1919,6 +1923,16 @@ long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
             return -1;
         }
         return net_wifi_status(out);
+    }
+    case SYS_WIFI_DISCONNECT: {
+        if (!proc || !is_root(proc) || !uptr_ok((const void *)a0, 1)) {
+            return -1;
+        }
+        char iface[NET_NAME_MAX + 1];
+        if (copy_user_string_bounded((const char *)a0, iface, sizeof(iface)) < 0) {
+            return -1;
+        }
+        return net_wifi_disconnect(iface);
     }
     case SYS_RESOLVE4: {
         if (!uptr_ok((const void *)a0, 1) || !uptr_ok((void *)a1, sizeof(uint32_t))) {

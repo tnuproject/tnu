@@ -92,8 +92,8 @@ LIBC_OBJS := $(patsubst %.c,$(BUILD)/obj/%.o,$(LIBC_C)) \
 USER_CRT := $(BUILD)/obj/userspace/libc/src/crt0.o
 USER_LIB := $(BUILD)/user/libtnu.a
 
-COREUTIL_NAMES := cat chmod chown clear cp curl date dmesg dns echo hostname \
-	id ifconfig keymap kill ls mkdir mount mv xedit netstat ping ps pwd reboot rm route dhcp \
+COREUTIL_NAMES := cat chmod chown clear cp curl date dmesg dns driver echo hostname \
+	id ifconfig keymap kill linuxdrv ls mkdir mount mv net xedit netstat ping ps pwd reboot rm route dhcp \
 	shutdown stat sysfetch sync tar time timezone tirux tls touch uname unzip uptime usb wget whoami wifi zip
 
 IWN_FW_SRC := $(shell find freebsd-src/sys/contrib/dev/iwn freebsd-src/sys/contrib/dev/wpi -maxdepth 1 -name '*.fw.uu' 2>/dev/null | sort)
@@ -239,6 +239,7 @@ rootfs: userspace version-files firmware-iwlwifi
 	cp ascii.txt $(BUILD)/rootfs/etc/sysfetch-logo
 	mkdir -p $(BUILD)/rootfs/bin $(BUILD)/rootfs/sbin $(BUILD)/rootfs/usr/bin \
 		$(BUILD)/rootfs/usr/games $(BUILD)/rootfs/usr/share/games/doom \
+		$(BUILD)/rootfs/lib/modules \
 		$(BUILD)/rootfs/lib/firmware/iwlwifi \
 		$(BUILD)/rootfs/usr/linux
 	cp $(BUILD)/user/init $(BUILD)/rootfs/sbin/init
@@ -259,6 +260,10 @@ rootfs: userspace version-files firmware-iwlwifi
 		mkdir -p $(BUILD)/rootfs/usr/linux; \
 		tar -C $(LINUX_CHROOT_DIR) -cf - bin lib lib64 sbin usr var etc 2>/dev/null | \
 			tar -C $(BUILD)/rootfs/usr/linux -xf -; \
+		if [ -d "$(LINUX_CHROOT_DIR)/lib/modules" ]; then \
+			mkdir -p $(BUILD)/rootfs/lib/modules; \
+			cp -a $(LINUX_CHROOT_DIR)/lib/modules/. $(BUILD)/rootfs/lib/modules/; \
+		fi; \
 		# Fix broken symlinks that point to absolute paths \
 		find $(BUILD)/rootfs/usr/linux -xtype l -delete 2>/dev/null || true; \
 	else \
@@ -379,21 +384,28 @@ $(LINUX_CHROOT_DIR)/bin/busybox: $(LINUX_CHROOT_TARBALL)
 # Install packages into the Alpine chroot (nano, fastfetch, freedoom)
 linux-chroot-packages: $(LINUX_CHROOT_DIR)/bin/busybox
 	@echo "linux-chroot: Installing Linux packages: $(LINUX_CHROOT_PACKAGES)"
-	@if command -v chroot >/dev/null 2>&1; then \
-		echo "linux-chroot: Running apk add $(LINUX_CHROOT_PACKAGES)..."; \
-		printf '%s\n%s\n' '$(ALPINE_REPO_BASE)/main' '$(ALPINE_REPO_BASE)/community' > $(LINUX_CHROOT_DIR)/etc/apk/repositories; \
-		chroot $(LINUX_CHROOT_DIR) /bin/sh -c 'apk update && apk add --no-cache $(LINUX_CHROOT_PACKAGES)' || \
-		echo "linux-chroot: Failed to install packages. You may need to run this manually."; \
+	@mkdir -p $(LINUX_CHROOT_DIR)/etc/apk
+	@printf '%s\n%s\n' '$(ALPINE_REPO_BASE)/main' '$(ALPINE_REPO_BASE)/community' > $(LINUX_CHROOT_DIR)/etc/apk/repositories
+	@if command -v apk >/dev/null 2>&1; then \
+		echo "linux-chroot: Running host apk --root add $(LINUX_CHROOT_PACKAGES)..."; \
+		apk --root $(LINUX_CHROOT_DIR) --initdb --no-cache \
+			--repository '$(ALPINE_REPO_BASE)/main' \
+			--repository '$(ALPINE_REPO_BASE)/community' \
+			add $(LINUX_CHROOT_PACKAGES) || \
+		{ echo "linux-chroot: host apk failed, trying chroot apk..."; \
+		  chroot $(LINUX_CHROOT_DIR) /bin/sh -c 'apk update && apk add --no-cache $(LINUX_CHROOT_PACKAGES)'; }; \
+	elif command -v chroot >/dev/null 2>&1; then \
+		echo "linux-chroot: Running chroot apk add $(LINUX_CHROOT_PACKAGES)..."; \
+		chroot $(LINUX_CHROOT_DIR) /bin/sh -c 'apk update && apk add --no-cache $(LINUX_CHROOT_PACKAGES)'; \
 	else \
-		echo "linux-chroot: chroot command not available, skipping package installation"; \
-		echo "linux-chroot: To install manually, run:"; \
-		echo "  printf '%s\\n%s\\n' '$(ALPINE_REPO_BASE)/main' '$(ALPINE_REPO_BASE)/community' > $(LINUX_CHROOT_DIR)/etc/apk/repositories"; \
-		echo "  chroot $(LINUX_CHROOT_DIR) /bin/sh -c 'apk update && apk add --no-cache $(LINUX_CHROOT_PACKAGES)'"; \
+		echo "linux-chroot: neither apk nor chroot is available; cannot preinstall Linux packages"; \
+		false; \
 	fi
 	@if [ -x "$(LINUX_CHROOT_DIR)/usr/bin/nano" ] && [ -x "$(LINUX_CHROOT_DIR)/usr/bin/fastfetch" ]; then \
 		echo "linux-chroot: Packages installed."; \
 	else \
-		echo "linux-chroot: package install incomplete; check apk/chroot output above."; \
+		echo "linux-chroot: package install incomplete; nano/fastfetch missing from Linux chroot."; \
+		false; \
 	fi
 	@echo "linux-chroot: Nano is at /usr/linux/usr/bin/nano"
 	@echo "linux-chroot: Fastfetch is at /usr/linux/usr/bin/fastfetch"

@@ -8,6 +8,7 @@
 #include <tnu/console.h>
 #include <tnu/elf.h>
 #include <tnu/linux_compat.h>
+#include <tnu/linux_driver_runtime.h>
 #include <tnu/log.h>
 #include <tnu/memory.h>
 #include <tnu/multiboot2.h>
@@ -29,6 +30,7 @@
 #define SCRIPT_MAX_DEPTH 4
 #define SCRIPT_BLOCK_MAX 4096
 #define DEFAULT_EXEC_PATH "/bin:/sbin:/usr/bin:/usr/games"
+#define DEFAULT_LINUX_EXEC_PATH "/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin"
 
 struct env_pair {
     char key[32];
@@ -39,6 +41,9 @@ static const char *env_get_value(const char *key);
 static bool shell_can_execute_node(struct vfs_node *node);
 static bool bin_entry_exists(const char *name);
 static struct vfs_node *resolve_command_node(const char *command, char *resolved, size_t resolved_size);
+static struct vfs_node *resolve_linux_command_node(const char *command, char *linux_path,
+                                                   size_t linux_path_size,
+                                                   char *host_path, size_t host_path_size);
 static const char *command_basename(const char *path);
 
 static int shell_apply_user_session(const char *name);
@@ -64,6 +69,9 @@ static const char *env_get_value(const char *key);
 static bool shell_can_execute_node(struct vfs_node *node);
 static bool bin_entry_exists(const char *name);
 static struct vfs_node *resolve_command_node(const char *command, char *resolved, size_t resolved_size);
+static struct vfs_node *resolve_linux_command_node(const char *command, char *linux_path,
+                                                   size_t linux_path_size,
+                                                   char *host_path, size_t host_path_size);
 static const char *command_basename(const char *path);
 
 struct shell_builtin_doc {
@@ -95,6 +103,12 @@ static const struct shell_builtin_doc shell_builtin_docs[] = {
       "Authenticate as root and run COMMAND with uid/gid 0, preserving argv." },
     { "sysinstall", "sysinstall",
       "Run the text installer. Requires root and a loaded install image." },
+    { "driver", "driver list|stats",
+      "Inspect kernel driver providers, including Linux Driver Runtime backends." },
+    { "linuxdrv", "linuxdrv load MODULE|logs|modules|stats",
+      "Inspect the Linux Driver Runtime module manager and bridge state." },
+    { "net", "net trace",
+      "Inspect native networking bridge paths." },
 };
 
 static void read_file_text(const char *path, char *out, size_t out_size, const char *fallback)
@@ -1169,6 +1183,28 @@ static int cmd_linux_run(int argc, char **argv)
     return (int)rc;
 }
 
+static int run_linux_transparent(const char *linux_path, int argc, char **argv)
+{
+    long rc = linux_run_binary(linux_path, argc, argv);
+    if (rc == -2) {
+        kprintf("%s: Linux command not found\n", argv[0]);
+        return 127;
+    }
+    if (rc == -8) {
+        kprintf("%s: unsupported or invalid Linux ELF\n", argv[0]);
+        return 126;
+    }
+    if (rc == -38) {
+        kprintf("%s: Linux ABI feature not implemented yet\n", argv[0]);
+        return 126;
+    }
+    if (rc < 0) {
+        kprintf("%s: Linux execution failed (%ld)\n", argv[0], rc);
+        return 126;
+    }
+    return (int)rc;
+}
+
 static int cmd_history(int argc, char **argv)
 {
     (void)argc;
@@ -1379,12 +1415,68 @@ static int cmd_sudo(int argc, char **argv)
     return rc;
 }
 
+static int cmd_driver(int argc, char **argv)
+{
+    if (argc < 2 || strcmp(argv[1], "list") == 0) {
+        ldr_print_modules();
+        return 0;
+    }
+    if (strcmp(argv[1], "stats") == 0) {
+        ldr_print_stats();
+        return 0;
+    }
+    kprintf("usage: driver list|stats\n");
+    return 1;
+}
+
+static int cmd_linuxdrv(int argc, char **argv)
+{
+    if (argc < 2 || strcmp(argv[1], "logs") == 0) {
+        ldr_print_logs();
+        return 0;
+    }
+    if (strcmp(argv[1], "modules") == 0) {
+        ldr_print_modules();
+        return 0;
+    }
+    if (strcmp(argv[1], "stats") == 0) {
+        ldr_print_stats();
+        return 0;
+    }
+    if (strcmp(argv[1], "load") == 0) {
+        if (argc < 3) {
+            kprintf("usage: linuxdrv load MODULE\n");
+            return 1;
+        }
+        int rc = ldr_load_module(argv[2]);
+        if (rc < 0) {
+            kprintf("linuxdrv: load %s failed (%d)\n", argv[2], rc);
+            return 1;
+        }
+        kprintf("linuxdrv: loaded %s\n", argv[2]);
+        return 0;
+    }
+    kprintf("usage: linuxdrv load MODULE|logs|modules|stats\n");
+    return 1;
+}
+
+static int cmd_net(int argc, char **argv)
+{
+    if (argc >= 2 && strcmp(argv[1], "trace") == 0) {
+        ldr_print_net_trace();
+        return 0;
+    }
+    kprintf("usage: net trace\n");
+    return 1;
+}
+
 static const struct command commands[] = {
     { "help", cmd_help },       { "cd", cmd_cd },             { "login", cmd_login },
     { "exec", cmd_exec },       { "linux-run", cmd_linux_run },
     { "history", cmd_history }, { "env", cmd_env },
     { "set", cmd_set },         { "sh", cmd_sh },             { "sudo", cmd_sudo },
     { "sysinstall", cmd_sysinstall },
+    { "driver", cmd_driver },   { "linuxdrv", cmd_linuxdrv }, { "net", cmd_net },
 };
 
 static int read_node_text(const char *path, char *buf, size_t size)
@@ -1414,6 +1506,83 @@ static bool bin_entry_exists(const char *name)
     }
     ksnprintf(path, sizeof(path), "/sbin/%s", name);
     return vfs_lookup(path, "/") != NULL;
+}
+
+static int parse_priority_value(const char *text, const char *key, int fallback)
+{
+    if (!text || !key) {
+        return fallback;
+    }
+    size_t key_len = strlen(key);
+    const char *p = text;
+    while (*p) {
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') {
+            p++;
+        }
+        if (strncmp(p, key, key_len) == 0 && p[key_len] == ':') {
+            p += key_len + 1;
+            while (*p == ' ' || *p == '\t') {
+                p++;
+            }
+            int sign = 1;
+            if (*p == '-') {
+                sign = -1;
+                p++;
+            }
+            int value = 0;
+            bool any = false;
+            while (*p >= '0' && *p <= '9') {
+                any = true;
+                if (value < 100000000) {
+                    value = value * 10 + (*p - '0');
+                }
+                p++;
+            }
+            return any ? value * sign : fallback;
+        }
+        while (*p && *p != '\n') {
+            p++;
+        }
+    }
+    return fallback;
+}
+
+static void command_priority_read(int *linux_weight, int *tnu_weight)
+{
+    char buf[256];
+    int linux = 0;
+    int tnu = 1;
+    if (read_node_text("/etc/priority", buf, sizeof(buf)) >= 0) {
+        linux = parse_priority_value(buf, "linux", linux);
+        tnu = parse_priority_value(buf, "tnu", tnu);
+    }
+    if (linux_weight) {
+        *linux_weight = linux;
+    }
+    if (tnu_weight) {
+        *tnu_weight = tnu;
+    }
+}
+
+static bool tnu_command_always_priority(const char *name)
+{
+    static const char *const names[] = {
+        "sysfetch", "hostname", "login", "useradd", "userdel", "passwd",
+        "init", "sh", "tsh", "uname", "tirux", "shutdown", "reboot",
+        "sync", "keymap", "timezone", "layout",
+    };
+    const char *base = command_basename(name);
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        if (strcmp(base, names[i]) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool path_is_linux_root(const char *path)
+{
+    return path && strncmp(path, "/usr/linux/", 11) == 0;
 }
 
 static bool shell_can_execute_node(struct vfs_node *node)
@@ -1459,6 +1628,57 @@ static struct vfs_node *resolve_command_node(const char *command, char *resolved
             ksnprintf(resolved, resolved_size, "%s", command);
         }
         struct vfs_node *node = vfs_lookup(resolved, process_current()->cwd);
+        if (node) {
+            return node;
+        }
+        path += n;
+        if (*path == ':') {
+            path++;
+        }
+    }
+    return NULL;
+}
+
+static struct vfs_node *resolve_linux_command_node(const char *command, char *linux_path,
+                                                   size_t linux_path_size,
+                                                   char *host_path, size_t host_path_size)
+{
+    if (!command || !command[0] || !linux_path || !host_path ||
+        linux_path_size == 0 || host_path_size == 0) {
+        return NULL;
+    }
+
+    if (strchr(command, '/')) {
+        if (path_is_linux_root(command)) {
+            ksnprintf(host_path, host_path_size, "%s", command);
+            ksnprintf(linux_path, linux_path_size, "%s", command + 10);
+            return vfs_lookup(host_path, process_current()->cwd);
+        }
+        if (command[0] == '/') {
+            ksnprintf(linux_path, linux_path_size, "%s", command);
+            ksnprintf(host_path, host_path_size, "/usr/linux%s", command);
+            return vfs_lookup(host_path, "/");
+        }
+        return NULL;
+    }
+
+    const char *path = DEFAULT_LINUX_EXEC_PATH;
+    char dir[VFS_PATH_MAX];
+    while (*path) {
+        size_t n = 0;
+        while (path[n] && path[n] != ':' && n + 1 < sizeof(dir)) {
+            dir[n] = path[n];
+            n++;
+        }
+        dir[n] = '\0';
+        if (dir[0]) {
+            ksnprintf(linux_path, linux_path_size, "%s/%s", dir, command);
+            ksnprintf(host_path, host_path_size, "/usr/linux%s/%s", dir, command);
+        } else {
+            ksnprintf(linux_path, linux_path_size, "/%s", command);
+            ksnprintf(host_path, host_path_size, "/usr/linux/%s", command);
+        }
+        struct vfs_node *node = vfs_lookup(host_path, "/");
         if (node) {
             return node;
         }
@@ -1942,8 +2162,27 @@ static int run_command(int argc, char **argv, const char *stdin_data)
     }
 
     const char *cmd_name = command_basename(argv[0]);
-    if (tnu_applet_is_command(cmd_name) &&
-        (bin_entry_exists(cmd_name) || strcmp(cmd_name, "layout") == 0)) {
+    bool applet_available = tnu_applet_is_command(cmd_name) &&
+                            (bin_entry_exists(cmd_name) || strcmp(cmd_name, "layout") == 0);
+    bool force_tnu = tnu_command_always_priority(cmd_name);
+    char linux_path[VFS_PATH_MAX];
+    char linux_host_path[VFS_PATH_MAX];
+    struct vfs_node *linux_node = (force_tnu || strchr(argv[0], '/')) ? NULL :
+        resolve_linux_command_node(argv[0], linux_path, sizeof(linux_path),
+                                   linux_host_path, sizeof(linux_host_path));
+    int linux_weight = 0;
+    int tnu_weight = 1;
+    command_priority_read(&linux_weight, &tnu_weight);
+
+    if (!force_tnu && linux_node && linux_weight > tnu_weight) {
+        if (!shell_can_execute_node(linux_node)) {
+            kprintf("%s: permission denied\n", argv[0]);
+            return 126;
+        }
+        return run_linux_transparent(linux_path, argc, argv);
+    }
+
+    if (applet_available) {
         return tnu_applet_run(argc, argv, stdin_data);
     }
 
@@ -1953,6 +2192,10 @@ static int run_command(int argc, char **argv, const char *stdin_data)
         if (!shell_can_execute_node(node)) {
             kprintf("%s: permission denied\n", argv[0]);
             return 126;
+        }
+        if (path_is_linux_root(path)) {
+            const char *inner = path + 10;
+            return run_linux_transparent(inner, argc, argv);
         }
         int script_rc = run_shell_script(node, argc, argv, true, false);
         if (script_rc >= 0) {

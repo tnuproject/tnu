@@ -39,6 +39,13 @@ static void attach_child(struct vfs_node *parent, struct vfs_node *child)
     parent->first_child = child;
 }
 
+static void release_node_data(struct vfs_node *node)
+{
+    if (node && node->data && !node->data_borrowed) {
+        kfree(node->data);
+    }
+}
+
 static struct vfs_node *find_child(struct vfs_node *parent, const char *name)
 {
     for (struct vfs_node *n = parent->first_child; n; n = n->next_sibling) {
@@ -251,6 +258,7 @@ int vfs_write_file(const char *path, const char *cwd, const void *data, size_t s
         memcpy(copy, data, size);
         copy[size] = 0;
     }
+    release_node_data(node);
     node->data = copy;
     node->data_borrowed = false;
     node->size = size;
@@ -272,6 +280,7 @@ int vfs_unlink(const char *path, const char *cwd)
             if ((*link)->first_child) {
                 return -2;
             }
+            release_node_data(*link);
             *link = (*link)->next_sibling;
             parent->modified = ++vfs_clock;
             tfs_sync_if_mounted();
@@ -345,6 +354,8 @@ ssize_t vfs_write_node(struct vfs_node *node, uint64_t offset, const void *buf, 
     }
     uint64_t end = offset + count;
     if (end > node->size || node->data_borrowed) {
+        uint8_t *old_data = node->data;
+        bool old_borrowed = node->data_borrowed;
         uint64_t new_size = end > node->size ? end : node->size;
         uint8_t *new_data = kmalloc((size_t)new_size + 1);
         if (!new_data) {
@@ -360,6 +371,9 @@ ssize_t vfs_write_node(struct vfs_node *node, uint64_t offset, const void *buf, 
         node->size = new_size;
         node->data[node->size] = 0;
         node->data_borrowed = false;
+        if (old_data && !old_borrowed) {
+            kfree(old_data);
+        }
     }
     memcpy(node->data + offset, buf, count);
     node->modified = ++vfs_clock;

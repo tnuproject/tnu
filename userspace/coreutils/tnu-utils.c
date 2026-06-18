@@ -46,6 +46,9 @@ static int cmd_dns(int argc, char **argv);
 static int cmd_curl(int argc, char **argv);
 static int cmd_wget(int argc, char **argv);
 static int cmd_tls(int argc, char **argv);
+static int cmd_driver(int argc, char **argv);
+static int cmd_linuxdrv(int argc, char **argv);
+static int cmd_net(int argc, char **argv);
 
 static const struct util_help help_topics[] = {
     { "echo", "echo [-n] [ARG...]", "Print arguments separated by spaces." },
@@ -65,10 +68,13 @@ static const struct util_help help_topics[] = {
     { "layout", "layout [LAYOUT]", "Alias for keymap." },
     { "ping", "ping IPv4", "Send a minimal ICMP test when networking is available." },
     { "dns", "dns HOST", "Resolve an IPv4 address through the kernel DNS resolver." },
+    { "driver", "driver list|stats", "Inspect native and Linux driver providers." },
+    { "linuxdrv", "linuxdrv load MODULE|logs|modules|stats", "Inspect Linux Driver Runtime state." },
+    { "net", "net trace", "Show native/TNAI/Linux netdev bridge path." },
     { "curl", "curl URL [-o FILE]", "Fetch file: and http:// URLs; HTTPS waits for TLS." },
     { "wget", "wget URL [-O FILE]", "Fetch file: and http:// URLs; HTTPS waits for TLS." },
     { "tls", "tls status", "Show HTTPS/TLS backend readiness." },
-    { "wifi", "wifi scan|connect IFACE SSID [PASSPHRASE]|status", "Scan, connect, and show Wi-Fi status." },
+    { "wifi", "wifi scan|connect IFACE SSID [PASSPHRASE]|disconnect IFACE|status|debug", "Scan, connect, and show Wi-Fi status." },
     { "chmod", "chmod MODE FILE", "Change file permissions; supports octal and simple symbolic modes." },
     { "stat", "stat FILE", "Print file metadata." },
     { "tirux", "tirux install|status|help", "Prepare and use the Tiramisu Linux compatibility root." },
@@ -615,7 +621,9 @@ static int cmd_wifi(int argc, char **argv)
     if (argc < 2 || strcmp(argv[1], "help") == 0 || strcmp(argv[1], "--help") == 0) {
         println("usage: wifi scan");
         println("       wifi connect IFACE SSID [PASSPHRASE]");
+        println("       wifi disconnect IFACE");
         println("       wifi status");
+        println("       wifi debug");
         return argc < 2 ? 1 : 0;
     }
     if (strcmp(argv[1], "scan") == 0) {
@@ -654,6 +662,18 @@ static int cmd_wifi(int argc, char **argv)
         println("wifi: connected");
         return 0;
     }
+    if (strcmp(argv[1], "disconnect") == 0) {
+        if (argc < 3) {
+            println("usage: wifi disconnect IFACE");
+            return 1;
+        }
+        if (wifi_disconnect(argv[2]) < 0) {
+            println("wifi: disconnect failed");
+            return 1;
+        }
+        println("wifi: disconnected");
+        return 0;
+    }
     if (strcmp(argv[1], "status") == 0) {
         struct wifi_status st;
         if (wifi_status(&st) < 0) {
@@ -668,9 +688,90 @@ static int cmd_wifi(int argc, char **argv)
         }
         return 0;
     }
+    if (strcmp(argv[1], "debug") == 0) {
+        struct wifi_status st;
+        println("wifi debug:");
+        if (wifi_status(&st) < 0) {
+            println("  status: unavailable");
+        } else if (st.connected) {
+            print("  status: connected ");
+            println(st.ssid[0] ? st.ssid : "<unknown>");
+        } else {
+            println("  status: disconnected");
+        }
+        println("  native path: wifi -> Tiramisu WiFi API -> iwlwifi/TNAI backend");
+        println("  linuxdrv detail: use kernel shell command 'linuxdrv stats'");
+        println("  net trace: use kernel shell command 'net trace'");
+        return 0;
+    }
     println("wifi: unknown command");
     return 1;
 }
+
+static int cmd_driver(int argc, char **argv)
+{
+    if (argc < 2 || strcmp(argv[1], "list") == 0) {
+        println("driver providers:");
+        println("  native: loopback e1000 iwlwifi framebuffer usb block");
+        println("  linuxdrv: cfg80211 mac80211 iwlwifi iwlmvm drm i915");
+        println("  live kernel detail: run builtin 'driver list' from tsh");
+        return 0;
+    }
+    if (strcmp(argv[1], "stats") == 0) {
+        println("driver stats:");
+        println("  live counters are maintained in kernel LDR");
+        println("  run builtin 'driver stats' or 'linuxdrv stats' from tsh");
+        return 0;
+    }
+    println("usage: driver list|stats");
+    return 1;
+}
+
+static int cmd_linuxdrv(int argc, char **argv)
+{
+    if (argc < 2 || strcmp(argv[1], "logs") == 0) {
+        println("linuxdrv logs:");
+        println("  LDR is the Linux kernel-driver backend manager for native Tiramisu APIs.");
+        println("  live kernel logs: run builtin 'linuxdrv logs' from tsh");
+        return 0;
+    }
+    if (strcmp(argv[1], "load") == 0) {
+        if (argc < 3) {
+            println("usage: linuxdrv load MODULE");
+            return 1;
+        }
+        println("linuxdrv load:");
+        println("  module loading is a kernel builtin operation.");
+        println("  run from tsh: linuxdrv load MODULE");
+        return 1;
+    }
+    if (strcmp(argv[1], "modules") == 0) {
+        println("linuxdrv modules:");
+        println("  cfg80211 -> mac80211 -> iwlwifi -> iwlmvm");
+        println("  drm -> i915");
+        return 0;
+    }
+    if (strcmp(argv[1], "stats") == 0) {
+        println("linuxdrv stats:");
+        println("  live counters are exposed by the kernel builtin 'linuxdrv stats'");
+        return 0;
+    }
+    println("usage: linuxdrv load MODULE|logs|modules|stats");
+    return 1;
+}
+
+static int cmd_net(int argc, char **argv)
+{
+    if (argc >= 2 && strcmp(argv[1], "trace") == 0) {
+        println("net trace:");
+        println("  TX: native socket -> Tiramisu IP -> TNAI -> Linux net_device -> driver -> hardware");
+        println("  RX: hardware -> Linux driver -> net_device -> TNAI -> Tiramisu IP -> native socket");
+        return 0;
+    }
+    println("usage: net trace");
+    return 1;
+}
+
 static int cmd_shutdown(int argc, char **argv)
 {
     (void)argc;
@@ -751,6 +852,7 @@ static void tirux_mkdirs(void)
     mkdir("/usr/linux/home", 0755);
     mkdir("/usr/linux/lib", 0755);
     mkdir("/usr/linux/lib64", 0755);
+    mkdir("/usr/linux/lib/modules", 0755);
     mkdir("/usr/linux/proc", 0555);
     mkdir("/usr/linux/root", 0700);
     mkdir("/usr/linux/sbin", 0755);
@@ -1635,6 +1737,9 @@ int main(int argc, char **argv)
     if (strcmp(cmd, "usb") == 0) { print_file("/proc/usb"); return 0; }
     if (strcmp(cmd, "ping") == 0) return cmd_ping(argc, argv);
     if (strcmp(cmd, "dns") == 0) return cmd_dns(argc, argv);
+    if (strcmp(cmd, "driver") == 0) return cmd_driver(argc, argv);
+    if (strcmp(cmd, "linuxdrv") == 0) return cmd_linuxdrv(argc, argv);
+    if (strcmp(cmd, "net") == 0) return cmd_net(argc, argv);
     if (strcmp(cmd, "curl") == 0) return cmd_curl(argc, argv);
     if (strcmp(cmd, "wget") == 0) return cmd_wget(argc, argv);
     if (strcmp(cmd, "tls") == 0) return cmd_tls(argc, argv);

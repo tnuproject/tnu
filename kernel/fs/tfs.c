@@ -98,14 +98,16 @@ static int copy_file_data(struct collect_ctx *ctx, struct vfs_node *node,
         return 0;
     }
     uint64_t end = ctx->data_cursor + node->size;
-    if (end > ctx->image_size || !node->data) {
+    if (!node->data || (ctx->image && end > ctx->image_size)) {
         ctx->failed = 1;
         return -1;
     }
     entry->offset = ctx->data_cursor;
     entry->size = node->size;
-    memcpy(ctx->image + ctx->data_cursor, node->data, (size_t)node->size);
-    ctx->data_cursor = align_up64(end, 16);
+    if (ctx->image) {
+        memcpy(ctx->image + ctx->data_cursor, node->data, (size_t)node->size);
+    }
+    ctx->data_cursor = align_up64(end, TFS_SECTOR_SIZE);
     return 0;
 }
 
@@ -124,7 +126,14 @@ static void collect_node(struct vfs_node *node, void *opaque)
         return;
     }
     if (strcmp(path, "/dev") == 0 || strncmp(path, "/dev/", 5) == 0 ||
-        strcmp(path, "/proc") == 0 || strncmp(path, "/proc/", 6) == 0) {
+        strcmp(path, "/proc") == 0 || strncmp(path, "/proc/", 6) == 0 ||
+        strcmp(path, "/sys") == 0 || strncmp(path, "/sys/", 5) == 0 ||
+        strcmp(path, "/run") == 0 || strncmp(path, "/run/", 5) == 0 ||
+        strcmp(path, "/usr/linux/dev") == 0 || strncmp(path, "/usr/linux/dev/", 15) == 0 ||
+        strcmp(path, "/usr/linux/proc") == 0 || strncmp(path, "/usr/linux/proc/", 16) == 0 ||
+        strcmp(path, "/usr/linux/sys") == 0 || strncmp(path, "/usr/linux/sys/", 15) == 0 ||
+        strcmp(path, "/usr/linux/run") == 0 || strncmp(path, "/usr/linux/run/", 15) == 0 ||
+        strcmp(path, "/usr/linux/tmp") == 0 || strncmp(path, "/usr/linux/tmp/", 15) == 0) {
         if (node->type == VFS_NODE_DIR) {
             vfs_list(node, collect_node, ctx);
         }
@@ -263,6 +272,7 @@ int tfs_sync(void)
      * Offsets are relative to the start of the TFS image, so we translate them
      * to absolute LBA values.
      */
+    int data_error = 0;
     for (uint32_t i = 0; i < ctx.count; i++) {
         const struct tfs_entry *e = &ctx.entries[i];
         if (e->type != TFS_ENTRY_FILE || e->size == 0) {
@@ -277,27 +287,39 @@ int tfs_sync(void)
         size_t remaining = (size_t)e->size;
         const uint8_t *ptr = node->data;
         while (remaining > 0) {
-            size_t chunk = remaining > TFS_SECTOR_SIZE ? TFS_SECTOR_SIZE : remaining;
-            // Compute absolute LBA for this chunk.
-            uint64_t abs_lba = persistent_start_lba + ((file_offset) / TFS_SECTOR_SIZE);
-            // Write the chunk (rounded up to a sector).
+            size_t sector_offset = (size_t)(file_offset % TFS_SECTOR_SIZE);
+            size_t chunk = TFS_SECTOR_SIZE - sector_offset;
+            if (chunk > remaining) {
+                chunk = remaining;
+            }
+
+            uint64_t abs_lba = persistent_start_lba + (file_offset / TFS_SECTOR_SIZE);
             uint8_t sector_buf[TFS_SECTOR_SIZE];
             memset(sector_buf, 0, TFS_SECTOR_SIZE);
-            memcpy(sector_buf, ptr, chunk);
+            memcpy(sector_buf + sector_offset, ptr, chunk);
             if (block_write_lba28(persistent_device, (uint32_t)abs_lba, sector_buf, TFS_SECTOR_SIZE) < 0) {
                 // On failure, abort but keep persistence enabled.
                 log_warn("tfs", "sync data write failed for %s@LBA%llu",
                          persistent_device, (unsigned long long)abs_lba);
+                data_error = -1;
                 break;
             }
             ptr += chunk;
             file_offset += chunk;
             remaining -= chunk;
         }
+        if (data_error) {
+            break;
+        }
     }
 
     // Ensure any remaining sectors after the last file are zeroed.
     block_sync(persistent_device);
+    if (data_error) {
+        sync_in_progress = false;
+        kfree(header_buf);
+        return data_error;
+    }
     last_image_size = final_size;
 
     sync_in_progress = false;
@@ -432,6 +454,7 @@ int tfs_mount_disk(const char *device, uint64_t start_lba)
     }
     if (entries_bytes && block_read(device, start_lba + hdr->entries_offset / TFS_SECTOR_SIZE,
                                     entries_buf, entries_bytes) < 0) {
+        kfree(entries_buf);
         return -1;
     }
 
@@ -450,15 +473,19 @@ int tfs_mount_disk(const char *device, uint64_t start_lba)
         image_size = (size_t)hdr->data_offset;
     }
     if (image_size > TFS_SYNC_BUFFER_MAX) {
+        kfree(entries_buf);
         return -1;
     }
 
     uint8_t *image = kmalloc(image_size);
     if (!image) {
+        kfree(entries_buf);
         return -1;
     }
     memset(image, 0, image_size);
     if (block_read(device, start_lba, image, image_size) < 0) {
+        kfree(entries_buf);
+        kfree(image);
         return -1;
     }
 
@@ -466,8 +493,13 @@ int tfs_mount_disk(const char *device, uint64_t start_lba)
     persistent_enabled = false;
     auto_sync_enabled = false;
     if (mount_entries_from_memory(image, image_size, false) < 0) {
+        kfree(entries_buf);
+        kfree(image);
         return -1;
     }
+
+    kfree(entries_buf);
+    kfree(image);
 
     strncpy(persistent_device, device, sizeof(persistent_device) - 1);
     persistent_device[sizeof(persistent_device) - 1] = '\0';

@@ -4371,6 +4371,31 @@ int iwlwifi_associate(struct net_iface *iface, const char *ssid, const char *pas
     return 0;
 }
 
+int iwlwifi_disconnect(struct net_iface *iface)
+{
+    if (!iface || strcmp(iface->driver, "iwlwifi") != 0) {
+        return -1;
+    }
+    struct iwlwifi_state *st = iface->driver_data;
+    if (!st || !st->attached) {
+        return -1;
+    }
+    st->associated = false;
+    st->link_ready = false;
+    st->auth_done = false;
+    st->assoc_done = false;
+    st->wpa_key_msg1 = false;
+    st->wpa_key_msg3 = false;
+    st->wpa_ptk_ready = false;
+    st->associated_ssid[0] = '\0';
+    memset(st->bssid, 0, sizeof(st->bssid));
+    iface->link = false;
+    iface->up = false;
+    iface->ssid = NULL;
+    log_info("iwlwifi", "%s disconnected", iface->name);
+    return 0;
+}
+
 bool iwlwifi_is_supported(const struct pci_device *dev)
 {
     return dev && dev->vendor_id == 0x8086 && dev->class_code == 0x02 &&

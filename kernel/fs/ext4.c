@@ -3,6 +3,7 @@
 
 #define EXT4_SUPER_MAGIC 0xef53
 #define EXT4_FEATURE_COMPAT_HAS_JOURNAL 0x0004u
+#define EXT4_FEATURE_INCOMPAT_RECOVER 0x0004u
 #define EXT4_FEATURE_INCOMPAT_EXTENTS 0x0040u
 #define EXT4_FEATURE_INCOMPAT_64BIT 0x0080u
 #define EXT4_FEATURE_RO_COMPAT_HUGE_FILE 0x0008u
@@ -110,5 +111,16 @@ int ext4_can_mount_rw(const void *image, size_t size)
     const struct ext4_superblock *sb = (const struct ext4_superblock *)((const uint8_t *)image + 1024);
     if (sb->magic != EXT4_SUPER_MAGIC) return 0;
     if (sb->feature_compat & EXT4_FEATURE_COMPAT_HAS_JOURNAL) return 0;
+    if (sb->feature_incompat & (EXT4_FEATURE_INCOMPAT_RECOVER |
+                                EXT4_FEATURE_INCOMPAT_EXTENTS |
+                                EXT4_FEATURE_INCOMPAT_64BIT)) return 0;
     return 1;
+}
+
+int ext4_needs_journal_replay(const void *image, size_t size)
+{
+    if (!image || size < 1024 + sizeof(struct ext4_superblock)) return 0;
+    const struct ext4_superblock *sb = (const struct ext4_superblock *)((const uint8_t *)image + 1024);
+    if (sb->magic != EXT4_SUPER_MAGIC) return 0;
+    return (sb->feature_incompat & EXT4_FEATURE_INCOMPAT_RECOVER) != 0;
 }

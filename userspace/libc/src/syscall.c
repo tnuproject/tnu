@@ -312,6 +312,11 @@ int wifi_connect(const char *iface, const char *ssid, const char *passphrase)
                             (long)passphrase, 0, 0, 0);
 }
 
+int wifi_disconnect(const char *iface)
+{
+    return (int)tnu_syscall(SYS_WIFI_DISCONNECT, (long)iface, 0, 0, 0, 0, 0);
+}
+
 int wifi_status(struct wifi_status *out)
 {
     return (int)tnu_syscall(SYS_WIFI_STATUS, (long)out, 0, 0, 0, 0, 0);

@@ -98,6 +98,7 @@ int net_iface_set_up(const char *name, bool up);
 int net_iface_dhcp(const char *name);
 int net_wifi_scan(void);
 int net_wifi_connect(const char *iface, const char *ssid, const char *passphrase);
+int net_wifi_disconnect(const char *iface);
 int net_wifi_autoconnect(void);
 int net_wifi_scan_results(struct wifi_ap *out, size_t max_aps);
 int net_wifi_status(struct wifi_status *out);

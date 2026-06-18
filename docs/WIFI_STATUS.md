@@ -32,16 +32,18 @@ A comprehensive ~4500 line driver implementing:
 
 ### 3. System Calls (`kernel/core/syscall.c`)
 
-Three dedicated syscalls:
-- `SYS_WIFI_SCAN` (41): Scan for networks
+Dedicated syscalls:
+- `SYS_WIFI_SCAN` (41): Trigger scan and return networks
 - `SYS_WIFI_CONNECT` (42): Connect to a network
 - `SYS_WIFI_STATUS` (43): Get connection status
+- `SYS_WIFI_DISCONNECT` (52): Disconnect an interface
 
 ### 4. Userspace Library (`userspace/libc/src/syscall.c`)
 
 C API functions:
 - `wifi_scan()`: Returns list of available networks
 - `wifi_connect()`: Connects to a network
+- `wifi_disconnect()`: Disconnects an interface
 - `wifi_status()`: Gets current connection status
 
 ### 5. Command Line Utility (`userspace/coreutils/tnu-utils.c`)
