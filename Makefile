@@ -361,7 +361,10 @@ ALPINE_TARBALL := alpine-minirootfs-$(ALPINE_RELEASE)-$(ALPINE_ARCH).tar.gz
 ALPINE_URL := $(ALPINE_MIRROR)/$(ALPINE_TARBALL)
 LINUX_CHROOT_DIR := $(BUILD)/linux-chroot
 LINUX_CHROOT_TARBALL := $(BUILD)/downloads/$(ALPINE_TARBALL)
-LINUX_CHROOT_PACKAGES := nano fastfetch freedoom
+LINUX_CHROOT_REQUIRED_PACKAGES := nano fastfetch
+LINUX_CHROOT_OPTIONAL_PACKAGES := freedoom
+LINUX_CHROOT_PACKAGES := $(LINUX_CHROOT_REQUIRED_PACKAGES) $(LINUX_CHROOT_OPTIONAL_PACKAGES)
+APK_RETRIES ?= 3
 
 linux-chroot-fetch: $(LINUX_CHROOT_DIR)/bin/busybox
 
@@ -381,30 +384,70 @@ $(LINUX_CHROOT_DIR)/bin/busybox: $(LINUX_CHROOT_TARBALL)
 	@touch $@
 	@echo "linux-chroot: Alpine Linux chroot ready at $(LINUX_CHROOT_DIR)"
 
-# Install packages into the Alpine chroot (nano, fastfetch, freedoom)
+# Install packages into the Alpine chroot. nano/fastfetch are required for the
+# beta Linux userspace; freedoom is optional because it lives in community and
+# should not make the OS build fail when Alpine mirrors are temporarily flaky.
 linux-chroot-packages: $(LINUX_CHROOT_DIR)/bin/busybox
-	@echo "linux-chroot: Installing Linux packages: $(LINUX_CHROOT_PACKAGES)"
+	@echo "linux-chroot: Installing required Linux packages: $(LINUX_CHROOT_REQUIRED_PACKAGES)"
 	@mkdir -p $(LINUX_CHROOT_DIR)/etc/apk
 	@printf '%s\n%s\n' '$(ALPINE_REPO_BASE)/main' '$(ALPINE_REPO_BASE)/community' > $(LINUX_CHROOT_DIR)/etc/apk/repositories
+	@if [ -f /etc/resolv.conf ]; then \
+		cp /etc/resolv.conf $(LINUX_CHROOT_DIR)/etc/resolv.conf; \
+	else \
+		printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > $(LINUX_CHROOT_DIR)/etc/resolv.conf; \
+	fi
 	@if command -v apk >/dev/null 2>&1; then \
-		echo "linux-chroot: Running host apk --root add $(LINUX_CHROOT_PACKAGES)..."; \
-		apk --root $(LINUX_CHROOT_DIR) --initdb --no-cache \
-			--repository '$(ALPINE_REPO_BASE)/main' \
-			--repository '$(ALPINE_REPO_BASE)/community' \
-			add $(LINUX_CHROOT_PACKAGES) || \
-		{ echo "linux-chroot: host apk failed, trying chroot apk..."; \
-		  chroot $(LINUX_CHROOT_DIR) /bin/sh -c 'apk update && apk add --no-cache $(LINUX_CHROOT_PACKAGES)'; }; \
+		echo "linux-chroot: Running host apk --root add $(LINUX_CHROOT_REQUIRED_PACKAGES)..."; \
+		ok=0; n=1; while [ $$n -le $(APK_RETRIES) ]; do \
+			apk --root $(LINUX_CHROOT_DIR) --initdb --no-cache \
+				--repository '$(ALPINE_REPO_BASE)/main' \
+				--repository '$(ALPINE_REPO_BASE)/community' \
+				add $(LINUX_CHROOT_REQUIRED_PACKAGES) && { ok=1; break; }; \
+			echo "linux-chroot: host apk attempt $$n failed, retrying..."; \
+			n=$$((n + 1)); sleep 2; \
+		done; \
+		if [ $$ok -ne 1 ]; then \
+			echo "linux-chroot: host apk failed, trying chroot apk..."; \
+			ok=0; n=1; while [ $$n -le $(APK_RETRIES) ]; do \
+				chroot $(LINUX_CHROOT_DIR) /bin/sh -c \
+					'apk add --no-cache --repository "$(ALPINE_REPO_BASE)/main" --repository "$(ALPINE_REPO_BASE)/community" $(LINUX_CHROOT_REQUIRED_PACKAGES)' && { ok=1; break; }; \
+				echo "linux-chroot: chroot apk attempt $$n failed, retrying..."; \
+				n=$$((n + 1)); sleep 2; \
+			done; \
+			[ $$ok -eq 1 ]; \
+		fi; \
 	elif command -v chroot >/dev/null 2>&1; then \
-		echo "linux-chroot: Running chroot apk add $(LINUX_CHROOT_PACKAGES)..."; \
-		chroot $(LINUX_CHROOT_DIR) /bin/sh -c 'apk update && apk add --no-cache $(LINUX_CHROOT_PACKAGES)'; \
+		echo "linux-chroot: Running chroot apk add $(LINUX_CHROOT_REQUIRED_PACKAGES)..."; \
+		ok=0; n=1; while [ $$n -le $(APK_RETRIES) ]; do \
+			chroot $(LINUX_CHROOT_DIR) /bin/sh -c \
+				'apk add --no-cache --repository "$(ALPINE_REPO_BASE)/main" --repository "$(ALPINE_REPO_BASE)/community" $(LINUX_CHROOT_REQUIRED_PACKAGES)' && { ok=1; break; }; \
+			echo "linux-chroot: chroot apk attempt $$n failed, retrying..."; \
+			n=$$((n + 1)); sleep 2; \
+		done; \
+		[ $$ok -eq 1 ]; \
 	else \
 		echo "linux-chroot: neither apk nor chroot is available; cannot preinstall Linux packages"; \
 		false; \
+	fi
+	@if [ -n "$(strip $(LINUX_CHROOT_OPTIONAL_PACKAGES))" ]; then \
+		echo "linux-chroot: Installing optional Linux packages: $(LINUX_CHROOT_OPTIONAL_PACKAGES)"; \
+		if command -v apk >/dev/null 2>&1; then \
+			apk --root $(LINUX_CHROOT_DIR) --initdb --no-cache \
+				--repository '$(ALPINE_REPO_BASE)/main' \
+				--repository '$(ALPINE_REPO_BASE)/community' \
+				add $(LINUX_CHROOT_OPTIONAL_PACKAGES) || \
+				echo "linux-chroot: optional packages unavailable; continuing without $(LINUX_CHROOT_OPTIONAL_PACKAGES)."; \
+		elif command -v chroot >/dev/null 2>&1; then \
+			chroot $(LINUX_CHROOT_DIR) /bin/sh -c \
+				'apk add --no-cache --repository "$(ALPINE_REPO_BASE)/main" --repository "$(ALPINE_REPO_BASE)/community" $(LINUX_CHROOT_OPTIONAL_PACKAGES)' || \
+				echo "linux-chroot: optional packages unavailable; continuing without $(LINUX_CHROOT_OPTIONAL_PACKAGES)."; \
+		fi; \
 	fi
 	@if [ -x "$(LINUX_CHROOT_DIR)/usr/bin/nano" ] && [ -x "$(LINUX_CHROOT_DIR)/usr/bin/fastfetch" ]; then \
 		echo "linux-chroot: Packages installed."; \
 	else \
 		echo "linux-chroot: package install incomplete; nano/fastfetch missing from Linux chroot."; \
+		echo "linux-chroot: check DNS/mirror access from the build host, or override ALPINE_REPO_BASE / APK_RETRIES."; \
 		false; \
 	fi
 	@echo "linux-chroot: Nano is at /usr/linux/usr/bin/nano"
