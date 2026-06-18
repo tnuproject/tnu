@@ -9,7 +9,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdio.h>
-#include <errno.h>
+#include <poll.h>
 #include <sys/ioctl.h>
 #include <termios.h>
 #include <signal.h>
@@ -33,6 +33,11 @@ static struct termios raw_tio;
 static bool raw_active = false;
 static bool cleanup_registered = false;
 static bool colors_started = false;
+static bool nodelay_enabled = false;
+static unsigned halfdelay_tenths = 0;
+static WINDOW *pending_refresh = &_stdscr;
+static WINDOW *cursor_window = &_stdscr;
+static bool cursor_visible = true;
 
 /* key pushback buffer */
 #define UNGETCH_BUF 16
@@ -155,6 +160,11 @@ WINDOW *initscr(void)
     raw_tio.c_cc[VTIME] = 0;
     tcsetattr(STDIN_FILENO, TCSANOW, &raw_tio);
     raw_active = true;
+    nodelay_enabled = false;
+    halfdelay_tenths = 0;
+    pending_refresh = stdscr;
+    cursor_window = stdscr;
+    cursor_visible = true;
 
     /* hide cursor, clear screen */
     tnu_puts("\x1b[?25l\x1b[2J\x1b[H");
@@ -169,9 +179,14 @@ int endwin(void)
 }
 
 bool isendwin(void) { return !raw_active; }
-int cbreak(void)  { return OK; }
+int cbreak(void)  { return raw(); }
 int nocbreak(void){ return OK; }
-int raw(void)     { return OK; }
+int raw(void)
+{
+    nodelay_enabled = false;
+    halfdelay_tenths = 0;
+    return OK;
+}
 int noraw(void)   { return OK; }
 int echo(void)    { return OK; }
 int noecho(void)  { return OK; }
@@ -251,6 +266,7 @@ int wmove(WINDOW *win, int y, int x)
 {
     if (!win) return ERR;
     win->y = y; win->x = x;
+    cursor_window = win;
     return OK;
 }
 
@@ -264,10 +280,14 @@ static void win_emit_char(WINDOW *win, char c)
     tnu_gotoxy(win->begy + win->y, win->begx + win->x);
     char buf[2] = { c, 0 };
     tnu_write(buf, 1);
+    cursor_window = win;
     win->x++;
     if (win->x >= win->cols) {
         win->x = 0;
         win->y++;
+    }
+    if (cursor_visible) {
+        tnu_puts("\x1b[?25h");
     }
 }
 
@@ -275,6 +295,26 @@ int waddch(WINDOW *win, chtype ch)
 {
     if (!win) return ERR;
     char c = (char)(ch & A_CHARTEXT);
+    if (c == '\n') {
+        cursor_window = win;
+        win->x = 0;
+        if (win->y + 1 < win->rows) {
+            win->y++;
+        }
+        return OK;
+    }
+    if (c == '\r') {
+        cursor_window = win;
+        win->x = 0;
+        return OK;
+    }
+    if (c == '\b') {
+        cursor_window = win;
+        if (win->x > 0) {
+            win->x--;
+        }
+        return OK;
+    }
     if (c < 32 || c == 127) {
         /* control chars — skip or handle tab */
         if (c == '\t') {
@@ -389,14 +429,20 @@ int wdeleteln(WINDOW *win) { (void)win; return OK; }
 int wrefresh(WINDOW *win)
 {
     if (!win) return ERR;
-    /* position cursor at window's current cursor position */
-    tnu_gotoxy(win->begy + win->y, win->begx + win->x);
-    tnu_puts("\x1b[?25h");
+    pending_refresh = win;
+    WINDOW *target = cursor_window ? cursor_window : win;
+    tnu_gotoxy(target->begy + target->y, target->begx + target->x);
+    tnu_puts(cursor_visible ? "\x1b[?25h" : "\x1b[?25l");
     return OK;
 }
 
-int wnoutrefresh(WINDOW *win) { (void)win; return OK; }
-int doupdate(void) { return wrefresh(stdscr); }
+int wnoutrefresh(WINDOW *win)
+{
+    if (!win) return ERR;
+    pending_refresh = win;
+    return OK;
+}
+int doupdate(void) { return wrefresh(pending_refresh ? pending_refresh : stdscr); }
 int refresh(void)  { return wrefresh(stdscr); }
 
 /* ------------------------------------------------------------------ */
@@ -464,19 +510,19 @@ static int read_byte(void)
     return (int)c;
 }
 
+static int read_polled_byte(int timeout_ms)
+{
+    struct pollfd pfd = { .fd = STDIN_FILENO, .events = POLLIN, .revents = 0 };
+    int ready = poll(&pfd, 1, timeout_ms);
+    if (ready <= 0) {
+        return ERR;
+    }
+    return read_byte();
+}
+
 static int read_timed_byte(unsigned deciseconds)
 {
-    struct termios saved = raw_tio;
-    struct termios timed = raw_tio;
-    timed.c_cc[VMIN] = 0;
-    timed.c_cc[VTIME] = deciseconds ? deciseconds : 1;
-    tcsetattr(STDIN_FILENO, TCSANOW, &timed);
-
-    unsigned char c = 0;
-    ssize_t r = read(STDIN_FILENO, &c, 1);
-
-    tcsetattr(STDIN_FILENO, TCSANOW, &saved);
-    return r == 1 ? (int)c : ERR;
+    return read_polled_byte((int)(deciseconds * 100u));
 }
 
 int wgetch(WINDOW *win)
@@ -486,8 +532,14 @@ int wgetch(WINDOW *win)
     if (ungetch_len > 0)
         return ungetch_buf[--ungetch_len];
 
-    /* Simple blocking read from stdin */
-    int c = read_byte();
+    int c;
+    if (nodelay_enabled) {
+        c = read_polled_byte(0);
+    } else if (halfdelay_tenths > 0) {
+        c = read_polled_byte((int)(halfdelay_tenths * 100u));
+    } else {
+        c = read_byte();
+    }
     if (c == ERR) return ERR;
 
     /* Handle escape sequences for special keys */
@@ -519,7 +571,6 @@ int wgetch(WINDOW *win)
         return 27;
     }
 
-    if (c == '\r') c = '\n';
     return c;
 }
 
@@ -531,16 +582,34 @@ int ungetch(int ch)
 }
 
 int keypad(WINDOW *win, bool bf) { (void)win; (void)bf; return OK; }
-int nodelay(WINDOW *win, bool bf) { (void)win; (void)bf; return OK; }
+int nodelay(WINDOW *win, bool bf)
+{
+    (void)win;
+    nodelay_enabled = bf;
+    if (bf) {
+        halfdelay_tenths = 0;
+    }
+    return OK;
+}
 int notimeout(WINDOW *win, bool bf) { (void)win; (void)bf; return OK; }
+int halfdelay(int tenths)
+{
+    if (tenths <= 0 || tenths > 255) {
+        return ERR;
+    }
+    nodelay_enabled = false;
+    halfdelay_tenths = (unsigned)tenths;
+    return OK;
+}
 
 void beep(void)  { tnu_puts("\a"); }
 void flash(void) { tnu_puts("\x1b[?5h"); tnu_puts("\x1b[?5l"); }
 
 int curs_set(int v)
 {
-    if (v == 0) tnu_puts("\x1b[?25l");
-    else        tnu_puts("\x1b[?25h");
+    cursor_visible = (v != 0);
+    if (cursor_visible) tnu_puts("\x1b[?25h");
+    else                tnu_puts("\x1b[?25l");
     return OK;
 }
 
