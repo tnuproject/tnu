@@ -780,7 +780,6 @@ static int cmd_shutdown(int argc, char **argv)
     (void)argv;
     
     println("Shutting down system...");
-    sync();
     if (shutdown() < 0) {
         println("shutdown: permission denied (requires root)");
         return 1;
@@ -794,7 +793,6 @@ static int cmd_reboot(int argc, char **argv)
     (void)argv;
     
     println("Rebooting system...");
-    sync();
     if (reboot() < 0) {
         println("reboot: permission denied (requires root)");
         return 1;

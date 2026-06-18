@@ -3,6 +3,7 @@
 #include <arch/keyboard.h>
 #include <arch/pci.h>
 #include <arch/pit.h>
+#include <arch/power.h>
 #include <tnu/applets.h>
 #include <tnu/block.h>
 #include <tnu/console.h>
@@ -109,6 +110,10 @@ static const struct shell_builtin_doc shell_builtin_docs[] = {
       "Inspect the Linux Driver Runtime module manager and bridge state." },
     { "net", "net trace",
       "Inspect native networking bridge paths." },
+    { "shutdown", "shutdown",
+      "Sync persistent storage and power off the machine. Requires root." },
+    { "reboot", "reboot",
+      "Sync persistent storage and restart the machine. Requires root." },
 };
 
 static void read_file_text(const char *path, char *out, size_t out_size, const char *fallback)
@@ -1477,6 +1482,32 @@ static int cmd_net(int argc, char **argv)
     return 1;
 }
 
+static int cmd_shutdown(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+    struct process *proc = process_current();
+    if (!proc || proc->uid != 0) {
+        kprintf("shutdown: permission denied; try sudo shutdown\n");
+        return 1;
+    }
+    power_shutdown();
+    return 0;
+}
+
+static int cmd_reboot(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+    struct process *proc = process_current();
+    if (!proc || proc->uid != 0) {
+        kprintf("reboot: permission denied; try sudo reboot\n");
+        return 1;
+    }
+    power_reboot();
+    return 0;
+}
+
 static const struct command commands[] = {
     { "help", cmd_help },       { "cd", cmd_cd },             { "login", cmd_login },
     { "exec", cmd_exec },       { "linux-run", cmd_linux_run },
@@ -1484,6 +1515,7 @@ static const struct command commands[] = {
     { "set", cmd_set },         { "sh", cmd_sh },             { "sudo", cmd_sudo },
     { "sysinstall", cmd_sysinstall },
     { "driver", cmd_driver },   { "linuxdrv", cmd_linuxdrv }, { "net", cmd_net },
+    { "shutdown", cmd_shutdown }, { "reboot", cmd_reboot },
 };
 
 static int read_node_text(const char *path, char *buf, size_t size)

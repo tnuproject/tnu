@@ -764,7 +764,7 @@ static long sys_write(int fd, const void *buf, size_t count)
          * write. tfs_sync_if_mounted() internally checks whether persistence
          * and auto‑sync are enabled, so we can call it unconditionally.
          */
-        tfs_sync_if_mounted();
+        /* vfs_write_node() already handles persistence for regular files. */
     }
     return ret;
 }
@@ -1973,10 +1973,6 @@ long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
         if (!is_root(proc)) {
             return -1;
         }
-        /* Force sync before shutdown */
-        if (tfs_is_persistent()) {
-            tfs_sync();
-        }
         power_shutdown();
         return 0; /* never reached */
     
@@ -1985,20 +1981,12 @@ long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
         if (!is_root(proc)) {
             return -1;
         }
-        /* Force sync before reboot */
-        if (tfs_is_persistent()) {
-            tfs_sync();
-        }
         power_reboot();
         return 0; /* never reached */
 
     case SYS_SET_PASSWORD:
         return sys_set_password((const char *)a0, (const char *)a1);
     case SYS_EXIT:
-        /* Flush the persistent TFS before the process exits so that any
-         * changes made during this session are not lost if the user shuts
-         * down without an explicit sync call. */
-        tfs_sync_if_mounted();
         process_exit(proc, (int)a0);
         return (long)syscall_encode_result((long)a0, SYSCALL_RET_TO_KERNEL);
 

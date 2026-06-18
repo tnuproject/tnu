@@ -294,12 +294,12 @@ int fdatasync(int fd)
 
 int shutdown(void)
 {
-    return (int)tnu_syscall(44, 0, 0, 0, 0, 0, 0);
+    return (int)tnu_syscall(SYS_SHUTDOWN, 0, 0, 0, 0, 0, 0);
 }
 
 int reboot(void)
 {
-    return (int)tnu_syscall(45, 0, 0, 0, 0, 0, 0);
+    return (int)tnu_syscall(SYS_REBOOT, 0, 0, 0, 0, 0, 0);
 }
 int wifi_scan(struct wifi_ap *out, size_t max_aps)
 {
