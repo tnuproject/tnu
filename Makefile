@@ -93,7 +93,7 @@ USER_CRT := $(BUILD)/obj/userspace/libc/src/crt0.o
 USER_LIB := $(BUILD)/user/libtnu.a
 
 COREUTIL_NAMES := cat chmod chown clear cp curl date dmesg dns driver echo hostname \
-	id ifconfig keymap kill linuxdrv ls mkdir mount mv net xedit netstat ping ps pwd reboot rm route dhcp \
+	id ifconfig keymap kill linuxdrv ls mkdir mount mv nano net xedit netstat ping ps pwd reboot rm route dhcp \
 	shutdown stat sysfetch sync tar time timezone tirux tls touch uname unzip uptime usb wget whoami wifi zip
 
 IWN_FW_SRC := $(shell find freebsd-src/sys/contrib/dev/iwn freebsd-src/sys/contrib/dev/wpi -maxdepth 1 -name '*.fw.uu' 2>/dev/null | sort)
@@ -360,7 +360,7 @@ ALPINE_TARBALL := alpine-minirootfs-$(ALPINE_RELEASE)-$(ALPINE_ARCH).tar.gz
 ALPINE_URL := $(ALPINE_MIRROR)/$(ALPINE_TARBALL)
 LINUX_CHROOT_DIR := $(BUILD)/linux-chroot
 LINUX_CHROOT_TARBALL := $(BUILD)/downloads/$(ALPINE_TARBALL)
-LINUX_CHROOT_REQUIRED_PACKAGES := nano fastfetch
+LINUX_CHROOT_REQUIRED_PACKAGES := fastfetch
 LINUX_CHROOT_OPTIONAL_PACKAGES := freedoom
 LINUX_CHROOT_PACKAGES := $(LINUX_CHROOT_REQUIRED_PACKAGES) $(LINUX_CHROOT_OPTIONAL_PACKAGES)
 APK_RETRIES ?= 3
@@ -383,9 +383,9 @@ $(LINUX_CHROOT_DIR)/bin/busybox: $(LINUX_CHROOT_TARBALL)
 	@touch $@
 	@echo "linux-chroot: Alpine Linux chroot ready at $(LINUX_CHROOT_DIR)"
 
-# Install packages into the Alpine chroot. nano/fastfetch are required for the
-# beta Linux userspace; freedoom is optional because it lives in community and
-# should not make the OS build fail when Alpine mirrors are temporarily flaky.
+# Install packages into the Alpine chroot. fastfetch is required for the beta
+# Linux userspace; freedoom is optional because it lives in community and should
+# not make the OS build fail when Alpine mirrors are temporarily flaky.
 linux-chroot-packages: $(LINUX_CHROOT_DIR)/bin/busybox
 	@echo "linux-chroot: Installing required Linux packages: $(LINUX_CHROOT_REQUIRED_PACKAGES)"
 	@mkdir -p $(LINUX_CHROOT_DIR)/etc/apk
@@ -442,14 +442,13 @@ linux-chroot-packages: $(LINUX_CHROOT_DIR)/bin/busybox
 				echo "linux-chroot: optional packages unavailable; continuing without $(LINUX_CHROOT_OPTIONAL_PACKAGES)."; \
 		fi; \
 	fi
-	@if [ -x "$(LINUX_CHROOT_DIR)/usr/bin/nano" ] && [ -x "$(LINUX_CHROOT_DIR)/usr/bin/fastfetch" ]; then \
+	@if [ -x "$(LINUX_CHROOT_DIR)/usr/bin/fastfetch" ]; then \
 		echo "linux-chroot: Packages installed."; \
 	else \
-		echo "linux-chroot: package install incomplete; nano/fastfetch missing from Linux chroot."; \
+		echo "linux-chroot: package install incomplete; fastfetch missing from Linux chroot."; \
 		echo "linux-chroot: check DNS/mirror access from the build host, or override ALPINE_REPO_BASE / APK_RETRIES."; \
 		false; \
 	fi
-	@echo "linux-chroot: Nano is at /usr/linux/usr/bin/nano"
 	@echo "linux-chroot: Fastfetch is at /usr/linux/usr/bin/fastfetch"
 	@echo "linux-chroot: Freedoom WAD files are at /usr/linux/usr/share/games/doom/"
 

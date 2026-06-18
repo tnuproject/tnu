@@ -70,10 +70,10 @@ void tfs_set_auto_sync(bool enabled);
 int tfs_sync_if_mounted(void);
 /* Called after a RAM-module boot to attach the on-disk TFS for persistence.
  * Scans known block devices for a GPT root partition whose first sector
- * contains a valid TFS header.  If found, writes the current in-memory VFS
- * back to that partition and enables auto-sync so all subsequent changes
- * are persisted.  Safe to call even if persistent_enabled is already true
- * (it returns 0 immediately in that case). */
+ * contains a valid TFS header.  If found, attaches it and enables auto-sync so
+ * subsequent changes are persisted.  The initial full-image sync is deferred to
+ * avoid blocking boot on real hardware.  Safe to call even if
+ * persistent_enabled is already true (it returns 0 immediately in that case). */
 int tfs_attach_persistent_disk(void);
 
 #endif

@@ -20,7 +20,7 @@ The kernel shell (`tsh`) provides a `linux-run` builtin command:
 
 ```
 # linux-run /usr/linux/bin/busybox ls -la
-# linux-run /usr/linux/usr/bin/nano file.txt
+# linux-run /usr/linux/usr/bin/fastfetch
 ```
 
 Linux commands can also be launched directly from `tsh`. Command resolution is
@@ -39,7 +39,7 @@ Tiramisu path and `/usr/linux/bin/ls` still means the Linux path.
 Tiramisu branding and system-management commands always keep native priority:
 `sysfetch`, `hostname`, `login`, `useradd`, `userdel`, `passwd`, `init`, `sh`,
 `tsh`, `uname`, `tirux`, `shutdown`, `reboot`, `sync`, `keymap`, `timezone`,
-and `layout`.
+`layout`, and `nano`.
 
 ## Linux Chroot
 
@@ -47,21 +47,21 @@ TNU fetches an Alpine Linux minirootfs during `make all`:
 
 ```bash
 make linux-chroot-fetch    # Downloads Alpine minirootfs
-make linux-chroot-packages # Installs nano, fastfetch and freedoom via apk
+make linux-chroot-packages # Installs fastfetch and freedoom via apk
 ```
 
 `make all` runs both targets before building the ISO. The build stops if
-`/usr/bin/nano` or `/usr/bin/fastfetch` are missing from the Alpine chroot, so
-the final `/usr/linux` environment is not silently shipped half-prepared.
+`/usr/bin/fastfetch` is missing from the Alpine chroot, so the final
+`/usr/linux` environment is not silently shipped half-prepared.
 
 The chroot is installed at `/usr/linux` in the TNU rootfs.
 
 ### Running Nano
 
-Nano is installed from Alpine Linux packages and runs via the Linux compat layer:
+Nano is a native Tiramisu applet and does not depend on the Linux compat layer:
 
 ```
-# linux-run /usr/linux/usr/bin/nano /path/to/file.txt
+# nano /path/to/file.txt
 ```
 
 ### Running Fastfetch
@@ -121,7 +121,7 @@ make iso
 Applications that work well with the current compat layer:
 
 - Simple command-line tools (busybox utilities from Alpine)
-- Single-process editors with ncurses (nano from Alpine)
+- Native Tiramisu utilities alongside Linux busybox applets
 - Games using framebuffer directly (freedoom from Alpine)
 
 ## Architecture

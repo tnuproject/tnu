@@ -3,7 +3,7 @@
 
 TFS currently stores only regular files and directories. Alpine uses symlinks
 heavily for BusyBox applets and dynamic loader/library aliases, so deleting
-those symlinks makes commands such as ls, clear, nano and fastfetch disappear
+those symlinks makes commands such as ls, clear and fastfetch disappear
 or fail at runtime. This helper resolves symlinks that point inside the Linux
 root and replaces them with copies of their targets.
 """

@@ -610,8 +610,9 @@ int tfs_mount_installed_root(void)
  * This function scans the same disk candidates as tfs_mount_installed_root.
  * For each candidate it reads the GPT to locate the root partition and checks
  * whether that partition already holds a valid TFS image.  If it does, it
- * re-enables persistence pointing at that partition and immediately syncs the
- * current in-memory VFS back to disk so the two are in sync.
+ * re-enables persistence pointing at that partition and defers the first full
+ * sync to the next real VFS mutation or shutdown so boot is not blocked by
+ * rewriting the whole root image.
  *
  * If the partition holds something other than TFS (e.g. it was freshly
  * formatted by sysinstall but never written yet), the function still attaches
@@ -660,6 +661,7 @@ int tfs_attach_persistent_disk(void)
          * disable persistence – the system will continue operating and will
          * sync later when possible (e.g., on shutdown). */
         auto_sync_enabled = true;
+        /* Attach itself does not call tfs_sync(); first full sync is deferred. */
 
         if (has_tfs) {
             log_info("tfs", "attach: existing TFS on %s@LBA%llu — persistence enabled",
@@ -669,13 +671,7 @@ int tfs_attach_persistent_disk(void)
                      dev, (unsigned long long)lba);
         }
 
-        /* Attempt to sync the current in‑memory VFS to the newly attached
-         * partition. If this fails, log a warning but keep persistence
-         * enabled; future writes will trigger syncs via auto‑sync. */
-        if (tfs_sync() != 0) {
-            log_warn("tfs", "attach: initial sync failed for %s@LBA%llu — will retry on next write",
-                     dev, (unsigned long long)lba);
-        }
+        /* Initial full-image sync is deferred; later writes and shutdown sync. */
         return 0;
     }
 

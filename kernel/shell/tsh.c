@@ -1576,7 +1576,7 @@ static bool tnu_command_always_priority(const char *name)
     static const char *const names[] = {
         "sysfetch", "hostname", "login", "useradd", "userdel", "passwd",
         "init", "sh", "tsh", "uname", "tirux", "shutdown", "reboot",
-        "sync", "keymap", "timezone", "layout",
+        "sync", "keymap", "timezone", "layout", "nano",
     };
     const char *base = command_basename(name);
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {

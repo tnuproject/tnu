@@ -1,5 +1,6 @@
 #include <tnu/printf.h>
 #include <tnu/string.h>
+#include <tnu/tfs.h>
 #include <tnu/user.h>
 #include <tnu/vfs.h>
 
@@ -95,6 +96,44 @@ static void parse_passwd_line(char *line)
     }
 }
 
+static bool file_content_equals(const char *path, const char *data, size_t size)
+{
+    struct vfs_node *node = vfs_lookup(path, "/");
+    if (!node || node->type != VFS_NODE_FILE || node->size != size) {
+        return false;
+    }
+    if (size == 0) {
+        return true;
+    }
+    if (!node->data) {
+        return false;
+    }
+    return memcmp(node->data, data, size) == 0;
+}
+
+static void write_file_if_changed(const char *path, const char *data, size_t size)
+{
+    if (!file_content_equals(path, data, size)) {
+        vfs_write_file(path, "/", data, size);
+    }
+}
+
+static void chmod_if_needed(const char *path, uint32_t mode)
+{
+    struct vfs_stat st;
+    if (vfs_stat(path, "/", &st) == 0 && (st.mode & 07777) != (mode & 07777)) {
+        vfs_chmod(path, "/", mode);
+    }
+}
+
+static void chown_if_needed(const char *path, uint32_t uid, uint32_t gid)
+{
+    struct vfs_stat st;
+    if (vfs_stat(path, "/", &st) == 0 && (st.uid != uid || st.gid != gid)) {
+        vfs_chown(path, "/", uid, gid);
+    }
+}
+
 static void rebuild_passwd(void)
 {
     char buf[2048];
@@ -108,7 +147,7 @@ static void rebuild_passwd(void)
             strcat(buf, line);
         }
     }
-    vfs_write_file("/etc/passwd", "/", buf, strlen(buf));
+    write_file_if_changed("/etc/passwd", buf, strlen(buf));
 }
 
 static void rebuild_group(void)
@@ -127,7 +166,7 @@ static void rebuild_group(void)
             strcat(buf, line);
         }
     }
-    vfs_write_file("/etc/group", "/", buf, strlen(buf));
+    write_file_if_changed("/etc/group", buf, strlen(buf));
 }
 
 static void rebuild_shadow(void)
@@ -147,9 +186,9 @@ static void rebuild_shadow(void)
             strcat(buf, line);
         }
     }
-    vfs_write_file("/etc/shadow", "/", buf, strlen(buf));
-    vfs_chmod("/etc/shadow", "/", 0600);
-    vfs_chown("/etc/shadow", "/", 0, 0);
+    write_file_if_changed("/etc/shadow", buf, strlen(buf));
+    chmod_if_needed("/etc/shadow", 0600);
+    chown_if_needed("/etc/shadow", 0, 0);
 }
 
 static void parse_shadow_line(char *line)
@@ -216,6 +255,11 @@ static void parse_shadow(void)
 
 void users_init(void)
 {
+    bool restore_auto_sync = tfs_is_persistent();
+    if (restore_auto_sync) {
+        tfs_set_auto_sync(false);
+    }
+
     users_len = 0;
     current_user = 0;
 
@@ -255,8 +299,12 @@ void users_init(void)
     rebuild_group();
     rebuild_shadow();
     vfs_mkdir("/root", "/", VFS_S_IFDIR | 0700, 0, 0);
-    vfs_chmod("/root", "/", 0700);
-    vfs_chown("/root", "/", 0, 0);
+    chmod_if_needed("/root", 0700);
+    chown_if_needed("/root", 0, 0);
+
+    if (restore_auto_sync) {
+        tfs_set_auto_sync(true);
+    }
 }
 
 const struct user_record *user_current(void)
