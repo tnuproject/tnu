@@ -1550,14 +1550,14 @@ static int parse_priority_value(const char *text, const char *key, int fallback)
 static void command_priority_read(int *linux_weight, int *tnu_weight)
 {
     char buf[256];
-    int linux = 0;
+    int linux_env_weight = 0;
     int tnu = 1;
     if (read_node_text("/etc/priority", buf, sizeof(buf)) >= 0) {
-        linux = parse_priority_value(buf, "linux", linux);
+        linux_env_weight = parse_priority_value(buf, "linux", linux_env_weight);
         tnu = parse_priority_value(buf, "tnu", tnu);
     }
     if (linux_weight) {
-        *linux_weight = linux;
+        *linux_weight = linux_env_weight;
     }
     if (tnu_weight) {
         *tnu_weight = tnu;
