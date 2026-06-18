@@ -89,6 +89,26 @@ static bool is_root(const struct process *proc)
     return proc && proc->uid == 0;
 }
 
+static uint16_t sys_ntohs(uint16_t v)
+{
+    return (uint16_t)((v << 8) | (v >> 8));
+}
+
+static uint32_t sys_ntohl(uint32_t v)
+{
+    return ((v & 0x000000ffu) << 24) |
+           ((v & 0x0000ff00u) << 8) |
+           ((v & 0x00ff0000u) >> 8) |
+           ((v & 0xff000000u) >> 24);
+}
+
+struct syscall_sockaddr_in {
+    uint16_t sin_family;
+    uint16_t sin_port;
+    uint32_t sin_addr;
+    uint8_t sin_zero[8];
+};
+
 static bool path_is_or_under(const char *path, const char *prefix)
 {
     size_t len = strlen(prefix);
@@ -1702,6 +1722,9 @@ long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
     case SYS_OPEN:
         return sys_open((const char *)a0, (int)a1, (int)a2);
     case SYS_CLOSE:
+        if (net_socket_close((int)a0) == 0) {
+            return 0;
+        }
         process_close_fd(proc, (int)a0);
         return 0;
     case SYS_GETPID:
@@ -1897,6 +1920,42 @@ long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
         }
         return net_wifi_status(out);
     }
+    case SYS_RESOLVE4: {
+        if (!uptr_ok((const void *)a0, 1) || !uptr_ok((void *)a1, sizeof(uint32_t))) {
+            return -1;
+        }
+        char host[256];
+        uint32_t ipv4 = 0;
+        if (copy_user_string_bounded((const char *)a0, host, sizeof(host)) < 0) {
+            return -1;
+        }
+        if (net_resolve4(host, &ipv4) < 0 || !ipv4) {
+            return -1;
+        }
+        *(uint32_t *)a1 = ipv4;
+        return 0;
+    }
+    case SYS_SOCKET:
+        return net_socket_create((int)a0, (int)a1, (int)a2);
+    case SYS_CONNECT: {
+        const struct syscall_sockaddr_in *addr = (const struct syscall_sockaddr_in *)a1;
+        if (!uptr_ok(addr, sizeof(*addr)) || (size_t)a2 < sizeof(*addr) ||
+            addr->sin_family != 2) {
+            return -1;
+        }
+        return net_socket_connect((int)a0, sys_ntohl(addr->sin_addr),
+                                  sys_ntohs(addr->sin_port));
+    }
+    case SYS_SEND:
+        if (!uptr_ok((const void *)a1, (size_t)a2)) {
+            return -1;
+        }
+        return net_socket_send((int)a0, (const void *)a1, (size_t)a2);
+    case SYS_RECV:
+        if (!uptr_ok((void *)a1, (size_t)a2)) {
+            return -1;
+        }
+        return net_socket_recv((int)a0, (void *)a1, (size_t)a2);
     case SYS_SHUTDOWN:
         /* Only root can shutdown the system */
         if (!is_root(proc)) {

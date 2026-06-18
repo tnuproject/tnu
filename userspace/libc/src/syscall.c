@@ -316,3 +316,8 @@ int wifi_status(struct wifi_status *out)
 {
     return (int)tnu_syscall(SYS_WIFI_STATUS, (long)out, 0, 0, 0, 0, 0);
 }
+
+int resolve4(const char *host, uint32_t *out_ipv4)
+{
+    return (int)tnu_syscall(SYS_RESOLVE4, (long)host, (long)out_ipv4, 0, 0, 0, 0);
+}

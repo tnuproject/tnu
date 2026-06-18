@@ -11,6 +11,7 @@
 #define ETH_TYPE_IPV4 0x0800
 #define ETH_TYPE_ARP  0x0806
 #define IP_PROTO_ICMP 1
+#define IP_PROTO_TCP  6
 #define IP_PROTO_UDP  17
 #define DNS_PORT 53
 #define DNS_SOURCE_PORT 49153
@@ -24,6 +25,15 @@
 #define E1000_RX_BUF_SIZE 2048
 #define E1000_TX_BUF_SIZE 2048
 #define E1000_MMIO_SIZE (128 * 1024)
+
+#define NET_SOCKET_BASE 512
+#define NET_SOCKET_MAX 8
+#define TCP_RX_BUF_SIZE 8192
+#define TCP_MAX_PAYLOAD 1024
+#define TCP_FIN 0x01
+#define TCP_SYN 0x02
+#define TCP_PSH 0x08
+#define TCP_ACK 0x10
 
 #define E1000_REG_CTRL   0x0000
 #define E1000_REG_STATUS 0x0008
@@ -112,6 +122,24 @@ struct dhcp_wait {
     bool complete;
 };
 
+struct net_tcp_socket {
+    bool used;
+    bool connected;
+    bool syn_ack_seen;
+    bool fin_seen;
+    uint16_t local_port;
+    uint16_t remote_port;
+    uint32_t local_ip;
+    uint32_t remote_ip;
+    uint32_t seq;
+    uint32_t ack;
+    uint32_t last_ack;
+    struct net_iface *iface;
+    uint8_t dst_mac[6];
+    uint8_t rx[TCP_RX_BUF_SIZE];
+    size_t rx_len;
+};
+
 struct poll_ctx {
     struct ping_wait *ping;
     struct dns_wait *dns;
@@ -122,6 +150,8 @@ static struct net_iface ifaces[NET_IFACE_MAX];
 static size_t iface_count;
 static struct e1000_state e1000_states[E1000_MAX];
 static size_t e1000_count;
+static struct net_tcp_socket tcp_sockets[NET_SOCKET_MAX];
+static uint16_t next_tcp_port = 49160;
 
 static struct net_iface *net_iface_find_mut(const char *name);
 
@@ -165,6 +195,31 @@ static uint16_t inet_checksum(const void *data, size_t len)
         len -= 2;
     }
     if (len) {
+        sum += (uint16_t)p[0] << 8;
+    }
+    while (sum >> 16) {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    return (uint16_t)~sum;
+}
+
+static uint16_t tcp_checksum(uint32_t src_ip, uint32_t dst_ip,
+                             const uint8_t *tcp, size_t tcp_len)
+{
+    uint32_t sum = 0;
+    sum += (src_ip >> 16) & 0xffff;
+    sum += src_ip & 0xffff;
+    sum += (dst_ip >> 16) & 0xffff;
+    sum += dst_ip & 0xffff;
+    sum += IP_PROTO_TCP;
+    sum += (uint16_t)tcp_len;
+    const uint8_t *p = tcp;
+    while (tcp_len > 1) {
+        sum += ((uint16_t)p[0] << 8) | p[1];
+        p += 2;
+        tcp_len -= 2;
+    }
+    if (tcp_len) {
         sum += (uint16_t)p[0] << 8;
     }
     while (sum >> 16) {
@@ -476,6 +531,105 @@ static int send_udp4(struct net_iface *iface, const uint8_t dst_mac[6],
                           src_port, dst_port, payload, payload_len);
 }
 
+static int send_tcp4(struct net_tcp_socket *sock, uint8_t flags,
+                     const uint8_t *payload, size_t payload_len)
+{
+    if (!sock || !sock->iface || payload_len > TCP_MAX_PAYLOAD) {
+        return -1;
+    }
+    uint8_t frame[14 + 20 + 20 + TCP_MAX_PAYLOAD];
+    size_t tcp_len = 20 + payload_len;
+    size_t ip_len = 20 + tcp_len;
+    size_t frame_len = 14 + ip_len;
+    memset(frame, 0, sizeof(frame));
+    build_eth(frame, sock->dst_mac, sock->iface->mac, ETH_TYPE_IPV4);
+
+    uint8_t *ip = frame + 14;
+    ip[0] = 0x45;
+    put16(ip + 2, (uint16_t)ip_len);
+    put16(ip + 4, sock->local_port);
+    ip[8] = 64;
+    ip[9] = IP_PROTO_TCP;
+    put32(ip + 12, sock->local_ip);
+    put32(ip + 16, sock->remote_ip);
+    put16(ip + 10, inet_checksum(ip, 20));
+
+    uint8_t *tcp = ip + 20;
+    put16(tcp, sock->local_port);
+    put16(tcp + 2, sock->remote_port);
+    put32(tcp + 4, sock->seq);
+    put32(tcp + 8, sock->ack);
+    tcp[12] = 5u << 4;
+    tcp[13] = flags;
+    put16(tcp + 14, 4096);
+    if (payload_len) {
+        memcpy(tcp + 20, payload, payload_len);
+    }
+    put16(tcp + 16, tcp_checksum(sock->local_ip, sock->remote_ip, tcp, tcp_len));
+    if (!sock->iface->ops || !sock->iface->ops->transmit) {
+        return -1;
+    }
+    return sock->iface->ops->transmit(sock->iface, frame, frame_len);
+}
+
+static struct net_tcp_socket *tcp_socket_by_fd(int fd)
+{
+    int index = fd - NET_SOCKET_BASE;
+    if (index < 0 || index >= NET_SOCKET_MAX || !tcp_sockets[index].used) {
+        return NULL;
+    }
+    return &tcp_sockets[index];
+}
+
+static void process_tcp(struct net_iface *iface, const uint8_t *payload, size_t len,
+                        uint32_t src_ip, uint32_t dst_ip)
+{
+    (void)iface;
+    if (len < 20) {
+        return;
+    }
+    uint16_t src_port = be16(payload);
+    uint16_t dst_port = be16(payload + 2);
+    uint32_t seq = be32(payload + 4);
+    uint32_t ack = be32(payload + 8);
+    size_t off = (payload[12] >> 4) * 4;
+    uint8_t flags = payload[13];
+    if (off < 20 || off > len) {
+        return;
+    }
+    size_t data_len = len - off;
+    const uint8_t *data = payload + off;
+
+    for (size_t i = 0; i < NET_SOCKET_MAX; i++) {
+        struct net_tcp_socket *sock = &tcp_sockets[i];
+        if (!sock->used || sock->local_port != dst_port ||
+            sock->remote_port != src_port || sock->remote_ip != src_ip ||
+            sock->local_ip != dst_ip) {
+            continue;
+        }
+        sock->last_ack = ack;
+        if ((flags & (TCP_SYN | TCP_ACK)) == (TCP_SYN | TCP_ACK)) {
+            sock->ack = seq + 1;
+            sock->syn_ack_seen = true;
+            return;
+        }
+        if (data_len) {
+            size_t room = TCP_RX_BUF_SIZE - sock->rx_len;
+            size_t take = data_len < room ? data_len : room;
+            memcpy(sock->rx + sock->rx_len, data, take);
+            sock->rx_len += take;
+            sock->ack = seq + (uint32_t)data_len;
+            send_tcp4(sock, TCP_ACK, NULL, 0);
+        }
+        if (flags & TCP_FIN) {
+            sock->ack = seq + 1;
+            sock->fin_seen = true;
+            send_tcp4(sock, TCP_ACK, NULL, 0);
+        }
+        return;
+    }
+}
+
 static void process_arp(struct net_iface *iface, const uint8_t *payload, size_t len)
 {
     if (len < 28 || be16(payload) != 1 || be16(payload + 2) != ETH_TYPE_IPV4 ||
@@ -672,6 +826,8 @@ static void process_ipv4(struct net_iface *iface, const uint8_t *payload, size_t
             process_dns(ctx ? ctx->dns : NULL, udp + 8, udp_len - 8,
                         src_ip, src_port, dst_port);
         }
+    } else if (payload[9] == IP_PROTO_TCP) {
+        process_tcp(iface, payload + ihl, len - ihl, src_ip, dst_ip);
     }
 }
 
@@ -1143,6 +1299,134 @@ int net_ping4(uint32_t ipv4, uint16_t sequence, uint32_t *latency_ms)
         __asm__ volatile("pause");
     }
     return -1;
+}
+
+int net_socket_create(int domain, int type, int protocol)
+{
+    if (domain != 2 || type != 1 || (protocol != 0 && protocol != IP_PROTO_TCP)) {
+        return -1;
+    }
+    for (size_t i = 0; i < NET_SOCKET_MAX; i++) {
+        struct net_tcp_socket *sock = &tcp_sockets[i];
+        if (!sock->used) {
+            memset(sock, 0, sizeof(*sock));
+            sock->used = true;
+            sock->local_port = next_tcp_port++;
+            sock->seq = 0x544e0000u + (uint32_t)(i * 4096u) + sock->local_port;
+            return NET_SOCKET_BASE + (int)i;
+        }
+    }
+    return -1;
+}
+
+int net_socket_close(int fd)
+{
+    struct net_tcp_socket *sock = tcp_socket_by_fd(fd);
+    if (!sock) {
+        return -1;
+    }
+    if (sock->connected) {
+        send_tcp4(sock, TCP_FIN | TCP_ACK, NULL, 0);
+    }
+    memset(sock, 0, sizeof(*sock));
+    return 0;
+}
+
+int net_socket_connect(int fd, uint32_t remote_ip, uint16_t remote_port)
+{
+    struct net_tcp_socket *sock = tcp_socket_by_fd(fd);
+    if (!sock || !remote_ip || !remote_port) {
+        return -1;
+    }
+    struct net_iface *iface = route_for(remote_ip);
+    if (!iface) {
+        return -1;
+    }
+    uint32_t next_hop = same_subnet(remote_ip, iface->ipv4, iface->netmask) ?
+                        remote_ip : iface->gateway;
+    if (!next_hop || resolve_mac(iface, next_hop, sock->dst_mac) < 0) {
+        return -1;
+    }
+    sock->iface = iface;
+    sock->local_ip = iface->ipv4;
+    sock->remote_ip = remote_ip;
+    sock->remote_port = remote_port;
+    sock->syn_ack_seen = false;
+    sock->connected = false;
+
+    uint32_t syn_seq = sock->seq;
+    uint64_t start = pit_ticks();
+    if (send_tcp4(sock, TCP_SYN, NULL, 0) < 0) {
+        return -1;
+    }
+    while (pit_ticks() - start < 500) {
+        net_poll_iface(iface, NULL, NULL, NULL);
+        if (sock->syn_ack_seen) {
+            sock->seq = syn_seq + 1;
+            if (send_tcp4(sock, TCP_ACK, NULL, 0) < 0) {
+                return -1;
+            }
+            sock->connected = true;
+            return 0;
+        }
+        __asm__ volatile("pause");
+    }
+    return -1;
+}
+
+ssize_t net_socket_send(int fd, const void *buf, size_t len)
+{
+    struct net_tcp_socket *sock = tcp_socket_by_fd(fd);
+    if (!sock || !sock->connected || (!buf && len)) {
+        return -1;
+    }
+    size_t sent = 0;
+    const uint8_t *p = buf;
+    while (sent < len) {
+        size_t chunk = len - sent;
+        if (chunk > TCP_MAX_PAYLOAD) {
+            chunk = TCP_MAX_PAYLOAD;
+        }
+        uint32_t start_seq = sock->seq;
+        sock->last_ack = 0;
+        if (send_tcp4(sock, TCP_PSH | TCP_ACK, p + sent, chunk) < 0) {
+            return sent ? (ssize_t)sent : -1;
+        }
+        uint64_t start = pit_ticks();
+        while (pit_ticks() - start < 300) {
+            net_poll_iface(sock->iface, NULL, NULL, NULL);
+            if (sock->last_ack >= start_seq + chunk) {
+                break;
+            }
+            __asm__ volatile("pause");
+        }
+        sock->seq += (uint32_t)chunk;
+        sent += chunk;
+    }
+    return (ssize_t)sent;
+}
+
+ssize_t net_socket_recv(int fd, void *buf, size_t len)
+{
+    struct net_tcp_socket *sock = tcp_socket_by_fd(fd);
+    if (!sock || !sock->connected || (!buf && len)) {
+        return -1;
+    }
+    uint64_t start = pit_ticks();
+    while (sock->rx_len == 0 && !sock->fin_seen && pit_ticks() - start < 800) {
+        net_poll_iface(sock->iface, NULL, NULL, NULL);
+        __asm__ volatile("pause");
+    }
+    if (sock->rx_len == 0) {
+        return sock->fin_seen ? 0 : -1;
+    }
+    size_t take = len < sock->rx_len ? len : sock->rx_len;
+    memcpy(buf, sock->rx, take);
+    if (take < sock->rx_len) {
+        memmove(sock->rx, sock->rx + take, sock->rx_len - take);
+    }
+    sock->rx_len -= take;
+    return (ssize_t)take;
 }
 
 static int dns_build_query(const char *host, uint16_t id, uint8_t *out, size_t *out_len)
