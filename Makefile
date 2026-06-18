@@ -351,10 +351,12 @@ ALPINE_VERSION := 3.20
 ALPINE_RELEASE := 3.20.0
 ALPINE_ARCH := x86_64
 ALPINE_MIRROR := https://dl-cdn.alpinelinux.org/alpine/v$(ALPINE_VERSION)/releases/$(ALPINE_ARCH)
+ALPINE_REPO_BASE := https://dl-cdn.alpinelinux.org/alpine/v$(ALPINE_VERSION)
 ALPINE_TARBALL := alpine-minirootfs-$(ALPINE_RELEASE)-$(ALPINE_ARCH).tar.gz
 ALPINE_URL := $(ALPINE_MIRROR)/$(ALPINE_TARBALL)
 LINUX_CHROOT_DIR := $(BUILD)/linux-chroot
 LINUX_CHROOT_TARBALL := $(BUILD)/downloads/$(ALPINE_TARBALL)
+LINUX_CHROOT_PACKAGES := nano fastfetch freedoom
 
 linux-chroot-fetch: $(LINUX_CHROOT_DIR)/bin/busybox
 
@@ -374,19 +376,27 @@ $(LINUX_CHROOT_DIR)/bin/busybox: $(LINUX_CHROOT_TARBALL)
 	@touch $@
 	@echo "linux-chroot: Alpine Linux chroot ready at $(LINUX_CHROOT_DIR)"
 
-# Install packages into the Alpine chroot (nano, freedoom)
+# Install packages into the Alpine chroot (nano, fastfetch, freedoom)
 linux-chroot-packages: $(LINUX_CHROOT_DIR)/bin/busybox
-	@echo "linux-chroot: Installing nano and freedoom packages..."
+	@echo "linux-chroot: Installing Linux packages: $(LINUX_CHROOT_PACKAGES)"
 	@if command -v chroot >/dev/null 2>&1; then \
-		echo "linux-chroot: Running apk add nano freedoom..."; \
-		chroot $(LINUX_CHROOT_DIR) /bin/sh -c 'apk update && apk add nano freedoom' || \
+		echo "linux-chroot: Running apk add $(LINUX_CHROOT_PACKAGES)..."; \
+		printf '%s\n%s\n' '$(ALPINE_REPO_BASE)/main' '$(ALPINE_REPO_BASE)/community' > $(LINUX_CHROOT_DIR)/etc/apk/repositories; \
+		chroot $(LINUX_CHROOT_DIR) /bin/sh -c 'apk update && apk add --no-cache $(LINUX_CHROOT_PACKAGES)' || \
 		echo "linux-chroot: Failed to install packages. You may need to run this manually."; \
 	else \
 		echo "linux-chroot: chroot command not available, skipping package installation"; \
 		echo "linux-chroot: To install manually, run:"; \
-		echo "  chroot $(LINUX_CHROOT_DIR) /bin/sh -c 'apk update && apk add nano freedoom'"; \
+		echo "  printf '%s\\n%s\\n' '$(ALPINE_REPO_BASE)/main' '$(ALPINE_REPO_BASE)/community' > $(LINUX_CHROOT_DIR)/etc/apk/repositories"; \
+		echo "  chroot $(LINUX_CHROOT_DIR) /bin/sh -c 'apk update && apk add --no-cache $(LINUX_CHROOT_PACKAGES)'"; \
 	fi
-	@echo "linux-chroot: Packages installed. Nano is at /usr/linux/bin/nano"
+	@if [ -x "$(LINUX_CHROOT_DIR)/usr/bin/nano" ] && [ -x "$(LINUX_CHROOT_DIR)/usr/bin/fastfetch" ]; then \
+		echo "linux-chroot: Packages installed."; \
+	else \
+		echo "linux-chroot: package install incomplete; check apk/chroot output above."; \
+	fi
+	@echo "linux-chroot: Nano is at /usr/linux/usr/bin/nano"
+	@echo "linux-chroot: Fastfetch is at /usr/linux/usr/bin/fastfetch"
 	@echo "linux-chroot: Freedoom WAD files are at /usr/linux/usr/share/games/doom/"
 
 linux-chroot: $(LINUX_CHROOT_DIR)/bin/busybox

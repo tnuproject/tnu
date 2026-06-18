@@ -3825,6 +3825,30 @@ static bool iwl_uses_legacy_4965_path(const struct iwlwifi_state *st)
     return false; /* no 4965 in our device table */
 }
 
+static int iwl_mark_firmware_start_failed(struct iwlwifi_state *st, int rc,
+                                          const char *reason)
+{
+    if (!st) {
+        return rc;
+    }
+    st->firmware_running = false;
+    st->firmware_alive = false;
+    st->mvm_alive = false;
+    st->mvm_fw_ready = false;
+    st->firmware_start_blocked = true;
+    st->firmware_block_reported = false;
+    st->last_start_error = rc;
+    if (st->iface) {
+        st->iface->up = false;
+        st->iface->link = false;
+    }
+    iwl_write32(st, CSR_INT_MASK, 0);
+    iwl_write32(st, CSR_INT, 0xffffffffu);
+    iwl_write32(st, CSR_FH_INT_STATUS, 0xffffffffu);
+    log_warn("iwlwifi", "firmware start disabled for this boot: %s", reason);
+    return rc;
+}
+
 static int iwl_execute_runtime_firmware(struct iwlwifi_state *st)
 {
     bool modern_sections = st->runtime_section_count > 0;
@@ -3907,7 +3931,7 @@ static int iwl_execute_runtime_firmware(struct iwlwifi_state *st)
         }
         if (!st->mvm_init_alive_seen) {
             log_warn("iwlwifi", "MVM INIT alive timed out - firmware not responding");
-            return -4;
+            return iwl_mark_firmware_start_failed(st, -4, "MVM INIT alive timeout");
         }
         log_info("iwlwifi", "MVM INIT alive OK");
 
@@ -4002,7 +4026,7 @@ static int iwl_execute_runtime_firmware(struct iwlwifi_state *st)
         }
         if (!st->mvm_rt_alive_seen) {
             log_warn("iwlwifi", "MVM RT alive timed out - firmware not responding");
-            return -4;
+            return iwl_mark_firmware_start_failed(st, -4, "MVM RT alive timeout");
         }
         st->mvm_alive          = true;
         st->firmware_alive     = true;
@@ -4085,6 +4109,14 @@ int iwlwifi_start(struct net_iface *iface)
     if (st->firmware_alive) {
         return 0;
     }
+    if (st->firmware_start_blocked) {
+        if (!st->firmware_block_reported) {
+            log_warn("iwlwifi", "%s firmware start is blocked after previous failure (%d); leaving interface down",
+                     iface->name, st->last_start_error);
+            st->firmware_block_reported = true;
+        }
+        return st->last_start_error ? st->last_start_error : -4;
+    }
     /* Reset MVM phase-tracking before every fresh start attempt */
     if (st->modern_transport) {
         st->mvm_init_alive_seen = false;
@@ -4099,6 +4131,8 @@ int iwlwifi_start(struct net_iface *iface)
     int rc = iwl_execute_runtime_firmware(st);
     if (rc == 0) {
         iface->up = true;
+    } else if (!st->firmware_start_blocked) {
+        iwl_mark_firmware_start_failed(st, rc, "firmware bring-up failed");
     }
     return rc;
 }

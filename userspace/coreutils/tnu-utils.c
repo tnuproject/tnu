@@ -786,6 +786,10 @@ static int cmd_tirux_status(void)
     println(path_exists("/usr/linux/bin/sh") ? "present" : "missing");
     print("  /usr/linux/bin/busybox: ");
     println(path_exists("/usr/linux/bin/busybox") ? "present" : "missing");
+    print("  /usr/linux/usr/bin/nano: ");
+    println(path_exists("/usr/linux/usr/bin/nano") ? "present" : "missing");
+    print("  /usr/linux/usr/bin/fastfetch: ");
+    println(path_exists("/usr/linux/usr/bin/fastfetch") ? "present" : "missing");
     print("  /usr/linux/lib: ");
     println(path_exists("/usr/linux/lib") ? "present" : "missing");
     print("  /usr/linux/lib64: ");
@@ -795,6 +799,8 @@ static int cmd_tirux_status(void)
         println("Try:");
         println("  linux-run /bin/sh");
         println("  linux-run /bin/busybox sh");
+        println("  linux-run /usr/bin/nano file.txt");
+        println("  linux-run /usr/bin/fastfetch");
     } else {
         println("");
         println("No Linux userspace appears to be installed yet.");

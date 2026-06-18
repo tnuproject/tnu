@@ -46,6 +46,9 @@ struct iwlwifi_state {
     bool firmware_staged;
     bool firmware_running;
     bool firmware_alive;
+    bool firmware_start_blocked;
+    bool firmware_block_reported;
+    int last_start_error;
     bool firmware_tlv;
     bool modern_transport;
     bool associated;

@@ -14,7 +14,7 @@
       "dependencies": [
         "linux_compat"
       ],
-      "notes": "Alpine Linux minirootfs for Linux ABI compatibility. nano and freedoom are installed via apk."
+      "notes": "Alpine Linux minirootfs for Linux ABI compatibility. nano, fastfetch and freedoom are installed via apk."
     },
     {
       "name": "fastfetch",

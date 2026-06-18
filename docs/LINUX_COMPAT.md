@@ -29,7 +29,7 @@ TNU fetches an Alpine Linux minirootfs during `make all`:
 
 ```bash
 make linux-chroot-fetch    # Downloads Alpine minirootfs
-make linux-chroot-packages # Installs nano and freedoom via apk
+make linux-chroot-packages # Installs nano, fastfetch and freedoom via apk
 ```
 
 The chroot is installed at `/usr/linux` in the TNU rootfs.
@@ -40,6 +40,14 @@ Nano is installed from Alpine Linux packages and runs via the Linux compat layer
 
 ```
 # linux-run /usr/linux/usr/bin/nano /path/to/file.txt
+```
+
+### Running Fastfetch
+
+Fastfetch is installed from Alpine Linux packages inside the Linux chroot:
+
+```
+# linux-run /usr/linux/usr/bin/fastfetch
 ```
 
 ### Running Doom (Freedoom)
