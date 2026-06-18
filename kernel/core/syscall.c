@@ -732,6 +732,18 @@ static long sys_read(int fd, void *buf, size_t count)
             }
             return (long)n;
         }
+        const struct block_device_info *bdev = block_device_find(file->node->name);
+        if (bdev) {
+            uint32_t sector_size = bdev->sector_size ? bdev->sector_size : 512u;
+            if ((file->offset % sector_size) != 0) {
+                return -1;
+            }
+            if (block_read(file->node->name, file->offset / sector_size, buf, count) < 0) {
+                return -1;
+            }
+            file->offset += (uint64_t)count;
+            return (long)count;
+        }
         return -1;
     }
     ssize_t ret = vfs_read_node(file->node, file->offset, buf, count);
@@ -779,6 +791,21 @@ static long sys_write(int fd, const void *buf, size_t count)
             framebuffer_blit(0, 0, fb->width, (uint32_t)(pixels / fb->width),
                              (const uint32_t *)buf, fb->width);
             return (long)(pixels * sizeof(uint32_t));
+        }
+        const struct block_device_info *bdev = block_device_find(file->node->name);
+        if (bdev) {
+            uint32_t sector_size = bdev->sector_size ? bdev->sector_size : 512u;
+            if ((file->offset % sector_size) != 0) {
+                return -1;
+            }
+            if (!bdev->writable) {
+                return -1;
+            }
+            if (block_write_lba28(file->node->name, (uint32_t)(file->offset / sector_size), buf, count) < 0) {
+                return -1;
+            }
+            file->offset += (uint64_t)count;
+            return (long)count;
         }
         return -1;
     }
