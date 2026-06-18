@@ -74,6 +74,7 @@ static struct vfs_node *resolve_linux_command_node(const char *command, char *li
                                                    size_t linux_path_size,
                                                    char *host_path, size_t host_path_size);
 static const char *command_basename(const char *path);
+static int run_command(int argc, char **argv, const char *stdin_data);
 
 struct shell_builtin_doc {
     const char *name;
