@@ -46,6 +46,27 @@ static void release_node_data(struct vfs_node *node)
     }
 }
 
+static bool node_is_runtime_fs(struct vfs_node *node)
+{
+    for (struct vfs_node *n = node; n; n = n->parent) {
+        if (n->type == VFS_NODE_PROC || n->type == VFS_NODE_DEV) {
+            return true;
+        }
+        if (n->parent == root_node &&
+            (strcmp(n->name, "proc") == 0 || strcmp(n->name, "dev") == 0)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void sync_if_persistent_node(struct vfs_node *node)
+{
+    if (!node_is_runtime_fs(node)) {
+        tfs_sync_if_mounted();
+    }
+}
+
 static struct vfs_node *find_child(struct vfs_node *parent, const char *name)
 {
     for (struct vfs_node *n = parent->first_child; n; n = n->next_sibling) {
@@ -213,7 +234,7 @@ int vfs_mkdir(const char *path, const char *cwd, uint32_t mode, uint32_t uid, ui
         return -3;
     }
     attach_child(parent, node);
-    tfs_sync_if_mounted();
+    sync_if_persistent_node(node);
     return 0;
 }
 
@@ -232,7 +253,7 @@ int vfs_create_file(const char *path, const char *cwd, uint32_t mode, uint32_t u
         return -3;
     }
     attach_child(parent, node);
-    tfs_sync_if_mounted();
+    sync_if_persistent_node(node);
     return 0;
 }
 
@@ -263,7 +284,7 @@ int vfs_write_file(const char *path, const char *cwd, const void *data, size_t s
     node->data_borrowed = false;
     node->size = size;
     node->modified = ++vfs_clock;
-    tfs_sync_if_mounted();
+    sync_if_persistent_node(node);
     return 0;
 }
 
@@ -283,7 +304,7 @@ int vfs_unlink(const char *path, const char *cwd)
             release_node_data(*link);
             *link = (*link)->next_sibling;
             parent->modified = ++vfs_clock;
-            tfs_sync_if_mounted();
+            sync_if_persistent_node(parent);
             return 0;
         }
         link = &(*link)->next_sibling;
@@ -299,7 +320,7 @@ int vfs_chmod(const char *path, const char *cwd, uint32_t mode)
     }
     node->mode = (node->mode & 0170000) | (mode & 07777);
     node->modified = ++vfs_clock;
-    tfs_sync_if_mounted();
+    sync_if_persistent_node(node);
     return 0;
 }
 
@@ -312,7 +333,7 @@ int vfs_chown(const char *path, const char *cwd, uint32_t uid, uint32_t gid)
     node->uid = uid;
     node->gid = gid;
     node->modified = ++vfs_clock;
-    tfs_sync_if_mounted();
+    sync_if_persistent_node(node);
     return 0;
 }
 
@@ -377,7 +398,7 @@ ssize_t vfs_write_node(struct vfs_node *node, uint64_t offset, const void *buf, 
     }
     memcpy(node->data + offset, buf, count);
     node->modified = ++vfs_clock;
-    tfs_sync_if_mounted();
+    sync_if_persistent_node(node);
     return (ssize_t)count;
 }
 

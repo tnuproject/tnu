@@ -89,7 +89,7 @@ int elf64_validate(const void *image, size_t size, struct elf_image_info *info)
  * Large binaries (nano, doom) extend well past 0x8000000 into heap space.
  */
 #define USER_LOAD_MIN 0x400000ULL
-#define USER_LOAD_MAX 0x30000000ULL
+#define USER_LOAD_MAX 0x38000000ULL
 
 int elf64_load(const void *image, size_t size)
 {

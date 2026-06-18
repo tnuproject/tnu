@@ -943,10 +943,10 @@ static long sys_exec_image(const char *path, int argc, char **argv)
         /* Original base addresses matching userspace linker script */
         USER_BASE = 0x4000000,
         USER_HEAP_BASE = 0x8000000,
-        USER_STACK_BOTTOM_SMALL = 0x30000000,  /* 768MB - leave room for boot modules */
-        USER_STACK_TOP_SMALL = 0x30400000,    /* 4MB stack */
-        USER_STACK_BOTTOM_LARGE = 0x40000000,  /* 1GB */
-        USER_STACK_TOP_LARGE = 0x40400000,
+        USER_STACK_BOTTOM_SMALL = 0x38000000,  /* 896MB */
+        USER_STACK_TOP_SMALL = 0x38400000,     /* 4MB stack */
+        USER_STACK_BOTTOM_LARGE = 0x48000000,  /* 1152MB */
+        USER_STACK_TOP_LARGE = 0x48400000,
         MAX_ARGS = 16,
         MAX_ARG_LEN = 127,
     };
@@ -1011,9 +1011,7 @@ static long sys_exec_image(const char *path, int argc, char **argv)
     uintptr_t user_heap_base = USER_HEAP_BASE;
     uintptr_t user_heap_limit = user_stack_bottom;
     uintptr_t protected_end = boot_modules_end_in_range(USER_BASE, user_stack_bottom);
-    if (protected_end > user_heap_base) {
-        user_heap_base = page_align_up(protected_end);
-    }
+    (void)protected_end;
     if (user_heap_base >= user_heap_limit || user_heap_limit - user_heap_base < PAGE_SIZE) {
         log_warn("exec", "no userspace heap window path=%s heap_base=%p heap_limit=%p",
                  resolved, (void *)user_heap_base, (void *)user_heap_limit);
@@ -1039,10 +1037,10 @@ static long sys_exec_image(const char *path, int argc, char **argv)
      * ELF segments lie within the user address space bounds.
      */
     if (info.lowest_vaddr < USER_BASE ||
-        info.highest_vaddr > user_heap_base) {
-        log_warn("exec", "ELF image out of user address space path=%s low=%p high=%p heap_base=%p",
+        info.highest_vaddr > user_heap_limit) {
+        log_warn("exec", "ELF image out of user address space path=%s low=%p high=%p heap_limit=%p",
                  resolved, (void *)(uintptr_t)info.lowest_vaddr,
-                 (void *)(uintptr_t)info.highest_vaddr, (void *)user_heap_base);
+                 (void *)(uintptr_t)info.highest_vaddr, (void *)user_heap_limit);
         return -1;
     }
 

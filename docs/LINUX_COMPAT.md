@@ -39,7 +39,9 @@ Tiramisu path and `/usr/linux/bin/ls` still means the Linux path.
 Tiramisu branding and system-management commands always keep native priority:
 `sysfetch`, `hostname`, `login`, `useradd`, `userdel`, `passwd`, `init`, `sh`,
 `tsh`, `uname`, `tirux`, `shutdown`, `reboot`, `sync`, `keymap`, `timezone`,
-`layout`, and `nano`.
+`layout`, `nano`, and networking/driver commands such as `ping`, `wifi`,
+`curl`, `wget`, `dns`, `net`, `tls`, `driver`, `linuxdrv`, `ifconfig`, `route`,
+`netstat`, and `dhcp`.
 
 ## Linux Chroot
 
