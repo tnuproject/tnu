@@ -354,7 +354,15 @@ long linux_run_binary(const char *path, int argc, char **argv)
                                VMM_FLAG_WRITABLE | VMM_FLAG_USER) < 0) {
         return -LINUX_ENOMEM;
     }
-    memset((void *)LINUX_STACK_BOTTOM, 0, LINUX_STACK_TOP - LINUX_STACK_BOTTOM);
+    /* Zero the stack on first use only. Linux programs don't need a pristine
+     * zero stack on every invocation (kernel stacks are reused without zeroing).
+     * This avoids a 4MB memset on every Linux command, which is slow on real
+     * hardware with cold caches. The first 8 bytes serve as a sentinel. */
+    static uint64_t *stack_initialized = (uint64_t *)LINUX_STACK_BOTTOM;
+    if (*stack_initialized != 0xDEADBEEFCAFEBABEULL) {
+        memset((void *)LINUX_STACK_BOTTOM, 0, LINUX_STACK_TOP - LINUX_STACK_BOTTOM);
+        *stack_initialized = 0xDEADBEEFCAFEBABEULL;
+    }
     linux_mm_reset(LINUX_HEAP_BASE, LINUX_MMAP_BASE, LINUX_MMAP_LIMIT);
 
     uintptr_t stack = build_linux_stack(&main_img, interp, resolved, argc, arg_values);

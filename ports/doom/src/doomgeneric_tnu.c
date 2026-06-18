@@ -338,8 +338,10 @@ static int has_iwad_argument(int argc, char **argv)
 
 int main(int argc, char **argv)
 {
-    /* Scan argv for --version=N; strip it and inject -iwad <path>.  If the
-       user does not provide an IWAD, boot the preinstalled shareware WAD. */
+    /* Scan argv for --version=N or a direct WAD path argument.
+     * Usage: doom [/path/to/file.WAD] [-iwad /path/to/file.WAD] [other args]
+     * If the first argument (argv[1]) ends with .WAD/.wad and is not preceded by -iwad,
+     * treat it as the IWAD path.  Otherwise use the default shareware WAD. */
     const char *wad_path = has_iwad_argument(argc, argv) ? NULL
                                                          : "/usr/share/games/doom/Doom1.WAD";
     static char *new_argv[64];
@@ -353,6 +355,18 @@ int main(int argc, char **argv)
                 fprintf(stderr, "doom: unknown --version=%d (use 1, 2 or 3)\n", ver);
                 return 1;
             }
+        } else if (i == 1 && !has_iwad_argument(argc, argv)) {
+            /* First arg after program name — check if it's a WAD path */
+            size_t len = strlen(argv[i]);
+            if (len > 4 && 
+                (strcmp(argv[i] + len - 4, ".WAD") == 0 || 
+                 strcmp(argv[i] + len - 4, ".wad") == 0)) {
+                /* User provided a WAD path directly: doom /path/to/file.WAD */
+                wad_path = argv[i];
+                /* Don't add this to new_argv — we'll inject it as -iwad below */
+                continue;
+            }
+            new_argv[new_argc++] = argv[i];
         } else {
             new_argv[new_argc++] = argv[i];
         }

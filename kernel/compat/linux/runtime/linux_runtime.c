@@ -49,7 +49,7 @@ void linux_compat_init(void)
     if (!profile) {
         static const char msg[] =
             "Tiramisu Linux compatibility root.\n"
-            "Import a Linux rootfs here, then enter with linux-run when the userspace tool is present.\n";
+            "Welcome to LFT!\n";
         vfs_create_file("/usr/linux/README.TNU", "/", VFS_S_IFREG | 0644, 0, 0);
         vfs_write_file("/usr/linux/README.TNU", "/", msg, strlen(msg));
     }
