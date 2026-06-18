@@ -4,6 +4,7 @@
 #include <tnu/printf.h>
 #include <tnu/string.h>
 #include <tnu/vfs.h>
+#include <tnu/drm_kms.h>
 
 #define LDR_MAX_WORK 32
 #define LDR_MAX_IRQ 32
@@ -214,7 +215,16 @@ int ldr_i915_probe(const struct pci_device *dev)
     if (!dev || dev->vendor_id != 0x8086 || dev->class_code != 0x03) {
         return LDR_ERR_NOTFOUND;
     }
-    log_warn("linuxdrv", "Intel GPU %04x exposed to i915 bridge; DRM/KMS ABI is not live yet",
+
+    /* Initialize DRM/KMS stub for Intel GPU */
+    int rc = drm_i915_probe(dev->vendor_id, dev->device_id);
+    if (rc < 0) {
+        log_warn("linuxdrv", "Intel GPU %04x i915 probe failed, using legacy framebuffer",
+                 dev->device_id);
+        return LDR_ERR_UNSUPPORTED;
+    }
+
+    log_info("linuxdrv", "Intel GPU %04x: i915 KMS stub active (full 3D accel pending)",
              dev->device_id);
-    return LDR_ERR_UNSUPPORTED;
+    return 0; /* Success - KMS stub is now active */
 }

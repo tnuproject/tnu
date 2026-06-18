@@ -104,14 +104,18 @@ syscall_entry:
 
 1:
     /* Return-to-kernel: syscall result value is placed in rax for any kernel-side
-       handling; exit path returns back to the saved shell context. */
+       handling; exit path returns back to the saved shell context.
+     * Use saved_exec_rsp — NOT saved_kernel_rsp — because saved_kernel_rsp is
+     * overwritten on every syscall entry with syscall_stack_top, so by the time
+     * SYS_EXIT fires saved_kernel_rsp no longer points at the arch_enter_user
+     * frame. saved_exec_rsp is written only by arch_enter_user and is stable. */
     shlq $2, %rax
     sarq $2, %rax
     movq $0x10, %rdx
 
     movw %dx, %ds
     movw %dx, %es
-    movq saved_kernel_rsp(%rip), %rsp
+    movq saved_exec_rsp(%rip), %rsp
     popq %r15
     popq %r14
     popq %r13
@@ -150,6 +154,16 @@ arch_enter_user:
     pushq $0x23          /* CS  = user code (2nd pop) */
     pushq %rdi           /* RIP = entry point (1st pop) */
     iretq
+
+.global arch_get_exec_rsp
+arch_get_exec_rsp:
+    movq saved_exec_rsp(%rip), %rax
+    ret
+
+.global arch_set_exec_rsp
+arch_set_exec_rsp:
+    movq %rdi, saved_exec_rsp(%rip)
+    ret
 
 .global arch_abort_user
 arch_abort_user:

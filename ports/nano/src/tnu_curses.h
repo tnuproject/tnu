@@ -147,6 +147,7 @@ int     nonl(void);
 int     intrflush(WINDOW *win, bool bf);
 int     meta(WINDOW *win, bool bf);
 int     napms(int ms);
+int     halfdelay(int tenths);
 
 /* ------------------------------------------------------------------ */
 /* Window creation/deletion                                             */
@@ -279,7 +280,6 @@ int curs_set(int visibility);
 #define KEY_C3       (KEY_F0 + 94)
 #define define_key(s,k)  0
 #define typeahead(fd)    0
-#define halfdelay(t)     0
 extern WINDOW *curscr;
 
 /* sys/param.h — MIN/MAX */

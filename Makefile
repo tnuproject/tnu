@@ -101,7 +101,7 @@ USER_CRT := $(BUILD)/obj/userspace/libc/src/crt0.o
 USER_LIB := $(BUILD)/user/libtnu.a
 
 COREUTIL_NAMES := cat chmod chown clear cp curl date dmesg dns driver echo hostname \
-	id ifconfig keymap kill linuxdrv ls mkdir mount mv nano net xedit netstat ping ps pwd reboot rm route dhcp \
+	id ifconfig keymap kill linuxdrv ls mkdir mount mv net xedit netstat ping ps pwd reboot rm route dhcp \
 	shutdown stat sysfetch sync tar time timezone tirux tls touch uname unzip uptime usb wget whoami wifi zip
 
 IWN_FW_SRC := $(shell find freebsd-src/sys/contrib/dev/iwn freebsd-src/sys/contrib/dev/wpi -maxdepth 1 -name '*.fw.uu' 2>/dev/null | sort)
@@ -110,7 +110,7 @@ LINUX_IWL_FW_SRC := $(shell find rootfs/lib/firmware rootfs/lib/firmware/iwlwifi
 
 .PHONY: all kernel userspace iso run clean rootfs version-files permission-tests verify verify-kernel verify-iso \
 	firmware-iwlwifi ports-preflight ports-fetch ports-fetch-core \
-	fastfetch ports-fetch-freedoom \
+	fastfetch nano doom ports-fetch-freedoom \
 	linux-chroot-fetch linux-chroot linux-chroot-packages
 
 ifeq ($(WITH_LINUX_CHROOT),1)
@@ -124,9 +124,14 @@ kernel: $(KERNEL)
 userspace: $(USER_LIB) $(BUILD)/user/init $(BUILD)/user/tsh \
 	$(BUILD)/user/tnu-utils $(BUILD)/user/login $(BUILD)/user/passwd \
 	$(BUILD)/user/useradd $(BUILD)/user/userdel $(BUILD)/user/sysinstall \
-	$(BUILD)/user/bootd $(BUILD)/user/fastfetch
+	$(BUILD)/user/bootd $(BUILD)/user/fastfetch $(BUILD)/user/nano \
+	$(BUILD)/user/doom
 
 fastfetch: $(BUILD)/user/fastfetch $(BUILD)/user/fastfetch
+
+nano: $(BUILD)/user/nano
+
+doom: $(BUILD)/user/doom
 
 iso: $(ISO)
 
@@ -243,6 +248,18 @@ $(BUILD)/user/fastfetch: $(USER_LIB) $(USER_CRT) userspace/linker.ld \
 		USER_CRT="$(abspath $(USER_CRT))" \
 		USER_LIB="$(abspath $(USER_LIB))"
 
+$(BUILD)/user/nano: $(USER_LIB) $(USER_CRT) userspace/linker.ld \
+	$(shell find ports/nano/src -type f 2>/dev/null)
+	$(MAKE) -C ports/nano CC="$(CC)" \
+		USER_CRT="$(abspath $(USER_CRT))" \
+		USER_LIB="$(abspath $(USER_LIB))"
+
+$(BUILD)/user/doom: $(USER_LIB) $(USER_CRT) userspace/linker.ld \
+	$(shell find ports/doom/src -type f 2>/dev/null)
+	$(MAKE) -C ports/doom CC="$(CC)" \
+		USER_CRT="$(abspath $(USER_CRT))" \
+		USER_LIB="$(abspath $(USER_LIB))"
+
 rootfs: userspace version-files firmware-iwlwifi
 	rm -rf $(BUILD)/rootfs
 	mkdir -p $(BUILD)/rootfs
@@ -265,6 +282,8 @@ rootfs: userspace version-files firmware-iwlwifi
 	cp $(BUILD)/user/sysinstall $(BUILD)/rootfs/sbin/sysinstall
 	for name in $(COREUTIL_NAMES); do cp $(BUILD)/user/tnu-utils $(BUILD)/rootfs/bin/$$name; done
 	cp $(BUILD)/user/fastfetch $(BUILD)/rootfs/usr/bin/fastfetch
+	cp $(BUILD)/user/nano $(BUILD)/rootfs/usr/bin/nano
+	cp $(BUILD)/user/doom $(BUILD)/rootfs/usr/games/doom
 	cp -a $(BUILD)/firmware/iwlwifi/. $(BUILD)/rootfs/lib/firmware/iwlwifi/
 	@if [ "$(WITH_LINUX_CHROOT)" = "1" ] && [ -d "$(LINUX_CHROOT_DIR)" ]; then \
 		echo "rootfs: copying Linux chroot into rootfs/usr/linux"; \

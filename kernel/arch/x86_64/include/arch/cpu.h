@@ -31,5 +31,7 @@ uint64_t cpu_get_fs_base(void);
 void syscall_init(void);
 int arch_enter_user(uint64_t entry, uint64_t user_stack);
 __attribute__((noreturn)) void arch_abort_user(int exit_code);
+uintptr_t arch_get_exec_rsp(void);
+void arch_set_exec_rsp(uintptr_t rsp);
 
 #endif

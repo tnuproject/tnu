@@ -217,8 +217,9 @@ static uintptr_t build_linux_stack(const struct linux_loaded_image *main_img,
         "TERM=linux",
         "SHELL=/bin/sh",
         "USER=root",
+        "PWD=/",
     };
-    int envc = 5;
+    int envc = 6;
     uintptr_t sp = LINUX_STACK_TOP;
     uint64_t argv_ptrs[LINUX_MAX_ARGS];
     uint64_t env_ptrs[LINUX_MAX_ENV];
@@ -354,7 +355,15 @@ long linux_run_binary(const char *path, int argc, char **argv)
                                VMM_FLAG_WRITABLE | VMM_FLAG_USER) < 0) {
         return -LINUX_ENOMEM;
     }
-    memset((void *)LINUX_STACK_BOTTOM, 0, LINUX_STACK_TOP - LINUX_STACK_BOTTOM);
+    /* Zero the stack on first use only. Linux programs don't need a pristine
+     * zero stack on every invocation (kernel stacks are reused without zeroing).
+     * This avoids a 4MB memset on every Linux command, which is slow on real
+     * hardware with cold caches. The first 8 bytes serve as a sentinel. */
+    static uint64_t *stack_initialized = (uint64_t *)LINUX_STACK_BOTTOM;
+    if (*stack_initialized != 0xDEADBEEFCAFEBABEULL) {
+        memset((void *)LINUX_STACK_BOTTOM, 0, LINUX_STACK_TOP - LINUX_STACK_BOTTOM);
+        *stack_initialized = 0xDEADBEEFCAFEBABEULL;
+    }
     linux_mm_reset(LINUX_HEAP_BASE, LINUX_MMAP_BASE, LINUX_MMAP_LIMIT);
 
     uintptr_t stack = build_linux_stack(&main_img, interp, resolved, argc, arg_values);
@@ -375,16 +384,32 @@ long linux_run_binary(const char *path, int argc, char **argv)
 
     uint64_t entry = interp ? interp->entry : main_img.entry;
     uint64_t saved_fs_base = cpu_get_fs_base();
+    /*
+     * Save and restore saved_exec_rsp around arch_enter_user.
+     *
+     * arch_enter_user writes saved_exec_rsp with the current kernel RSP before
+     * jumping into user mode.  If linux_run_binary is called recursively (e.g.
+     * the dynamic linker calls execve(59) to hand off to the real binary),
+     * the inner arch_enter_user overwrites saved_exec_rsp with its own frame,
+     * so when the inner binary exits via SYSCALL_RET_TO_KERNEL it pops the
+     * inner frame and returns cleanly — but saved_exec_rsp no longer points at
+     * the outer arch_enter_user frame.  Saving and restoring it here ensures
+     * each level of nesting has the correct return address when it exits.
+     */
+    uintptr_t saved_exec_rsp = arch_get_exec_rsp();
     int rc = arch_enter_user(entry, (uint64_t)stack);
+    arch_set_exec_rsp(saved_exec_rsp);
     cpu_set_fs_base(saved_fs_base);
     if (proc) {
         proc->personality = saved_personality;
         strncpy(proc->name, saved_name, PROCESS_NAME_MAX);
         proc->name[PROCESS_NAME_MAX] = '\0';
         proc->exit_code = rc;
-        if (proc->state == PROCESS_ZOMBIE) {
-            proc->state = PROCESS_RUNNING;
-        }
+        /* Ensure the shell process is always RUNNING after Linux exec returns.
+         * This fixes the 10-15 second delay on real hardware when returning
+         * from a Linux command to the shell. The process may have been left
+         * in ZOMBIE state by the previous execution. */
+        proc->state = PROCESS_RUNNING;
     }
     return rc;
 }
