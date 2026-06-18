@@ -306,11 +306,31 @@ static void tty_pending_set(const char *seq)
     }
 }
 
+static bool tty_is_modifier_only_key(int ch)
+{
+    switch (ch) {
+    case KEY_CTRL:
+    case KEY_ALT:
+    case KEY_SHIFT_LEFT:
+    case KEY_SHIFT_RIGHT:
+        return true;
+    default:
+        return false;
+    }
+}
+
 static int tty_encode_key(int ch, struct process *proc)
 {
     if (ch == KEY_CTRL_C &&
         proc && proc->signal_disposition[SIGINT_NUMBER] != SIGNAL_DISPOSITION_DEFAULT) {
         return 3;
+    }
+
+    if (ch == '\n') {
+        if ((tty_c_lflag & TNU_TTYF_ICANON) != 0) {
+            return '\n';
+        }
+        return '\r';
     }
 
     switch (ch) {
@@ -376,25 +396,33 @@ static int tty_read_byte(struct process *proc)
             console_switch_tty((size_t)(ch - KEY_TTY1));
             continue;
         }
+        if (tty_is_modifier_only_key(ch)) {
+            continue;
+        }
         return tty_encode_key(ch, proc);
     }
 }
 
 static int tty_try_read_byte(struct process *proc)
 {
-    char c;
-    if (tty_pending_pop(&c)) {
-        return (unsigned char)c;
+    for (;;) {
+        char c;
+        if (tty_pending_pop(&c)) {
+            return (unsigned char)c;
+        }
+        int ch = keyboard_try_getchar();
+        if (ch < 0) {
+            return -1;
+        }
+        if (ch >= KEY_TTY1 && ch <= KEY_TTY6) {
+            console_switch_tty((size_t)(ch - KEY_TTY1));
+            continue;
+        }
+        if (tty_is_modifier_only_key(ch)) {
+            continue;
+        }
+        return tty_encode_key(ch, proc);
     }
-    int ch = keyboard_try_getchar();
-    if (ch < 0) {
-        return -1;
-    }
-    if (ch >= KEY_TTY1 && ch <= KEY_TTY6) {
-        console_switch_tty((size_t)(ch - KEY_TTY1));
-        return -1;
-    }
-    return tty_encode_key(ch, proc);
 }
 
 static int __attribute__((unused)) input_try_read_raw_key(void)
