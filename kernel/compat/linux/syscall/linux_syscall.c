@@ -824,7 +824,8 @@ long linux_syscall_dispatch(const struct linux_syscall_args *a)
     case 12:
         return linux_brk((uintptr_t)a->a0);
     case 13:
-        return dispatch_native_syscall(SYS_SIGACTION, a);
+        return linux_rt_sigaction((int)a->a0, (const void *)(uintptr_t)a->a1,
+                                  (void *)(uintptr_t)a->a2, (size_t)a->a3);
     case 16:
         return dispatch_native_syscall(SYS_IOCTL, a);
     case 17:
@@ -919,7 +920,8 @@ long linux_syscall_dispatch(const struct linux_syscall_args *a)
     case 121:
         return linux_getpgid((int)a->a0);
     case 131:
-        return 0;
+        return linux_sigaltstack((const void *)(uintptr_t)a->a0,
+                                 (void *)(uintptr_t)a->a1);
     case 158:
         return linux_arch_prctl((int)a->a0, (uintptr_t)a->a1);
     case 202:
@@ -973,6 +975,79 @@ long linux_syscall_dispatch(const struct linux_syscall_args *a)
         return linux_execveat((int)a->a0, (const char *)(uintptr_t)a->a1,
                               (char *const *)(uintptr_t)a->a2,
                               (char *const *)(uintptr_t)a->a3, (int)a->a4);
+
+    /* Socket syscalls (41-55) */
+    case 41:
+        return linux_socket((int)a->a0, (int)a->a1, (int)a->a2);
+    case 42:
+        return linux_connect((int)a->a0, (const void *)(uintptr_t)a->a1,
+                             (uint32_t)a->a2);
+    case 43:
+        return linux_accept((int)a->a0, (void *)(uintptr_t)a->a1,
+                            (uint32_t *)(uintptr_t)a->a2);
+    case 44:
+        return linux_sendto((int)a->a0, (const void *)(uintptr_t)a->a1,
+                            (size_t)a->a2, (int)a->a3,
+                            (const void *)(uintptr_t)a->a4, (uint32_t)a->a5);
+    case 45:
+        return linux_recvfrom((int)a->a0, (void *)(uintptr_t)a->a1,
+                              (size_t)a->a2, (int)a->a3,
+                              (void *)(uintptr_t)a->a4, (uint32_t *)(uintptr_t)a->a5);
+    case 46:
+        return linux_sendmsg((int)a->a0, (const void *)(uintptr_t)a->a1, (int)a->a2);
+    case 47:
+        return linux_recvmsg((int)a->a0, (void *)(uintptr_t)a->a1, (int)a->a2);
+    case 49:
+        return linux_bind((int)a->a0, (const void *)(uintptr_t)a->a1, (uint32_t)a->a2);
+    case 50:
+        return linux_listen((int)a->a0, (int)a->a1);
+    case 51:
+        return linux_getsockname((int)a->a0, (void *)(uintptr_t)a->a1,
+                                 (uint32_t *)(uintptr_t)a->a2);
+    case 52:
+        return linux_getpeername((int)a->a0, (void *)(uintptr_t)a->a1,
+                                 (uint32_t *)(uintptr_t)a->a2);
+    case 54:
+        return linux_setsockopt((int)a->a0, (int)a->a1, (int)a->a2,
+                                (const void *)(uintptr_t)a->a3, (uint32_t)a->a4);
+    case 55:
+        return linux_getsockopt((int)a->a0, (int)a->a1, (int)a->a2,
+                                (void *)(uintptr_t)a->a3, (uint32_t *)(uintptr_t)a->a4);
+
+    /* Process syscalls (fork/clone/vfork: 56-58) */
+    case 56:
+        return linux_clone((unsigned long)a->a0, (void *)(uintptr_t)a->a1,
+                           (int *)(uintptr_t)a->a2, (int *)(uintptr_t)a->a3,
+                           (unsigned long)a->a4);
+    case 57:
+        return linux_fork();
+    case 58:
+        return linux_vfork();
+
+    /* Signal syscalls (14 and 15 - rt_sigprocmask and rt_sigreturn) */
+    case 14:
+        return linux_rt_sigprocmask((int)a->a0, (const void *)(uintptr_t)a->a1,
+                                    (void *)(uintptr_t)a->a2, (size_t)a->a3);
+    case 15:
+        return linux_rt_sigreturn();
+
+    /* IPC syscalls (pipe, epoll) */
+    case 22:
+        return linux_pipe((int *)(uintptr_t)a->a0);
+    case 232:
+        return linux_epoll_wait((int)a->a0, (void *)(uintptr_t)a->a1,
+                                (int)a->a2, (int)a->a3);
+    case 233:
+        return linux_epoll_ctl((int)a->a0, (int)a->a1, (int)a->a2,
+                               (void *)(uintptr_t)a->a3);
+    case 288:
+        return linux_accept4((int)a->a0, (void *)(uintptr_t)a->a1,
+                             (uint32_t *)(uintptr_t)a->a2, (int)a->a3);
+    case 291:
+        return linux_epoll_create1((int)a->a0);
+    case 293:
+        return linux_pipe2((int *)(uintptr_t)a->a0, (int)a->a1);
+
     default:
         return -LINUX_ENOSYS;
     }

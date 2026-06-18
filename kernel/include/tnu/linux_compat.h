@@ -75,4 +75,48 @@ long linux_syscall_entry(uint64_t nr, uint64_t a0, uint64_t a1, uint64_t a2,
 long linux_syscall_dispatch(const struct linux_syscall_args *args);
 const char *linux_syscall_name(uint64_t nr);
 
+/* Linux networking (socket syscalls) */
+void linux_net_init(void);
+long linux_socket(int domain, int type, int protocol);
+long linux_bind(int sockfd, const void *addr, uint32_t addrlen);
+long linux_connect(int sockfd, const void *addr, uint32_t addrlen);
+long linux_listen(int sockfd, int backlog);
+long linux_accept(int sockfd, void *addr, uint32_t *addrlen);
+long linux_accept4(int sockfd, void *addr, uint32_t *addrlen, int flags);
+long linux_sendto(int sockfd, const void *buf, size_t len, int flags,
+                  const void *dest_addr, uint32_t addrlen);
+long linux_recvfrom(int sockfd, void *buf, size_t len, int flags,
+                    void *src_addr, uint32_t *addrlen);
+long linux_sendmsg(int sockfd, const void *msg, int flags);
+long linux_recvmsg(int sockfd, void *msg, int flags);
+long linux_getsockname(int sockfd, void *addr, uint32_t *addrlen);
+long linux_getpeername(int sockfd, void *addr, uint32_t *addrlen);
+long linux_setsockopt(int sockfd, int level, int optname, const void *optval,
+                      uint32_t optlen);
+long linux_getsockopt(int sockfd, int level, int optname, void *optval,
+                      uint32_t *optlen);
+
+/* Linux IPC (pipe, epoll) */
+void linux_ipc_init(void);
+long linux_pipe(int *pipefd);
+long linux_pipe2(int *pipefd, int flags);
+long linux_epoll_create(int size);
+long linux_epoll_create1(int flags);
+long linux_epoll_ctl(int epfd, int op, int fd, void *event);
+long linux_epoll_wait(int epfd, void *events, int maxevents, int timeout);
+
+/* Linux signals */
+void linux_signal_init(void);
+long linux_rt_sigaction(int signum, const void *act, void *oldact, size_t sigsetsize);
+long linux_rt_sigprocmask(int how, const void *set, void *oldset, size_t sigsetsize);
+long linux_rt_sigreturn(void);
+long linux_sigaltstack(const void *ss, void *old_ss);
+
+/* Linux process (fork/clone) */
+void linux_proc_init(void);
+long linux_fork(void);
+long linux_vfork(void);
+long linux_clone(unsigned long flags, void *stack, int *parent_tid,
+                 int *child_tid, unsigned long tls);
+
 #endif

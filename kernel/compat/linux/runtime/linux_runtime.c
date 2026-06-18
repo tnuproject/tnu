@@ -36,6 +36,9 @@ void linux_compat_init(void)
     mkdir_if_missing("/usr/linux/dev", 0755);
     mkdir_if_missing("/usr/linux/tmp", 01777);
 
+    /* Create symlinks for common Linux paths inside the chroot */
+    /* These will be resolved by the linux_resolve_path function */
+
     struct vfs_node *profile = vfs_lookup("/usr/linux/README.TNU", "/");
     if (!profile) {
         static const char msg[] =

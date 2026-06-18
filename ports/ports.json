@@ -1,42 +1,20 @@
 {
   "ports": [
     {
-      "name": "nano",
-      "kind": "editor",
-      "upstream": "GNU nano",
-      "source": "https://www.nano-editor.org/dist/v9/nano-9.0.tar.xz",
-      "license": "GPL-3.0-or-later",
-      "target_binary": "/bin/nano",
+      "name": "alpine-chroot",
+      "kind": "compat",
+      "upstream": "Alpine Linux",
+      "source": "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/alpine-minirootfs-3.20.0-x86_64.tar.gz",
+      "license": "MIT",
+      "target_binary": "/usr/linux/bin/busybox",
       "required_features": [
-        "exec",
-        "termios",
-        "signals",
-        "directory_iteration",
-        "locale_minimal"
+        "linux_compat_exec",
+        "linux_compat_syscalls"
       ],
       "dependencies": [
-        "libc",
-        "ncurses-or-tiny-termcap"
-      ]
-    },
-    {
-      "name": "doom",
-      "kind": "game",
-      "upstream": "doomgeneric",
-      "source": "https://github.com/ozkl/doomgeneric.git",
-      "license": "GPL-2.0-or-later",
-      "target_binary": "/usr/games/doom",
-      "required_features": [
-        "exec",
-        "framebuffer_userspace",
-        "keyboard_events",
-        "monotonic_time",
-        "filesystem_read",
-        "heap_syscall"
+        "linux_compat"
       ],
-      "dependencies": [
-        "libc"
-      ]
+      "notes": "Alpine Linux minirootfs for Linux ABI compatibility. nano and freedoom are installed via apk."
     },
     {
       "name": "fastfetch",
