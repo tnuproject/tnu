@@ -260,6 +260,10 @@ void arch_entry(uint32_t magic, uintptr_t mbi_addr)
 
     boot_begin("Linux compatibility");
     linux_compat_init();
+    linux_net_init();
+    linux_ipc_init();
+    linux_signal_init();
+    linux_proc_init();
     boot_ok();
 
     boot_begin("Network stack");

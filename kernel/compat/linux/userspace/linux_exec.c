@@ -279,6 +279,7 @@ long linux_run_binary(const char *path, int argc, char **argv)
     const char *arg_values[LINUX_MAX_ARGS];
 
     if (!path) {
+        log_warn("linux", "linux_run_binary: path is NULL");
         return -LINUX_EFAULT;
     }
     if (argc <= 0) {
@@ -290,8 +291,10 @@ long linux_run_binary(const char *path, int argc, char **argv)
 
     struct vfs_node *node = linux_lookup_path(path, resolved, sizeof(resolved));
     if (!node || node->type != VFS_NODE_FILE) {
+        log_warn("linux", "linux_run_binary: not found: %s -> %s", path, resolved);
         return -LINUX_ENOENT;
     }
+    log_info("linux", "linux_run_binary: found %s at %s (size=%lld)", path, resolved, (long long)node->size);
 
     for (int i = 0; i < argc; i++) {
         const char *src = argv && argv[i] ? argv[i] : (i == 0 ? resolved : "");
@@ -302,8 +305,11 @@ long linux_run_binary(const char *path, int argc, char **argv)
 
     struct linux_loaded_image main_img;
     if (load_linux_image(node, LINUX_PIE_BASE, &main_img) < 0) {
+        log_warn("linux", "linux_run_binary: failed to load main image: %s", resolved);
         return -LINUX_ENOEXEC;
     }
+    log_info("linux", "linux_run_binary: loaded main image, entry=%p, bias=%p",
+             (void *)(uintptr_t)main_img.entry, (void *)(uintptr_t)main_img.load_bias);
 
     struct linux_loaded_image interp_img;
     struct linux_loaded_image *interp = NULL;
@@ -311,12 +317,15 @@ long linux_run_binary(const char *path, int argc, char **argv)
         return -LINUX_ENOEXEC;
     }
     if (interp_path[0]) {
+        log_info("linux", "linux_run_binary: looking for interpreter: %s", interp_path);
         struct vfs_node *interp_node = linux_lookup_path(interp_path, interp_resolved,
                                                         sizeof(interp_resolved));
         if (!interp_node || load_linux_image(interp_node, LINUX_INTERP_BASE, &interp_img) < 0) {
-            log_warn("linux", "interpreter not available: %s", interp_path);
+            log_warn("linux", "interpreter not available: %s (resolved: %s)", interp_path, interp_resolved);
             return -LINUX_ENOENT;
         }
+        log_info("linux", "linux_run_binary: loaded interpreter %s, entry=%p",
+                 interp_resolved, (void *)(uintptr_t)interp_img.entry);
         interp = &interp_img;
     }
 
