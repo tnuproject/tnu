@@ -1550,7 +1550,7 @@ static int parse_priority_value(const char *text, const char *key, int fallback)
 static void command_priority_read(int *linux_weight, int *tnu_weight)
 {
     char buf[256];
-    int linux_env_weight = 0;
+    int linux_env_weight = 99999;
     int tnu = 1;
     if (read_node_text("/etc/priority", buf, sizeof(buf)) >= 0) {
         linux_env_weight = parse_priority_value(buf, "linux", linux_env_weight);
@@ -1583,6 +1583,26 @@ static bool tnu_command_always_priority(const char *name)
 static bool path_is_linux_root(const char *path)
 {
     return path && strncmp(path, "/usr/linux/", 11) == 0;
+}
+
+static bool linux_busybox_applet_candidate(const char *name)
+{
+    static const char *const applets[] = {
+        "ash", "awk", "basename", "cat", "chmod", "chown", "clear", "cp",
+        "date", "dd", "df", "dirname", "dmesg", "du", "echo", "egrep",
+        "env", "false", "fgrep", "find", "grep", "head", "hostname", "id",
+        "ln", "ls", "mkdir", "mktemp", "mount", "mv", "pidof", "ping",
+        "printf", "ps", "pwd", "rm", "rmdir", "sed", "sh", "sleep", "sort",
+        "stat", "sync", "tail", "tar", "test", "touch", "tr", "true",
+        "uname", "vi", "wget", "which", "whoami", "xargs",
+    };
+    const char *base = command_basename(name);
+    for (size_t i = 0; i < sizeof(applets) / sizeof(applets[0]); i++) {
+        if (strcmp(base, applets[i]) == 0) {
+            return true;
+        }
+    }
+    return false;
 }
 
 static bool shell_can_execute_node(struct vfs_node *node)
@@ -1687,6 +1707,19 @@ static struct vfs_node *resolve_linux_command_node(const char *command, char *li
             path++;
         }
     }
+
+    /* Alpine/BusyBox rootfs images often expose common commands as symlinks
+     * to /bin/busybox. TFS does not preserve symlinks yet, and the rootfs
+     * packaging step may delete absolute symlinks, so fall back to the BusyBox
+     * dispatcher while preserving argv[0] as the requested applet name. */
+    struct vfs_node *busybox = linux_busybox_applet_candidate(command) ?
+        vfs_lookup("/usr/linux/bin/busybox", "/") : NULL;
+    if (busybox && busybox->type == VFS_NODE_FILE) {
+        ksnprintf(linux_path, linux_path_size, "/bin/busybox");
+        ksnprintf(host_path, host_path_size, "/usr/linux/bin/busybox");
+        return busybox;
+    }
+
     return NULL;
 }
 

@@ -94,6 +94,27 @@ static struct vfs_node *linux_lookup_path(const char *path, char *resolved, size
         if (linux_node) {
             return linux_node;
         }
+        if (strcmp(path, "/lib/ld-musl-x86_64.so.1") == 0) {
+            ksnprintf(resolved, resolved_size, "/usr/linux/lib/libc.musl-x86_64.so.1");
+            linux_node = vfs_lookup(resolved, "/");
+            if (linux_node) {
+                return linux_node;
+            }
+        }
+        if (strcmp(path, "/lib64/ld-linux-x86-64.so.2") == 0 ||
+            strcmp(path, "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2") == 0) {
+            static const char *const glibc_ld_paths[] = {
+                "/usr/linux/lib64/ld-linux-x86-64.so.2",
+                "/usr/linux/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+            };
+            for (size_t i = 0; i < sizeof(glibc_ld_paths) / sizeof(glibc_ld_paths[0]); i++) {
+                ksnprintf(resolved, resolved_size, "%s", glibc_ld_paths[i]);
+                linux_node = vfs_lookup(resolved, "/");
+                if (linux_node) {
+                    return linux_node;
+                }
+            }
+        }
     }
     struct vfs_node *node = vfs_lookup(path, proc ? proc->cwd : "/");
     if (node) {
