@@ -455,19 +455,28 @@ static int list_disks(void)
 static int write_all_at(int fd, uint64_t offset, const void *buf, size_t size)
 {
     if (lseek(fd, (off_t)offset, SEEK_SET) < 0) {
+        printf("  ERROR: lseek failed at byte offset %llu: %s\n",
+               (unsigned long long)offset, strerror(errno));
         return -1;
     }
     const uint8_t *p = (const uint8_t *)buf;
-    while (size) {
-        ssize_t n = write(fd, p, size);
+    size_t remaining = size;
+    while (remaining) {
+        ssize_t n = write(fd, p, remaining);
         if (n <= 0) {
+            uint64_t failed_at = offset + (uint64_t)(size - remaining);
+            printf("  ERROR: write failed at byte offset %llu (wanted %llu more bytes): %s\n",
+                   (unsigned long long)failed_at,
+                   (unsigned long long)remaining,
+                   strerror(errno));
             return -1;
         }
         p += (size_t)n;
-        size -= (size_t)n;
+        remaining -= (size_t)n;
     }
     return 0;
 }
+
 
 static int write_protective_mbr(int fd, uint64_t disk_size_sectors)
 {
@@ -483,8 +492,13 @@ static int write_protective_mbr(int fd, uint64_t disk_size_sectors)
     memcpy(&part[8], &start_lba, sizeof(start_lba));
     memcpy(&part[12], &size, sizeof(size));
 
-    return write_all_at(fd, 0, mbr, sizeof(mbr));
+    if (write_all_at(fd, 0, mbr, sizeof(mbr)) < 0) {
+        printf("  ERROR: failed writing protective MBR at LBA 0.\n");
+        return -1;
+    }
+    return 0;
 }
+
 
 static void build_gpt_entries(gpt_entry_t entries[GPT_ENTRY_COUNT], uint64_t disk_size_sectors, root_fs_t root_fs)
 {
@@ -532,8 +546,15 @@ static int write_gpt_header(int fd, uint64_t disk_size_sectors, int primary,
     header.header_crc32 = 0;
     header.header_crc32 = crc32(&header, GPT_HEADER_SIZE);
 
-    return write_all_at(fd, header.my_lba * SECTOR_SIZE, &header, sizeof(header));
+    if (write_all_at(fd, header.my_lba * SECTOR_SIZE, &header, sizeof(header)) < 0) {
+        printf("  ERROR: failed writing %s GPT header at LBA %llu.\n",
+               primary ? "primary" : "backup",
+               (unsigned long long)header.my_lba);
+        return -1;
+    }
+    return 0;
 }
+
 
 static int flush_disk_writes(int fd)
 {
@@ -559,20 +580,37 @@ static int create_gpt_partitions(int fd, uint64_t disk_size_sectors, root_fs_t r
     gpt_entry_t entries[GPT_ENTRY_COUNT];
     build_gpt_entries(entries, disk_size_sectors, root_fs);
 
-    printf("  Creating protective MBR...\n");
-    if (write_protective_mbr(fd, disk_size_sectors) < 0) return -1;
+        printf("  Creating protective MBR...\n");
+    if (write_protective_mbr(fd, disk_size_sectors) < 0) {
+        printf("  ERROR: GPT step failed: protective MBR.\n");
+        return -1;
+    }
 
     printf("  Writing primary GPT entries...\n");
-    if (write_all_at(fd, 2ULL * SECTOR_SIZE, entries, sizeof(entries)) < 0) return -1;
+    if (write_all_at(fd, 2ULL * SECTOR_SIZE, entries, sizeof(entries)) < 0) {
+        printf("  ERROR: GPT step failed: primary GPT entries at LBA 2.\n");
+        return -1;
+    }
 
     printf("  Writing backup GPT entries...\n");
-    if (write_all_at(fd, (disk_size_sectors - 33ULL) * SECTOR_SIZE, entries, sizeof(entries)) < 0) return -1;
+    if (write_all_at(fd, (disk_size_sectors - 33ULL) * SECTOR_SIZE, entries, sizeof(entries)) < 0) {
+        printf("  ERROR: GPT step failed: backup GPT entries at LBA %llu.\n",
+               (unsigned long long)(disk_size_sectors - 33ULL));
+        return -1;
+    }
 
     printf("  Writing primary GPT header...\n");
-    if (write_gpt_header(fd, disk_size_sectors, 1, entries) < 0) return -1;
+    if (write_gpt_header(fd, disk_size_sectors, 1, entries) < 0) {
+        printf("  ERROR: GPT step failed: primary GPT header.\n");
+        return -1;
+    }
 
     printf("  Writing backup GPT header...\n");
-    if (write_gpt_header(fd, disk_size_sectors, 0, entries) < 0) return -1;
+    if (write_gpt_header(fd, disk_size_sectors, 0, entries) < 0) {
+        printf("  ERROR: GPT step failed: backup GPT header.\n");
+        return -1;
+    }
+
 
     flush_disk_writes(fd);
     printf("  GPT created: BIOS boot + ESP + %s root.\n", root_fs_name(root_fs));

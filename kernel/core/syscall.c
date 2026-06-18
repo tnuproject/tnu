@@ -840,9 +840,17 @@ static long sys_lseek(int fd, int64_t offset, int whence)
     case 1:
         base = (int64_t)file->offset;
         break;
-    case 2:
+        case 2:
+        if (file->node->type == VFS_NODE_DEV) {
+            const struct block_device_info *bdev = block_device_find(file->node->name);
+            if (bdev) {
+                base = (int64_t)(bdev->sector_count * (uint64_t)(bdev->sector_size ? bdev->sector_size : 512u));
+                break;
+            }
+        }
         base = (int64_t)file->node->size;
         break;
+
     default:
         return -1;
     }
