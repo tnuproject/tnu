@@ -217,8 +217,9 @@ static uintptr_t build_linux_stack(const struct linux_loaded_image *main_img,
         "TERM=linux",
         "SHELL=/bin/sh",
         "USER=root",
+        "PWD=/",
     };
-    int envc = 5;
+    int envc = 6;
     uintptr_t sp = LINUX_STACK_TOP;
     uint64_t argv_ptrs[LINUX_MAX_ARGS];
     uint64_t env_ptrs[LINUX_MAX_ENV];
@@ -404,9 +405,11 @@ long linux_run_binary(const char *path, int argc, char **argv)
         strncpy(proc->name, saved_name, PROCESS_NAME_MAX);
         proc->name[PROCESS_NAME_MAX] = '\0';
         proc->exit_code = rc;
-        if (proc->state == PROCESS_ZOMBIE) {
-            proc->state = PROCESS_RUNNING;
-        }
+        /* Ensure the shell process is always RUNNING after Linux exec returns.
+         * This fixes the 10-15 second delay on real hardware when returning
+         * from a Linux command to the shell. The process may have been left
+         * in ZOMBIE state by the previous execution. */
+        proc->state = PROCESS_RUNNING;
     }
     return rc;
 }

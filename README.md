@@ -33,13 +33,11 @@ Also, we are NOT affiliated with Linux. Our kernel is developed independently an
 Install the required tools on Linux or WSL:
 
 - "gcc" or "x86_64-elf-gcc"
-- "grub-mkrescue"
-- "grub-mkstandalone"
-- "grub-file"
+- "grub-pc-bin"
 - "xorriso"
-- "isoinfo"
-- "mtools" / "mformat"
-- "qemu-system-x86_64"
+- "genisoimage"
+- "mtools"
+- "qemu-system"
 - "python3"
 
 **Build**
