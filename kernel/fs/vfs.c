@@ -52,8 +52,20 @@ static bool node_is_runtime_fs(struct vfs_node *node)
         if (n->type == VFS_NODE_PROC || n->type == VFS_NODE_DEV) {
             return true;
         }
+        bool volatile_name =
+            strcmp(n->name, "proc") == 0 ||
+            strcmp(n->name, "dev") == 0 ||
+            strcmp(n->name, "sys") == 0 ||
+            strcmp(n->name, "run") == 0 ||
+            strcmp(n->name, "tmp") == 0;
         if (n->parent == root_node &&
-            (strcmp(n->name, "proc") == 0 || strcmp(n->name, "dev") == 0)) {
+            volatile_name) {
+            return true;
+        }
+        if (volatile_name &&
+            n->parent && strcmp(n->parent->name, "linux") == 0 &&
+            n->parent->parent && strcmp(n->parent->parent->name, "usr") == 0 &&
+            n->parent->parent->parent == root_node) {
             return true;
         }
     }
