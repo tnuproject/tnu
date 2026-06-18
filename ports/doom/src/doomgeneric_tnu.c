@@ -326,6 +326,37 @@ static const char *wad_for_version(int ver)
     }
 }
 
+static int readable_file(const char *path)
+{
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        return 0;
+    }
+    close(fd);
+    return 1;
+}
+
+static const char *default_wad_path(void)
+{
+    static const char *const candidates[] = {
+        "/usr/share/games/doom/Doom1.WAD",
+        "/usr/share/games/doom/doom1.wad",
+        "/usr/share/games/doom/DOOM1.WAD",
+        "/usr/share/games/doom/freedoom1.wad",
+        "/usr/share/games/doom/freedoom2.wad",
+        "/usr/linux/usr/share/games/doom/Doom1.WAD",
+        "/usr/linux/usr/share/games/doom/doom1.wad",
+        "/usr/linux/usr/share/games/doom/freedoom1.wad",
+        "/usr/linux/usr/share/games/doom/freedoom2.wad",
+    };
+    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
+        if (readable_file(candidates[i])) {
+            return candidates[i];
+        }
+    }
+    return "/usr/share/games/doom/Doom1.WAD";
+}
+
 static int has_iwad_argument(int argc, char **argv)
 {
     for (int i = 1; i < argc; i++) {
@@ -342,8 +373,8 @@ int main(int argc, char **argv)
      * Usage: doom [/path/to/file.WAD] [-iwad /path/to/file.WAD] [other args]
      * If the first argument (argv[1]) ends with .WAD/.wad and is not preceded by -iwad,
      * treat it as the IWAD path.  Otherwise use the default shareware WAD. */
-    const char *wad_path = has_iwad_argument(argc, argv) ? NULL
-                                                         : "/usr/share/games/doom/Doom1.WAD";
+    const char *wad_path = has_iwad_argument(argc, argv) ? NULL : default_wad_path();
+    int direct_wad_already_present = 0;
     static char *new_argv[64];
     int new_argc = 0;
 
@@ -362,7 +393,9 @@ int main(int argc, char **argv)
                 (strcmp(argv[i] + len - 4, ".WAD") == 0 || 
                  strcmp(argv[i] + len - 4, ".wad") == 0)) {
                 /* User provided a WAD path directly: doom /path/to/file.WAD */
-                wad_path = argv[i];
+                wad_path = NULL;
+                direct_wad_already_present = 1;
+                new_argv[new_argc++] = argv[i];
                 /* Don't add this to new_argv — we'll inject it as -iwad below */
                 continue;
             }
@@ -372,15 +405,18 @@ int main(int argc, char **argv)
         }
     }
 
-    if (wad_path) {
-        /* Inject -iwad <path> right after argv[0] */
-        if (new_argc + 2 <= 63) {
-            /* shift everything after argv[0] up by 2 */
+    if (wad_path && !direct_wad_already_present) {
+        if (!readable_file(wad_path)) {
+            fprintf(stderr, "doom: WAD not found: %s\n", wad_path);
+            fprintf(stderr, "doom: try doom /usr/share/games/doom/Doom1.WAD\n");
+            return 1;
+        }
+        /* Use the direct WAD argument form, same as: doom /path/to/file.WAD */
+        if (new_argc + 1 <= 63) {
             for (int i = new_argc - 1; i >= 1; i--)
-                new_argv[i + 2] = new_argv[i];
-            new_argv[1] = (char *)"-iwad";
-            new_argv[2] = (char *)wad_path;
-            new_argc += 2;
+                new_argv[i + 1] = new_argv[i];
+            new_argv[1] = (char *)wad_path;
+            new_argc += 1;
         }
     }
 

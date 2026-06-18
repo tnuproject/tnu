@@ -110,7 +110,7 @@ LINUX_IWL_FW_SRC := $(shell find rootfs/lib/firmware rootfs/lib/firmware/iwlwifi
 
 .PHONY: all kernel userspace iso run clean rootfs version-files permission-tests verify verify-kernel verify-iso \
 	firmware-iwlwifi ports-preflight ports-fetch ports-fetch-core \
-	fastfetch nano doom ports-fetch-freedoom \
+	nano doom ports-fetch-freedoom \
 	linux-chroot-fetch linux-chroot linux-chroot-packages
 
 ifeq ($(WITH_LINUX_CHROOT),1)
@@ -124,10 +124,8 @@ kernel: $(KERNEL)
 userspace: $(USER_LIB) $(BUILD)/user/init $(BUILD)/user/tsh \
 	$(BUILD)/user/tnu-utils $(BUILD)/user/login $(BUILD)/user/passwd \
 	$(BUILD)/user/useradd $(BUILD)/user/userdel $(BUILD)/user/sysinstall \
-	$(BUILD)/user/bootd $(BUILD)/user/fastfetch $(BUILD)/user/nano \
+	$(BUILD)/user/bootd $(BUILD)/user/nano \
 	$(BUILD)/user/doom
-
-fastfetch: $(BUILD)/user/fastfetch $(BUILD)/user/fastfetch
 
 nano: $(BUILD)/user/nano
 
@@ -242,12 +240,6 @@ $(BUILD)/user/dhclient: $(BUILD)/obj/userspace/sbin/dhclient.o $(USER_LIB) $(USE
 	@mkdir -p $(dir $@)
 	$(CC) $(USER_CFLAGS) $(USER_LDFLAGS) -o $@ $(USER_CRT) $< $(USER_LIB) -lgcc
 
-$(BUILD)/user/fastfetch: $(USER_LIB) $(USER_CRT) userspace/linker.ld \
-	$(shell find ports/fastfetch/src -type f 2>/dev/null)
-	$(MAKE) -C ports/fastfetch CC="$(CC)" \
-		USER_CRT="$(abspath $(USER_CRT))" \
-		USER_LIB="$(abspath $(USER_LIB))"
-
 $(BUILD)/user/nano: $(USER_LIB) $(USER_CRT) userspace/linker.ld \
 	$(shell find ports/nano/src -type f 2>/dev/null)
 	$(MAKE) -C ports/nano CC="$(CC)" \
@@ -281,7 +273,6 @@ rootfs: userspace version-files firmware-iwlwifi
 	cp $(BUILD)/user/userdel $(BUILD)/rootfs/sbin/userdel
 	cp $(BUILD)/user/sysinstall $(BUILD)/rootfs/sbin/sysinstall
 	for name in $(COREUTIL_NAMES); do cp $(BUILD)/user/tnu-utils $(BUILD)/rootfs/bin/$$name; done
-	cp $(BUILD)/user/fastfetch $(BUILD)/rootfs/usr/bin/fastfetch
 	cp $(BUILD)/user/nano $(BUILD)/rootfs/usr/bin/nano
 	cp $(BUILD)/user/doom $(BUILD)/rootfs/usr/games/doom
 	cp -a $(BUILD)/firmware/iwlwifi/. $(BUILD)/rootfs/lib/firmware/iwlwifi/
@@ -414,8 +405,8 @@ $(LINUX_CHROOT_DIR)/bin/busybox: $(LINUX_CHROOT_TARBALL)
 	@touch $@
 	@echo "linux-chroot: Alpine Linux chroot ready at $(LINUX_CHROOT_DIR)"
 
-# Install packages into the Alpine chroot. Native nano and fastfetch are TNU
-# ports, not Alpine packages. Freedoom is optional because it lives in community
+# Install optional packages into the Alpine chroot. Native nano is a TNU port.
+# Freedoom is optional because it lives in community
 # and should not make the OS build fail when Alpine mirrors are temporarily flaky.
 linux-chroot-packages: $(LINUX_CHROOT_DIR)/bin/busybox
 	@echo "linux-chroot: Installing required Linux packages: $(LINUX_CHROOT_REQUIRED_PACKAGES)"
@@ -427,7 +418,7 @@ linux-chroot-packages: $(LINUX_CHROOT_DIR)/bin/busybox
 		printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > $(LINUX_CHROOT_DIR)/etc/resolv.conf; \
 	fi
 	@if [ -z "$(strip $(LINUX_CHROOT_REQUIRED_PACKAGES))" ]; then \
-		echo "linux-chroot: no required Linux packages; native ports provide nano and fastfetch."; \
+		echo "linux-chroot: no required Linux packages; native ports provide nano."; \
 	elif command -v apk >/dev/null 2>&1; then \
 		echo "linux-chroot: Running host apk --root add $(LINUX_CHROOT_REQUIRED_PACKAGES)..."; \
 		ok=0; n=1; while [ $$n -le $(APK_RETRIES) ]; do \
@@ -476,7 +467,6 @@ linux-chroot-packages: $(LINUX_CHROOT_DIR)/bin/busybox
 		fi; \
 	fi
 	@echo "linux-chroot: Required Linux packages installed."
-	@echo "linux-chroot: Native fastfetch is at /usr/bin/fastfetch"
 	@echo "linux-chroot: Freedoom WAD files are at /usr/linux/usr/share/games/doom/"
 
 linux-chroot: $(LINUX_CHROOT_DIR)/bin/busybox

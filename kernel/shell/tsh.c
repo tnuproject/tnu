@@ -1628,7 +1628,7 @@ static bool tnu_command_always_priority(const char *name)
     static const char *const names[] = {
         "sysfetch", "hostname", "login", "useradd", "userdel", "passwd",
         "init", "sh", "tsh", "uname", "tirux", "shutdown", "reboot",
-        "sync", "keymap", "timezone", "layout", "nano", "fastfetch",
+        "sync", "keymap", "timezone", "layout", "nano", "ls",
         "ping", "wifi", "curl", "wget", "dns", "net", "tls", "driver",
         "linuxdrv", "ifconfig", "route", "netstat", "dhcp",
     };
@@ -1734,11 +1734,6 @@ static struct vfs_node *resolve_linux_command_node(const char *command, char *li
             ksnprintf(host_path, host_path_size, "%s", command);
             ksnprintf(linux_path, linux_path_size, "%s", command + 10);
             return vfs_lookup(host_path, process_current()->cwd);
-        }
-        if (command[0] == '/') {
-            ksnprintf(linux_path, linux_path_size, "%s", command);
-            ksnprintf(host_path, host_path_size, "/usr/linux%s", command);
-            return vfs_lookup(host_path, "/");
         }
         return NULL;
     }

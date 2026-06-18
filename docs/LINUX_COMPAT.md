@@ -20,7 +20,7 @@ The kernel shell (`tsh`) provides a `linux-run` builtin command:
 
 ```
 # linux-run /usr/linux/bin/busybox ls -la
-# fastfetch
+# sysfetch
 ```
 
 Linux commands can also be launched directly from `tsh`. Command resolution is
@@ -31,15 +31,14 @@ linux: 99999
 tnu: 1
 ```
 
-Higher weight wins. With the default above, typing `ls` prefers
-`/usr/linux/bin/ls` or `/usr/linux/usr/bin/ls` over Tiramisu's applet when that
-Linux command exists. Explicit paths are respected, so `/bin/ls` still means the
-Tiramisu path and `/usr/linux/bin/ls` still means the Linux path.
+Higher weight wins for ordinary command names. Explicit paths are respected, so
+`/bin/ls` still means the Tiramisu path and `/usr/linux/bin/ls` still means the
+Linux path.
 
 Tiramisu branding and system-management commands always keep native priority:
 `sysfetch`, `hostname`, `login`, `useradd`, `userdel`, `passwd`, `init`, `sh`,
 `tsh`, `uname`, `tirux`, `shutdown`, `reboot`, `sync`, `keymap`, `timezone`,
-`layout`, `nano`, `fastfetch`, and networking/driver commands such as `ping`, `wifi`,
+`layout`, `nano`, `ls`, and networking/driver commands such as `ping`, `wifi`,
 `curl`, `wget`, `dns`, `net`, `tls`, `driver`, `linuxdrv`, `ifconfig`, `route`,
 `netstat`, and `dhcp`.
 
@@ -53,8 +52,8 @@ make linux-chroot-packages # Installs optional Linux packages such as freedoom
 ```
 
 `make all` runs both targets before building the ISO. Native TNU ports provide
-tools such as `nano` and `fastfetch`; the Linux chroot remains for Linux ABI
-testing and optional Linux packages.
+tools such as `nano`; the Linux chroot remains for Linux ABI testing and
+optional Linux packages.
 
 The chroot is installed at `/usr/linux` in the TNU rootfs.
 
@@ -64,14 +63,6 @@ Nano is a native Tiramisu applet and does not depend on the Linux compat layer:
 
 ```
 # nano /path/to/file.txt
-```
-
-### Running Fastfetch
-
-Fastfetch is a native TNU port of the upstream Fastfetch project:
-
-```
-# fastfetch
 ```
 
 ### Running Doom (Freedoom)
