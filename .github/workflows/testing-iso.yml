@@ -23,7 +23,7 @@ jobs:
           sudo apt install -y build-essential nasm xorriso grub-pc-bin grub-common mtools genisoimage
 
       - name: Build
-        run: make all
+        run: sudo make all
 
       - name: Find ISO
         run: |
