@@ -102,8 +102,8 @@ static const struct shell_builtin_doc shell_builtin_docs[] = {
       "Run a TSH script without requiring executable mode." },
     { "sudo", "sudo COMMAND [ARG...]",
       "Authenticate as root and run COMMAND with uid/gid 0, preserving argv." },
-    { "sysinstall", "sysinstall",
-      "Run the text installer. Requires root and a loaded install image." },
+    { "sysinstall", "sysinstall [OPTIONS]",
+      "Run /sbin/sysinstall. Use --raw-image only for unsafe live-image cloning." },
     { "driver", "driver list|stats",
       "Inspect kernel driver providers, including Linux Driver Runtime backends." },
     { "linuxdrv", "linuxdrv load MODULE|logs|modules|stats",
@@ -1260,12 +1260,33 @@ static int cmd_set(int argc, char **argv)
 
 static int cmd_sysinstall(int argc, char **argv)
 {
-    (void)argc;
-    (void)argv;
     if (!process_current() || process_current()->uid != 0) {
         kprintf("sysinstall: permission denied; try sudo sysinstall\n");
         return 1;
     }
+
+    if (argc < 2 || strcmp(argv[1], "--raw-image") != 0) {
+        struct vfs_node *installer = vfs_lookup("/sbin/sysinstall", process_current()->cwd);
+        if (installer && shell_can_execute_node(installer)) {
+            long rc = syscall_dispatch(SYS_EXEC, (uint64_t)"/sbin/sysinstall",
+                                       (uint64_t)argc, (uint64_t)argv,
+                                       0, 0, 0);
+            if (rc >= 0) {
+                return (int)rc;
+            }
+            kprintf("sysinstall: failed to execute /sbin/sysinstall (%ld).\n", rc);
+            return 126;
+        }
+        kprintf("sysinstall: /sbin/sysinstall is missing or not executable.\n");
+        kprintf("sysinstall: refusing unsafe raw image install by default.\n");
+        kprintf("sysinstall: rebuild the rootfs or use sysinstall --raw-image knowingly.\n");
+        return 1;
+    }
+
+    kprintf("sysinstall: WARNING: --raw-image clones the live ISO image to disk.\n");
+    kprintf("sysinstall: this is not a real disk bootloader installation and may hang at GRUB on hardware.\n");
+    kprintf("sysinstall: prefer /sbin/sysinstall once native GRUB disk install is available.\n\n");
+
     char answer[LINE_MAX];
     const struct boot_info *boot = boot_info_get();
     const uint8_t *image = (const uint8_t *)boot->install_image.start;
@@ -1274,7 +1295,7 @@ static int cmd_sysinstall(int argc, char **argv)
                               : 0;
 
     kprintf("Tiramisu sysinstall\n");
-    kprintf("Mode: raw boot image install\n");
+    kprintf("Mode: unsafe raw boot image clone\n");
     kprintf("Detected PCI devices: %llu\n", (uint64_t)pci_count());
     if (!image || image_size == 0) {
         kprintf("sysinstall: no install image was loaded by GRUB.\n");
@@ -1347,7 +1368,7 @@ static int cmd_sysinstall(int argc, char **argv)
 
     kprintf("sysinstall: boot image written to %s.\n", disk_path);
     kprintf("Remove the USB media and boot from the target disk.\n");
-    kprintf("After first boot, run passwd to set the root password.\n");
+    kprintf("If this target hangs at a plain GRUB screen, boot the USB again and reinstall with the real installer path.\n");
     return 0;
 }
 
@@ -1356,7 +1377,6 @@ struct command {
     int (*fn)(int argc, char **argv);
 };
 
-static int run_command(int argc, char **argv, const char *stdin_data);
 static int run_tokens(int argc, char **argv);
 static int run_shell_script(struct vfs_node *node, int argc, char **argv,
                             bool require_exec, bool force_script);

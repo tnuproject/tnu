@@ -27,6 +27,8 @@
 #define GPT_HEADER_SIZE 92
 #define GPT_ENTRY_SIZE 128
 #define GPT_ENTRY_COUNT 128
+#define BIOS_BOOT_START_LBA 34ULL
+#define BIOS_BOOT_END_LBA 2047ULL
 #define ESP_START_LBA 2048ULL
 #define ESP_SIZE_SECTORS (512ULL * 1024ULL) /* 256 MiB */
 #define ROOT_START_LBA (ESP_START_LBA + ESP_SIZE_SECTORS)
@@ -45,6 +47,11 @@
 static const uint8_t GUID_EFI_SYSTEM[16] = {
     0x28, 0x73, 0x2a, 0xc1, 0x1f, 0xf8, 0xd2, 0x11,
     0xba, 0x4b, 0x00, 0xa0, 0xc9, 0x3e, 0xc9, 0x3b
+};
+
+static const uint8_t GUID_BIOS_BOOT[16] = {
+    0x48, 0x61, 0x68, 0x21, 0x49, 0x64, 0x6f, 0x6e,
+    0x74, 0x4e, 0x65, 0x65, 0x64, 0x45, 0x46, 0x49
 };
 
 static const uint8_t GUID_LINUX_FS[16] = {
@@ -516,14 +523,21 @@ static void build_gpt_entries(gpt_entry_t entries[GPT_ENTRY_COUNT], uint64_t dis
 {
     memset(entries, 0, sizeof(gpt_entry_t) * GPT_ENTRY_COUNT);
 
-    gpt_entry_t *esp = &entries[0];
+    gpt_entry_t *bios = &entries[0];
+    memcpy(bios->type_guid, GUID_BIOS_BOOT, 16);
+    generate_guid(bios->partition_guid);
+    bios->start_lba = BIOS_BOOT_START_LBA;
+    bios->end_lba = BIOS_BOOT_END_LBA;
+    gpt_set_name(bios, "BIOS Boot Partition");
+
+    gpt_entry_t *esp = &entries[1];
     memcpy(esp->type_guid, GUID_EFI_SYSTEM, 16);
     generate_guid(esp->partition_guid);
     esp->start_lba = ESP_START_LBA;
     esp->end_lba = ESP_START_LBA + ESP_SIZE_SECTORS - 1;
     gpt_set_name(esp, "EFI System Partition");
 
-    gpt_entry_t *root = &entries[1];
+    gpt_entry_t *root = &entries[2];
     memcpy(root->type_guid, root_fs_guid(root_fs), 16);
     generate_guid(root->partition_guid);
     root->start_lba = ROOT_START_LBA;
@@ -594,15 +608,17 @@ static int create_gpt_partitions(int fd, uint64_t disk_size_sectors, root_fs_t r
     if (write_gpt_header(fd, disk_size_sectors, 0, entries) < 0) return -1;
 
     flush_disk_writes(fd);
-    printf("  GPT created: ESP + %s root.\n", root_fs_name(root_fs));
+    printf("  GPT created: BIOS boot + ESP + %s root.\n", root_fs_name(root_fs));
     return 0;
 }
 
 static void partition_paths(const char *disk, char esp[64], char root[64])
 {
-    /* SATA/ATA naming: /dev/sda -> /dev/sda1 and /dev/sda2. */
-    snprintf(esp, 64, "%s1", disk);
-    snprintf(root, 64, "%s2", disk);
+    /* SATA/ATA naming: /dev/sda -> /dev/sda2 ESP and /dev/sda3 root.
+     * Partition 1 is the GRUB BIOS Boot Partition used on legacy firmware.
+     */
+    snprintf(esp, 64, "%s2", disk);
+    snprintf(root, 64, "%s3", disk);
 }
 
 static int run_command(const char *cmd)
@@ -618,6 +634,59 @@ static int run_command(const char *cmd)
     (void)cmd;
     return -1;
 #endif
+}
+
+static int host_command_available(void)
+{
+#if defined(__unix__) || defined(__linux__)
+    return system("true") == 0;
+#else
+    return 0;
+#endif
+}
+
+static int require_tool(const char *tool)
+{
+    char cmd[128];
+    snprintf(cmd, sizeof(cmd), "command -v %s >/dev/null 2>&1", tool);
+    return run_command(cmd);
+}
+
+static int preflight_install_tools(const install_config_t *cfg)
+{
+    if (cfg->dry_run) {
+        return 0;
+    }
+
+    if (!host_command_available()) {
+        printf("ERROR: this sysinstall build cannot run helper tools yet.\n");
+        printf("       Refusing to modify disks because bootloader installation would be incomplete.\n");
+        printf("       The old raw-image clone is available only as: sysinstall --raw-image\n");
+        printf("       Do not use it for real installs unless you accept possible GRUB-only hangs.\n");
+        return -1;
+    }
+
+    if (cfg->install_esp && require_tool("mkfs.vfat") < 0) {
+        printf("ERROR: mkfs.vfat is required to create the EFI System Partition.\n");
+        return -1;
+    }
+    if (cfg->install_bootloader) {
+        if (require_tool("mount") < 0 || require_tool("umount") < 0 ||
+            require_tool("grub-install") < 0) {
+            printf("ERROR: mount, umount and grub-install are required for a real disk install.\n");
+            return -1;
+        }
+    }
+    if (cfg->root_fs != FS_TFS) {
+        const char *mkfs = cfg->root_fs == FS_EXT2 ? "mkfs.ext2" :
+                           cfg->root_fs == FS_EXT4 ? "mkfs.ext4" : "mkfs.vfat";
+        if (require_tool(mkfs) < 0 || require_tool("cp") < 0) {
+            printf("ERROR: %s and cp are required for %s root installs.\n",
+                   mkfs, root_fs_name(cfg->root_fs));
+            return -1;
+        }
+    }
+    return 0;
 }
 
 static int format_partition_with_tool(const char *part, root_fs_t fs, const char *label)
@@ -706,7 +775,8 @@ static int format_and_install_root(const char *disk_device, const char *root_par
     return install_file_tree_to_root(root_part, root_fs);
 }
 
-static int install_bootloader(const char *esp_part, const install_config_t *cfg)
+static int install_bootloader(const char *disk_device, const char *esp_part,
+                              const install_config_t *cfg)
 {
     if (!cfg->install_bootloader) {
         printf("\nSkipping bootloader installation by configuration.\n");
@@ -716,8 +786,11 @@ static int install_bootloader(const char *esp_part, const install_config_t *cfg)
     printf("\nInstalling bootloader files...\n");
     printf("  ESP: %s\n", esp_part);
 
-    /* Prefer real mounted ESP workflow when available. */
-    char cmd[768];
+    /* Real disk workflow: install both UEFI removable boot and BIOS GRUB.
+     * A plain "GRUB" hang means the BIOS stage was incomplete; grub-install
+     * writes the MBR/core image/block metadata atomically for this disk.
+     */
+    char cmd[1536];
     snprintf(cmd, sizeof(cmd),
              "mkdir -p /mnt/tiramisu-esp/EFI/BOOT /mnt/tiramisu-esp/boot/grub "
              "&& mount %s /mnt/tiramisu-esp "
@@ -725,16 +798,19 @@ static int install_bootloader(const char *esp_part, const install_config_t *cfg)
              "&& cp -f %s /mnt/tiramisu-esp/EFI/BOOT/BOOTX64.EFI "
              "&& cp -f %s /mnt/tiramisu-esp/boot/kernel.elf "
              "&& if [ -f /boot/root.tfs ]; then cp -f /boot/root.tfs /mnt/tiramisu-esp/boot/root.tfs; fi "
-             "&& printf 'set timeout=3\\nmenuentry \"Tiramisu\" {\\n    multiboot2 /boot/kernel.elf\\n    boot\\n}\\n' > /mnt/tiramisu-esp/boot/grub/grub.cfg "
+             "&& printf 'set timeout=3\\nmenuentry \"Tiramisu\" {\\n    search --no-floppy --file --set=root /boot/kernel.elf\\n    multiboot2 /boot/kernel.elf boot=disk root=/boot/root.tfs\\n    if [ -f /boot/root.tfs ]; then module2 /boot/root.tfs root.tfs; fi\\n    boot\\n}\\n' > /mnt/tiramisu-esp/boot/grub/grub.cfg "
+             "&& grub-install --target=i386-pc --boot-directory=/mnt/tiramisu-esp/boot %s "
+             "&& grub-install --target=x86_64-efi --efi-directory=/mnt/tiramisu-esp --boot-directory=/mnt/tiramisu-esp/boot --removable --no-nvram "
              "&& sync && umount /mnt/tiramisu-esp",
-             esp_part, BOOTX64_IMAGE_PATH, KERNEL_IMAGE_PATH);
+             esp_part, BOOTX64_IMAGE_PATH, KERNEL_IMAGE_PATH, disk_device);
 
     if (run_command(cmd) == 0) {
-        printf("  Bootloader files installed.\n");
+        printf("  Bootloader installed for BIOS and UEFI removable boot.\n");
         return 0;
     }
 
-    printf("  WARN: bootloader copy failed. ESP may need manual mounting/copying.\n");
+    printf("  ERROR: bootloader installation failed.\n");
+    printf("  The disk was not left as a valid boot target; rerun sysinstall after fixing GRUB tools.\n");
     return -1;
 }
 
@@ -835,6 +911,7 @@ static int perform_installation(const char *disk_device, uint64_t disk_size_sect
 
     printf("\nStarting installation\n");
     printf("  Disk: %s\n", disk_device);
+    printf("  BIOS: %s1 (GRUB BIOS Boot, 1007 KiB)\n", disk_device);
     printf("  ESP:  %s (FAT32, 256 MiB)\n", esp_part);
     printf("  Root: %s (%s)\n", root_part, root_fs_name(cfg->root_fs));
     printf("  ESP label:  %s\n", cfg->esp_label);
@@ -843,6 +920,11 @@ static int perform_installation(const char *disk_device, uint64_t disk_size_sect
     if (cfg->dry_run) {
         printf("Dry run selected; no disk writes performed.\n");
         return 0;
+    }
+
+    if (preflight_install_tools(cfg) < 0) {
+        printf("\nNo disk was modified.\n");
+        return 1;
     }
 
     int fd = open(disk_device, O_RDWR);
@@ -870,7 +952,7 @@ static int perform_installation(const char *disk_device, uint64_t disk_size_sect
     }
 
     printf("\nStep 3: Installing bootloader...\n");
-    if (install_bootloader(esp_part, cfg) < 0) {
+    if (install_bootloader(disk_device, esp_part, cfg) < 0) {
         printf("ERROR: bootloader installation failed.\n");
         return 1;
     }
@@ -912,10 +994,10 @@ static disk_info_t *find_configured_disk(const char *target)
 static void demo_workflow(void)
 {
     printf("Demo workflow:\n");
-    printf("  1. Create GPT: ESP + root partition\n");
+    printf("  1. Create GPT: BIOS Boot + ESP + root partition\n");
     printf("  2. Format ESP as FAT32\n");
     printf("  3. Ask root filesystem, default = %s\n", DEFAULT_ROOTFS_NAME);
-    printf("  4. If TFS: write /boot/root.tfs raw into partition 2\n");
+    printf("  4. If TFS: write /boot/root.tfs raw into partition 3\n");
     printf("  5. If ext2/ext4/fat32: mkfs + mount + copy /rootfs\n");
     printf("  6. Copy BOOTX64.EFI, kernel.elf and grub.cfg into ESP\n");
 }

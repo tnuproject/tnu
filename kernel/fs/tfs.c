@@ -36,6 +36,11 @@ struct gpt_entry_min {
     uint16_t name[36];
 } __attribute__((packed));
 
+static const uint8_t GPT_TIRAMISU_FS_GUID[16] = {
+    0x54, 0x4e, 0x55, 0x00, 0x13, 0x37, 0x42, 0x42,
+    0x80, 0x86, 0x54, 0x49, 0x52, 0x41, 0x4d, 0x49
+};
+
 struct collect_ctx {
     struct tfs_entry *entries;
     uint32_t count;
@@ -526,7 +531,7 @@ static int gpt_find_root_lba(const char *device, uint64_t *out_lba)
         return -1;
     }
     if (gpt->partition_entry_size < sizeof(struct gpt_entry_min) ||
-        gpt->num_partition_entries < 2) {
+        gpt->num_partition_entries < 1) {
         log_warn("tfs", "gpt: invalid entry size %u or count %u on %s",
                  gpt->partition_entry_size, gpt->num_partition_entries, device);
         return -1;
@@ -536,49 +541,57 @@ static int gpt_find_root_lba(const char *device, uint64_t *out_lba)
              (unsigned long long)gpt->partition_entry_lba,
              gpt->partition_entry_size, gpt->num_partition_entries);
 
-    /* GPT partition entries start at partition_entry_lba.  Each entry is
-     * partition_entry_size bytes (typically 128).  We want partition #2
-     * (index 1 in 0-based array), which is at byte offset:
-     *   partition_entry_size * 1
-     * from the start of the entries array.  Since entries may span multiple
-     * sectors, we calculate the sector offset and byte offset within that
-     * sector, then read the correct sector and extract the entry. */
     uint32_t entry_size = gpt->partition_entry_size;
     if (entry_size == 0 || entry_size > TFS_SECTOR_SIZE) {
         return -1;
     }
 
-    /* Partition #2 is at array index 1 */
-    uint64_t entry_offset_bytes = (uint64_t)entry_size * 1;
-    uint64_t entry_sector_lba = gpt->partition_entry_lba + entry_offset_bytes / TFS_SECTOR_SIZE;
-    size_t entry_offset_in_sector = (size_t)(entry_offset_bytes % TFS_SECTOR_SIZE);
-
-    log_info("tfs", "gpt: reading entry #1 at sector %llu offset %zu",
-             (unsigned long long)entry_sector_lba, entry_offset_in_sector);
-
     uint8_t entries_sector[TFS_SECTOR_SIZE];
-    if (block_read(device, entry_sector_lba, entries_sector, sizeof(entries_sector)) < 0) {
-        log_warn("tfs", "gpt: failed to read entry sector %llu", (unsigned long long)entry_sector_lba);
-        return -1;
+    uint64_t fallback_lba = 0;
+    uint32_t max_entries = gpt->num_partition_entries;
+    if (max_entries > 128) {
+        max_entries = 128;
     }
 
-    /* Ensure the entry fits within the sector we just read */
-    if (entry_offset_in_sector + entry_size > TFS_SECTOR_SIZE) {
-        return -1;
+    for (uint32_t i = 0; i < max_entries; i++) {
+        uint64_t entry_offset_bytes = (uint64_t)entry_size * i;
+        uint64_t entry_sector_lba = gpt->partition_entry_lba + entry_offset_bytes / TFS_SECTOR_SIZE;
+        size_t entry_offset_in_sector = (size_t)(entry_offset_bytes % TFS_SECTOR_SIZE);
+        if (entry_offset_in_sector + entry_size > TFS_SECTOR_SIZE) {
+            continue;
+        }
+        if (block_read(device, entry_sector_lba, entries_sector, sizeof(entries_sector)) < 0) {
+            log_warn("tfs", "gpt: failed to read entry sector %llu",
+                     (unsigned long long)entry_sector_lba);
+            return -1;
+        }
+
+        const struct gpt_entry_min *entry =
+            (const struct gpt_entry_min *)(entries_sector + entry_offset_in_sector);
+        if (entry->first_lba == 0) {
+            continue;
+        }
+
+        if (i == 1) {
+            fallback_lba = entry->first_lba;
+        }
+        if (memcmp(entry->type_guid, GPT_TIRAMISU_FS_GUID, sizeof(GPT_TIRAMISU_FS_GUID)) == 0) {
+            log_info("tfs", "gpt: Tiramisu root partition #%u first_lba=%llu last_lba=%llu",
+                     i + 1, (unsigned long long)entry->first_lba,
+                     (unsigned long long)entry->last_lba);
+            *out_lba = entry->first_lba;
+            return 0;
+        }
     }
 
-    const struct gpt_entry_min *entry =
-        (const struct gpt_entry_min *)(entries_sector + entry_offset_in_sector);
-    if (entry->first_lba == 0) {
-        log_warn("tfs", "gpt: partition #1 has first_lba=0");
-        return -1;
+    if (fallback_lba) {
+        log_warn("tfs", "gpt: no Tiramisu GUID found; falling back to partition #2 at LBA%llu",
+                 (unsigned long long)fallback_lba);
+        *out_lba = fallback_lba;
+        return 0;
     }
-
-    log_info("tfs", "gpt: partition #1 first_lba=%llu last_lba=%llu",
-             (unsigned long long)entry->first_lba, (unsigned long long)entry->last_lba);
-
-    *out_lba = entry->first_lba;
-    return 0;
+    log_warn("tfs", "gpt: no usable root partition found on %s", device);
+    return -1;
 }
 
 int tfs_mount_installed_root(void)
