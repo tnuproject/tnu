@@ -20,7 +20,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y build-essential nasm xorriso grub-pc-bin grub-common mtools
+          sudo apt install -y build-essential nasm xorriso grub-pc-bin grub-common mtools genisoimage
 
       - name: Build
         run: make all
