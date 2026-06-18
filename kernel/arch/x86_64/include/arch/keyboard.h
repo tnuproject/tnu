@@ -11,6 +11,7 @@ int keyboard_getchar(void);
 int keyboard_try_get_event(void);
 bool keyboard_event_available(void);
 bool keyboard_input_available(void);
+void keyboard_reset_console_state(void);
 bool keyboard_consume_interrupt(void);
 void keyboard_ack_interrupt(void);
 void keyboard_debug_stats(void);

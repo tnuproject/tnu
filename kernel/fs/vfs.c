@@ -318,6 +318,8 @@ int vfs_stat(const char *path, const char *cwd, struct vfs_stat *st)
     st->gid = node->gid;
     st->size = node->size;
     st->modified = node->modified;
+    st->device = 1;
+    st->inode = node->created;
     st->type = node->type;
     return 0;
 }
@@ -363,7 +365,6 @@ ssize_t vfs_write_node(struct vfs_node *node, uint64_t offset, const void *buf, 
     }
     memcpy(node->data + offset, buf, count);
     node->modified = ++vfs_clock;
-    tfs_sync_if_mounted();
     return (ssize_t)count;
 }
 

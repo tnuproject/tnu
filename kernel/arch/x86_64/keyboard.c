@@ -559,6 +559,27 @@ void keyboard_init(void)
     keyboard_controller_setup();
 }
 
+void keyboard_reset_console_state(void)
+{
+    read_pos = 0;
+    write_pos = 0;
+    evt_read_pos = 0;
+    evt_write_pos = 0;
+
+    memset(key_down, 0, sizeof(key_down));
+    memset(ext_key_down, 0, sizeof(ext_key_down));
+
+    shift_down = 0;
+    left_shift_down = 0;
+    right_shift_down = 0;
+    ctrl_down = 0;
+    alt_down = 0;
+    altgr_down = 0;
+    extended_prefix = 0;
+    set2_break_prefix = 0;
+    backspace_last_make_tick = 0;
+}
+
 static int is_alpha(char c)
 {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');

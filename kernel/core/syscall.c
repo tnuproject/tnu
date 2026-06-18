@@ -513,6 +513,14 @@ static long sys_open(const char *path, int flags, int mode)
         node->size = 0;
         node->data_borrowed = false;
         node->modified++;
+        int fd = process_open_fd(proc, node, flags);
+        if (fd >= 0) {
+            struct file_descriptor *file = process_get_fd(proc, fd);
+            if (file) {
+                file->dirty = true;
+            }
+        }
+        return fd;
     }
     return process_open_fd(proc, node, flags);
 }
@@ -752,11 +760,7 @@ static long sys_write(int fd, const void *buf, size_t count)
     ssize_t ret = vfs_write_node(file->node, file->offset, buf, count);
     if (ret > 0) {
         file->offset += (uint64_t)ret;
-        /* Ensure persistence by syncing the TFS image after each successful
-         * write. tfs_sync_if_mounted() internally checks whether persistence
-         * and auto‑sync are enabled, so we can call it unconditionally.
-         */
-        tfs_sync_if_mounted();
+        file->dirty = true;
     }
     return ret;
 }
@@ -870,6 +874,8 @@ static long sys_fstat(int fd, struct vfs_stat *out)
     out->gid = file->node->gid;
     out->size = file->node->size;
     out->modified = file->node->modified;
+    out->device = 1;
+    out->inode = file->node->created;
     out->type = file->node->type;
     return 0;
 }
@@ -920,9 +926,16 @@ static long sys_ioctl(int fd, unsigned long request, void *arg)
             request == TNU_IOCTL_TCSETSF) {
             if (!arg) return -1;
             const struct syscall_termios *t = arg;
+            uint32_t previous_lflag = tty_c_lflag;
             tty_c_lflag = t->c_lflag & (TNU_TTYF_ICANON | TNU_TTYF_ECHO | TNU_TTYF_ISIG);
             tty_vtime   = t->c_cc[5];
             tty_vmin    = t->c_cc[6];
+            if ((previous_lflag & TNU_TTYF_ICANON) == 0 &&
+                (tty_c_lflag & TNU_TTYF_ICANON) != 0) {
+                tty_pending_len = 0;
+                tty_pending_pos = 0;
+                keyboard_reset_console_state();
+            }
             return 0;
         }
     }
@@ -1739,6 +1752,12 @@ long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
     case SYS_OPEN:
         return sys_open((const char *)a0, (int)a1, (int)a2);
     case SYS_CLOSE:
+        if (proc) {
+            struct file_descriptor *file = process_get_fd(proc, (int)a0);
+            if (file && file->dirty) {
+                tfs_sync_if_mounted();
+            }
+        }
         process_close_fd(proc, (int)a0);
         return 0;
     case SYS_GETPID:

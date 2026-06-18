@@ -116,6 +116,9 @@ static void read_file_text(const char *path, char *out, size_t out_size, const c
     size_t n = node->size < out_size - 1 ? (size_t)node->size : out_size - 1;
     memcpy(out, node->data, n);
     out[n] = '\0';
+    while (n > 0 && (out[n - 1] == '\r' || out[n - 1] == '\n')) {
+        out[--n] = '\0';
+    }
 }
 
 static void strip_first_newline(char *out)
