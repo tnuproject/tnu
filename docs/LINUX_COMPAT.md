@@ -20,7 +20,7 @@ The kernel shell (`tsh`) provides a `linux-run` builtin command:
 
 ```
 # linux-run /usr/linux/bin/busybox ls -la
-# linux-run /usr/linux/usr/bin/fastfetch
+# fastfetch
 ```
 
 Linux commands can also be launched directly from `tsh`. Command resolution is
@@ -39,7 +39,7 @@ Tiramisu path and `/usr/linux/bin/ls` still means the Linux path.
 Tiramisu branding and system-management commands always keep native priority:
 `sysfetch`, `hostname`, `login`, `useradd`, `userdel`, `passwd`, `init`, `sh`,
 `tsh`, `uname`, `tirux`, `shutdown`, `reboot`, `sync`, `keymap`, `timezone`,
-`layout`, `nano`, and networking/driver commands such as `ping`, `wifi`,
+`layout`, `nano`, `fastfetch`, and networking/driver commands such as `ping`, `wifi`,
 `curl`, `wget`, `dns`, `net`, `tls`, `driver`, `linuxdrv`, `ifconfig`, `route`,
 `netstat`, and `dhcp`.
 
@@ -49,12 +49,12 @@ TNU fetches an Alpine Linux minirootfs during `make all`:
 
 ```bash
 make linux-chroot-fetch    # Downloads Alpine minirootfs
-make linux-chroot-packages # Installs fastfetch and freedoom via apk
+make linux-chroot-packages # Installs optional Linux packages such as freedoom
 ```
 
-`make all` runs both targets before building the ISO. The build stops if
-`/usr/bin/fastfetch` is missing from the Alpine chroot, so the final
-`/usr/linux` environment is not silently shipped half-prepared.
+`make all` runs both targets before building the ISO. Native TNU ports provide
+tools such as `nano` and `fastfetch`; the Linux chroot remains for Linux ABI
+testing and optional Linux packages.
 
 The chroot is installed at `/usr/linux` in the TNU rootfs.
 
@@ -68,10 +68,10 @@ Nano is a native Tiramisu applet and does not depend on the Linux compat layer:
 
 ### Running Fastfetch
 
-Fastfetch is installed from Alpine Linux packages inside the Linux chroot:
+Fastfetch is a native TNU port of the upstream Fastfetch project:
 
 ```
-# linux-run /usr/linux/usr/bin/fastfetch
+# fastfetch
 ```
 
 ### Running Doom (Freedoom)

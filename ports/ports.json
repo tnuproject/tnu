@@ -14,13 +14,13 @@
       "dependencies": [
         "linux_compat"
       ],
-      "notes": "Alpine Linux minirootfs for Linux ABI compatibility. nano, fastfetch and freedoom are installed via apk."
+      "notes": "Alpine Linux minirootfs for Linux ABI compatibility. freedoom and optional Linux packages may be installed via apk; native nano and fastfetch are provided by TNU ports."
     },
     {
       "name": "fastfetch",
       "kind": "system-info",
-      "upstream": "tnu-native",
-      "source": "ports/fastfetch/src/fastfetch.c",
+      "upstream": "fastfetch-cli/fastfetch",
+      "source": "https://github.com/fastfetch-cli/fastfetch.git",
       "license": "MIT",
       "target_binary": "/usr/bin/fastfetch",
       "required_features": [

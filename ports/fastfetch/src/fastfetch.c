@@ -1,348 +1,698 @@
 /*
- * fastfetch.c — Tiramisu system information tool
+ * SPDX-License-Identifier: MIT
  *
- * Displays an ASCII logo alongside key system stats read from /proc and /etc.
- * Designed to run on TNU/Tiramisu without any external dependencies.
+ * Fastfetch TNU port.
+ *
+ * Upstream: https://github.com/fastfetch-cli/fastfetch
+ * Branch inspected for this port: dev
+ *
+ * This is not a neofetch-style clone.  It keeps Fastfetch's module-oriented
+ * model, CLI vocabulary, output modes, logo handling, and detector split, while
+ * replacing OS-specific detector backends with Tiramisu/TNU native backends.
+ * The full upstream tree expects a hosted libc, CMake feature probes, pthreads,
+ * JSONC config plumbing, and many platform-specific detector files.  TNU does
+ * not expose all of that yet, so this port is the native backend slice that can
+ * run inside TNU today.
  */
 
+#include <fcntl.h>
+#include <stdarg.h>
+#include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <fcntl.h>
 #include <sys/ioctl.h>
+#include <unistd.h>
+
 #include <tnu/syscall.h>
 
-/* ------------------------------------------------------------------ */
-/* ANSI colour helpers                                                  */
-/* ------------------------------------------------------------------ */
+#define FASTFETCH_PROJECT_NAME "Fastfetch"
+#define FASTFETCH_TNU_PORT_VERSION "2.0-tnu"
+#define FASTFETCH_UPSTREAM_URL "https://github.com/fastfetch-cli/fastfetch"
+#define FF_STRBUF_INLINE 256
+#define FF_MAX_MODULES 32
+#define FF_MAX_LOGO_LINES 32
+#define FF_MAX_LOGO_TEXT 2048
 
-#define ANSI_RESET   "\x1b[0m"
-#define ANSI_BOLD    "\x1b[1m"
-#define ANSI_BLUE    "\x1b[34m"
-#define ANSI_CYAN    "\x1b[36m"
-#define ANSI_YELLOW  "\x1b[33m"
-#define ANSI_WHITE   "\x1b[37m"
-#define ANSI_BRIGHT_BLUE  "\x1b[94m"
-#define ANSI_BRIGHT_CYAN  "\x1b[96m"
+#define FF_COLOR_RESET "\x1b[0m"
+#define FF_COLOR_BOLD "\x1b[1m"
+#define FF_COLOR_TITLE "\x1b[1;36m"
+#define FF_COLOR_KEY "\x1b[1;34m"
+#define FF_COLOR_LOGO "\x1b[1;94m"
+#define FF_COLOR_VALUE "\x1b[37m"
 
-/* ------------------------------------------------------------------ */
-/* Helpers                                                             */
-/* ------------------------------------------------------------------ */
+typedef struct FFstrbuf {
+    char chars[FF_STRBUF_INLINE];
+    size_t length;
+} FFstrbuf;
 
-/* Read a whole small file into buf (NUL-terminated), return bytes read */
-static int read_file_str(const char *path, char *buf, int maxlen)
+typedef struct FFModuleResult {
+    const char *name;
+    FFstrbuf value;
+    bool ok;
+} FFModuleResult;
+
+typedef struct FFOptions {
+    bool json;
+    bool pipe;
+    bool showLogo;
+    bool showColors;
+    const char *structure;
+} FFOptions;
+
+typedef struct FFContext {
+    FFOptions options;
+    FFModuleResult modules[FF_MAX_MODULES];
+    size_t moduleCount;
+} FFContext;
+
+static void ffStrbufClear(FFstrbuf *buf)
 {
-    int fd = open(path, O_RDONLY);
+    buf->chars[0] = '\0';
+    buf->length = 0;
+}
+
+static void ffStrbufSetS(FFstrbuf *buf, const char *text)
+{
+    if (!text) {
+        text = "";
+    }
+    strncpy(buf->chars, text, sizeof(buf->chars) - 1);
+    buf->chars[sizeof(buf->chars) - 1] = '\0';
+    buf->length = strlen(buf->chars);
+}
+
+static void ffStrbufSetF(FFstrbuf *buf, const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf->chars, sizeof(buf->chars), fmt, ap);
+    va_end(ap);
+    buf->chars[sizeof(buf->chars) - 1] = '\0';
+    buf->length = strlen(buf->chars);
+}
+
+static int ffReadFileBuffer(const char *path, char *buf, size_t size)
+{
+    if (!buf || size == 0) {
+        return -1;
+    }
+    int fd = open(path, O_RDONLY, 0);
     if (fd < 0) {
         buf[0] = '\0';
         return -1;
     }
-    int n = (int)read(fd, buf, (size_t)(maxlen - 1));
+    ssize_t n = read(fd, buf, size - 1);
     close(fd);
-    if (n < 0) n = 0;
+    if (n < 0) {
+        buf[0] = '\0';
+        return -1;
+    }
     buf[n] = '\0';
-    return n;
+    return (int)n;
 }
 
-/* Extract the value of a "KEY=VALUE" or "KEY: VALUE" line from a buffer */
-static int extract_kv(const char *buf, const char *key, char sep,
-                      char *out, int outlen)
+static void ffTrimRight(char *s)
 {
-    size_t klen = strlen(key);
-    const char *p = buf;
-    while (*p) {
-        if (strncmp(p, key, klen) == 0 && p[klen] == sep) {
-            const char *val = p + klen + 1;
-            /* strip leading spaces and tabs */
-            while (*val == ' ' || *val == '\t') val++;
-            /* strip surrounding quotes (for os-release style) */
-            if (*val == '"') {
-                val++;
-                const char *end = strchr(val, '"');
-                int len = end ? (int)(end - val) : (int)strlen(val);
-                if (len >= outlen) len = outlen - 1;
-                memcpy(out, val, (size_t)len);
-                out[len] = '\0';
-            } else {
-                int len = 0;
-                while (val[len] && val[len] != '\n' && len < outlen - 1) len++;
-                memcpy(out, val, (size_t)len);
-                out[len] = '\0';
+    size_t len = strlen(s);
+    while (len > 0 &&
+           (s[len - 1] == '\n' || s[len - 1] == '\r' ||
+            s[len - 1] == ' ' || s[len - 1] == '\t')) {
+        s[--len] = '\0';
+    }
+}
+
+static const char *ffSkipSpaces(const char *s)
+{
+    while (*s == ' ' || *s == '\t') {
+        s++;
+    }
+    return s;
+}
+
+static bool ffExtractKeyValue(const char *text, const char *key, char sep,
+                              char *out, size_t outSize)
+{
+    size_t keyLen = strlen(key);
+    const char *line = text;
+    if (!out || outSize == 0) {
+        return false;
+    }
+    while (*line) {
+        const char *end = strchr(line, '\n');
+        size_t lineLen = end ? (size_t)(end - line) : strlen(line);
+        if (lineLen >= keyLen + 1 &&
+            strncmp(line, key, keyLen) == 0 &&
+            line[keyLen] == sep) {
+            const char *value = ffSkipSpaces(line + keyLen + 1);
+            size_t len = lineLen - (size_t)(value - line);
+            if (*value == '"' && len > 1) {
+                value++;
+                len--;
+                const char *quote = strchr(value, '"');
+                if (quote && (size_t)(quote - value) < len) {
+                    len = (size_t)(quote - value);
+                }
             }
-            return 1;
+            if (len >= outSize) {
+                len = outSize - 1;
+            }
+            memcpy(out, value, len);
+            out[len] = '\0';
+            ffTrimRight(out);
+            return true;
         }
-        /* advance to next line */
-        while (*p && *p != '\n') p++;
-        if (*p == '\n') p++;
+        if (!end) {
+            break;
+        }
+        line = end + 1;
     }
     out[0] = '\0';
-    return 0;
+    return false;
 }
 
-/* Parse "MemTotal: NNN kB" style line and return the number */
-static unsigned long long extract_kb(const char *buf, const char *key)
+static unsigned long long ffExtractKib(const char *text, const char *key)
 {
-    char val[64];
-    if (!extract_kv(buf, key, ':', val, sizeof(val))) return 0;
-    return (unsigned long long)atoi(val);
+    char value[64];
+    if (!ffExtractKeyValue(text, key, ':', value, sizeof(value))) {
+        return 0;
+    }
+    return (unsigned long long)atoll(value);
 }
 
-/* Strip trailing newline / spaces */
-static void trim_nl(char *s)
+static void ffFormatKib(unsigned long long kib, char *out, size_t size)
 {
-    int len = (int)strlen(s);
-    while (len > 0 && (s[len - 1] == '\n' || s[len - 1] == '\r' ||
-                       s[len - 1] == ' '))
-        s[--len] = '\0';
-}
-
-/* Format bytes into human-readable string */
-static void fmt_bytes(unsigned long long kb, char *out, int outlen)
-{
-    if (kb >= 1024 * 1024) {
-        unsigned long long gib = kb / (1024 * 1024);
-        unsigned long long frac = ((kb % (1024 * 1024)) * 10) / (1024 * 1024);
-        snprintf(out, (size_t)outlen, "%llu.%llu GiB", gib, frac);
-    } else if (kb >= 1024) {
-        unsigned long long mib = kb / 1024;
-        snprintf(out, (size_t)outlen, "%llu MiB", mib);
+    if (kib >= 1024ull * 1024ull) {
+        unsigned long long whole = kib / (1024ull * 1024ull);
+        unsigned long long frac = ((kib % (1024ull * 1024ull)) * 100ull) /
+                                  (1024ull * 1024ull);
+        snprintf(out, size, "%llu.%02llu GiB", whole, frac);
+    } else if (kib >= 1024ull) {
+        unsigned long long whole = kib / 1024ull;
+        unsigned long long frac = ((kib % 1024ull) * 100ull) / 1024ull;
+        snprintf(out, size, "%llu.%02llu MiB", whole, frac);
     } else {
-        snprintf(out, (size_t)outlen, "%llu KiB", kb);
+        snprintf(out, size, "%llu KiB", kib);
     }
 }
 
-/* Format uptime seconds into "Xh Ym Zs" */
-static void fmt_uptime(unsigned long long secs, char *out, int outlen)
+static void ffFormatUptime(unsigned long long seconds, char *out, size_t size)
 {
-    unsigned long long h = secs / 3600;
-    unsigned long long m = (secs % 3600) / 60;
-    unsigned long long s = secs % 60;
-    if (h > 0)
-        snprintf(out, (size_t)outlen, "%lluh %llum %llus", h, m, s);
-    else if (m > 0)
-        snprintf(out, (size_t)outlen, "%llum %llus", m, s);
-    else
-        snprintf(out, (size_t)outlen, "%llus", s);
+    unsigned long long days = seconds / 86400ull;
+    unsigned long long hours = (seconds % 86400ull) / 3600ull;
+    unsigned long long minutes = (seconds % 3600ull) / 60ull;
+    if (days) {
+        snprintf(out, size, "%llud %lluh %llum", days, hours, minutes);
+    } else if (hours) {
+        snprintf(out, size, "%lluh %llum", hours, minutes);
+    } else {
+        snprintf(out, size, "%llum", minutes);
+    }
 }
 
-/* ------------------------------------------------------------------ */
-/* Logo                                                                 */
-/* ------------------------------------------------------------------ */
+static FFModuleResult *ffModuleAdd(FFContext *ctx, const char *name)
+{
+    if (ctx->moduleCount >= FF_MAX_MODULES) {
+        return NULL;
+    }
+    FFModuleResult *module = &ctx->modules[ctx->moduleCount++];
+    module->name = name;
+    module->ok = false;
+    ffStrbufClear(&module->value);
+    return module;
+}
 
-/* The ASCII logo is stored in /etc/sysfetch-logo on the rootfs.
- * If not present we fall back to a compact built-in. */
-#define LOGO_PATH "/etc/fastfetch-logo"
+static void ffDetectTitle(FFModuleResult *module)
+{
+    char host[128];
+    char user[64];
+    if (ffReadFileBuffer("/etc/hostname", host, sizeof(host)) < 0) {
+        strcpy(host, "tiramisu");
+    }
+    ffTrimRight(host);
+    if (getuid() == 0) {
+        strcpy(user, "root");
+    } else {
+        snprintf(user, sizeof(user), "uid%d", getuid());
+    }
+    ffStrbufSetF(&module->value, "%s@%s", user, host[0] ? host : "tiramisu");
+    module->ok = true;
+}
 
-static const char *builtin_logo[] = {
-    "Tiramisù",
-    NULL
+static void ffDetectSeparator(FFModuleResult *module)
+{
+    ffStrbufSetS(&module->value, "--------");
+    module->ok = true;
+}
+
+static void ffDetectOS(FFModuleResult *module)
+{
+    char osr[1024];
+    char value[128];
+    if (ffReadFileBuffer("/etc/os-release", osr, sizeof(osr)) >= 0 &&
+        ffExtractKeyValue(osr, "PRETTY_NAME", '=', value, sizeof(value))) {
+        ffStrbufSetS(&module->value, value);
+    } else {
+        ffStrbufSetS(&module->value, "Tiramisu OS");
+    }
+    module->ok = true;
+}
+
+static void ffDetectKernel(FFModuleResult *module)
+{
+    char value[256];
+    if (ffReadFileBuffer("/proc/version", value, sizeof(value)) >= 0) {
+        ffTrimRight(value);
+        ffStrbufSetS(&module->value, value);
+        module->ok = true;
+    }
+}
+
+static void ffDetectHost(FFModuleResult *module)
+{
+    char value[128];
+    if (ffReadFileBuffer("/etc/hostname", value, sizeof(value)) >= 0) {
+        ffTrimRight(value);
+        ffStrbufSetS(&module->value, value[0] ? value : "tiramisu");
+    } else {
+        ffStrbufSetS(&module->value, "tiramisu");
+    }
+    module->ok = true;
+}
+
+static void ffDetectShell(FFModuleResult *module)
+{
+    const char *shell = getenv("SHELL");
+    ffStrbufSetS(&module->value, shell && shell[0] ? shell : "/bin/tsh");
+    module->ok = true;
+}
+
+static void ffDetectCPU(FFModuleResult *module)
+{
+    char cpuinfo[1024];
+    char value[192];
+    if (ffReadFileBuffer("/proc/cpuinfo", cpuinfo, sizeof(cpuinfo)) >= 0 &&
+        ffExtractKeyValue(cpuinfo, "model name", ':', value, sizeof(value))) {
+        ffStrbufSetS(&module->value, value);
+    } else {
+        ffStrbufSetS(&module->value, "x86_64");
+    }
+    module->ok = true;
+}
+
+static void ffDetectMemory(FFModuleResult *module)
+{
+    char meminfo[1024];
+    char used[64];
+    char total[64];
+    if (ffReadFileBuffer("/proc/meminfo", meminfo, sizeof(meminfo)) < 0) {
+        return;
+    }
+    unsigned long long memTotal = ffExtractKib(meminfo, "MemTotal");
+    unsigned long long memUsable = ffExtractKib(meminfo, "MemUsable");
+    unsigned long long memUsed = memTotal > memUsable ? memTotal - memUsable : 0;
+    if (!memTotal) {
+        return;
+    }
+    ffFormatKib(memUsed, used, sizeof(used));
+    ffFormatKib(memTotal, total, sizeof(total));
+    ffStrbufSetF(&module->value, "%s / %s", used, total);
+    module->ok = true;
+}
+
+static void ffDetectUptime(FFModuleResult *module)
+{
+    char text[64];
+    char out[64];
+    if (ffReadFileBuffer("/proc/uptime", text, sizeof(text)) < 0) {
+        return;
+    }
+    ffFormatUptime((unsigned long long)atoll(text), out, sizeof(out));
+    ffStrbufSetS(&module->value, out);
+    module->ok = true;
+}
+
+static void ffDetectDisplay(FFModuleResult *module)
+{
+    char fb[1024];
+    char type[64];
+    char width[32];
+    char height[32];
+    if (ffReadFileBuffer("/proc/framebuffer", fb, sizeof(fb)) < 0) {
+        return;
+    }
+    ffExtractKeyValue(fb, "type", ':', type, sizeof(type));
+    ffExtractKeyValue(fb, "width", ':', width, sizeof(width));
+    ffExtractKeyValue(fb, "height", ':', height, sizeof(height));
+    if (width[0] && height[0]) {
+        ffStrbufSetF(&module->value, "%sx%s (%s)", width, height,
+                     type[0] ? type : "framebuffer");
+    } else {
+        ffStrbufSetS(&module->value, type[0] ? type : "console");
+    }
+    module->ok = true;
+}
+
+static void ffDetectTerminal(FFModuleResult *module)
+{
+    struct syscall_winsize ws;
+    int fd = open("/dev/tty", O_RDONLY, 0);
+    if (fd >= 0 && ioctl(fd, TNU_IOCTL_TIOCGWINSZ, &ws) == 0) {
+        close(fd);
+        ffStrbufSetF(&module->value, "tnu-vt (%ux%u)", ws.ws_col, ws.ws_row);
+    } else {
+        if (fd >= 0) {
+            close(fd);
+        }
+        ffStrbufSetS(&module->value, "tnu-vt");
+    }
+    module->ok = true;
+}
+
+static void ffDetectLocalIP(FFModuleResult *module)
+{
+    char dev[2048];
+    if (ffReadFileBuffer("/proc/net/dev", dev, sizeof(dev)) < 0) {
+        return;
+    }
+    const char *line = strchr(dev, '\n');
+    while (line && *line) {
+        line++;
+        if (strstr(line, "\t") && !strstr(line, "\t-\t")) {
+            char copy[256];
+            const char *end = strchr(line, '\n');
+            size_t len = end ? (size_t)(end - line) : strlen(line);
+            if (len >= sizeof(copy)) {
+                len = sizeof(copy) - 1;
+            }
+            memcpy(copy, line, len);
+            copy[len] = '\0';
+            ffStrbufSetS(&module->value, copy);
+            module->ok = true;
+            return;
+        }
+        line = strchr(line, '\n');
+    }
+}
+
+static void ffDetectColors(FFModuleResult *module)
+{
+    ffStrbufSetS(&module->value,
+                 "\x1b[40m  \x1b[41m  \x1b[42m  \x1b[43m  "
+                 "\x1b[44m  \x1b[45m  \x1b[46m  \x1b[47m  \x1b[0m");
+    module->ok = true;
+}
+
+static void ffDetectPort(FFModuleResult *module)
+{
+    ffStrbufSetF(&module->value, "%s native backend (%s)",
+                 FASTFETCH_TNU_PORT_VERSION, FASTFETCH_UPSTREAM_URL);
+    module->ok = true;
+}
+
+typedef void (*FFDetector)(FFModuleResult *);
+
+typedef struct FFModuleDef {
+    const char *name;
+    FFDetector detect;
+} FFModuleDef;
+
+static const FFModuleDef ffModuleDefs[] = {
+    { "title", ffDetectTitle },
+    { "separator", ffDetectSeparator },
+    { "os", ffDetectOS },
+    { "kernel", ffDetectKernel },
+    { "host", ffDetectHost },
+    { "shell", ffDetectShell },
+    { "cpu", ffDetectCPU },
+    { "memory", ffDetectMemory },
+    { "uptime", ffDetectUptime },
+    { "display", ffDetectDisplay },
+    { "terminal", ffDetectTerminal },
+    { "localip", ffDetectLocalIP },
+    { "colors", ffDetectColors },
+    { "port", ffDetectPort },
 };
 
-/* ------------------------------------------------------------------ */
-/* Info items                                                           */
-/* ------------------------------------------------------------------ */
-
-typedef struct {
-    const char *label;
-    char value[256];
-} info_item;
-
-#define MAX_ITEMS 20
-
-static int n_items = 0;
-static info_item items[MAX_ITEMS];
-
-static void add_item(const char *label, const char *fmt, ...)
+static const FFModuleDef *ffFindModule(const char *name, size_t len)
 {
-    if (n_items >= MAX_ITEMS) return;
-    va_list ap;
-    va_start(ap, fmt);
-    items[n_items].label = label;
-    vsnprintf(items[n_items].value, sizeof(items[n_items].value), fmt, ap);
-    va_end(ap);
-    n_items++;
-}
-
-/* ------------------------------------------------------------------ */
-/* Gather                                                               */
-/* ------------------------------------------------------------------ */
-
-static void gather_info(void)
-{
-    char buf[2048];
-    char val[256];
-
-    /* OS */
-    read_file_str("/etc/os-release", buf, (int)sizeof(buf));
-    if (extract_kv(buf, "PRETTY_NAME", '=', val, sizeof(val)))
-        add_item("OS", "%s", val);
-    else
-        add_item("OS", "Tiramisu");
-
-    /* Kernel version */
-    read_file_str("/proc/version", buf, (int)sizeof(buf));
-    trim_nl(buf);
-    if (buf[0])
-        add_item("Kernel", "%s", buf);
-
-    /* Hostname */
-    read_file_str("/etc/hostname", val, (int)sizeof(val));
-    trim_nl(val);
-    if (val[0])
-        add_item("Host", "%s", val);
-    else
-        add_item("Host", "tiramisu");
-
-    /* Shell */
-    add_item("Shell", "tsh");
-
-    /* CPU */
-    read_file_str("/proc/cpuinfo", buf, (int)sizeof(buf));
-    if (extract_kv(buf, "model name", ':', val, sizeof(val))) {
-        trim_nl(val);
-        add_item("CPU", "%s", val);
-    } else {
-        add_item("CPU", "x86_64");
-    }
-
-    /* Memory */
-    read_file_str("/proc/meminfo", buf, (int)sizeof(buf));
-    unsigned long long mem_total  = extract_kb(buf, "MemTotal");
-    unsigned long long mem_usable = extract_kb(buf, "MemUsable");
-    if (mem_total > 0) {
-        char used_s[32], total_s[32];
-        unsigned long long mem_used = mem_total > mem_usable ?
-                                      mem_total - mem_usable : 0;
-        fmt_bytes(mem_used,  used_s,  (int)sizeof(used_s));
-        fmt_bytes(mem_total, total_s, (int)sizeof(total_s));
-        add_item("Memory", "%s / %s", used_s, total_s);
-    }
-
-    /* Uptime */
-    read_file_str("/proc/uptime", buf, (int)sizeof(buf));
-    unsigned long long up_secs = (unsigned long long)atoi(buf);
-    if (up_secs > 0) {
-        char up_s[64];
-        fmt_uptime(up_secs, up_s, (int)sizeof(up_s));
-        add_item("Uptime", "%s", up_s);
-    }
-
-    /* Display */
-    read_file_str("/proc/framebuffer", buf, (int)sizeof(buf));
-    char fb_type[32], fb_w[16], fb_h[16];
-    extract_kv(buf, "type",   ':', fb_type, sizeof(fb_type));
-    extract_kv(buf, "width",  ':', fb_w,    sizeof(fb_w));
-    extract_kv(buf, "height", ':', fb_h,    sizeof(fb_h));
-    trim_nl(fb_type); trim_nl(fb_w); trim_nl(fb_h);
-    if (fb_w[0] && fb_h[0])
-        add_item("Display", "%sx%s (%s)", fb_w, fb_h, fb_type);
-
-    /* Terminal */
-    add_item("Terminal", "tnu-vt");
-}
-
-/* ------------------------------------------------------------------ */
-/* Render                                                               */
-/* ------------------------------------------------------------------ */
-
-static void render(const char **logo_lines, int n_logo)
-{
-    /* Determine terminal width for padding */
-    int term_cols = 80;
-    {
-        struct syscall_winsize ws;
-        int ttyfd = open("/dev/tty", O_RDONLY);
-        if (ttyfd >= 0) {
-            if (ioctl(ttyfd, TNU_IOCTL_TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
-                term_cols = ws.ws_col;
-            close(ttyfd);
+    for (size_t i = 0; i < sizeof(ffModuleDefs) / sizeof(ffModuleDefs[0]); i++) {
+        if (strlen(ffModuleDefs[i].name) == len &&
+            strncasecmp(ffModuleDefs[i].name, name, len) == 0) {
+            return &ffModuleDefs[i];
         }
     }
-    (void)term_cols;
+    return NULL;
+}
 
-    /* Find the longest logo line for padding */
-    int logo_w = 0;
-    for (int i = 0; i < n_logo; i++) {
-        int len = (int)strlen(logo_lines[i]);
-        if (len > logo_w) logo_w = len;
+static void ffCollectModule(FFContext *ctx, const FFModuleDef *def)
+{
+    FFModuleResult *module = ffModuleAdd(ctx, def->name);
+    if (!module) {
+        return;
     }
+    def->detect(module);
+}
 
-    int rows = n_logo > n_items ? n_logo : n_items;
+static void ffCollectStructure(FFContext *ctx)
+{
+    const char *structure = ctx->options.structure;
+    if (!structure || !structure[0]) {
+        structure = "title:separator:os:kernel:host:uptime:shell:display:cpu:memory:terminal:localip:colors";
+    }
+    const char *start = structure;
+    while (*start) {
+        const char *end = strchr(start, ':');
+        size_t len = end ? (size_t)(end - start) : strlen(start);
+        if (len > 0) {
+            const FFModuleDef *def = ffFindModule(start, len);
+            if (def) {
+                ffCollectModule(ctx, def);
+            }
+        }
+        if (!end) {
+            break;
+        }
+        start = end + 1;
+    }
+}
 
-    printf("\n");
-    for (int r = 0; r < rows; r++) {
-        /* Logo column */
-        if (r < n_logo) {
-            printf(ANSI_BRIGHT_BLUE ANSI_BOLD "%s" ANSI_RESET, logo_lines[r]);
-            /* Pad to logo_w */
-            int pad = logo_w - (int)strlen(logo_lines[r]);
-            for (int p = 0; p < pad; p++) putchar(' ');
+static const char *ffLogoBuiltin[] = {
+    "  _______ _                                ",
+    " |_   _(_) |                               ",
+    "   | |  _| |_ __ _ _ __ ___  _ ___ _   _  ",
+    "   | | | | __/ _` | '_ ` _ \\| / __| | | | ",
+    "   | | | | || (_| | | | | | | \\__ \\ |_| | ",
+    "   |_| |_|\\__\\__,_|_| |_| |_|_|___/\\__,_| ",
+    NULL,
+};
+
+static size_t ffLogoLoad(const char **lines, char *storage, size_t storageSize)
+{
+    int n = ffReadFileBuffer("/etc/fastfetch-logo", storage, storageSize);
+    if (n < 0) {
+        n = ffReadFileBuffer("/etc/sysfetch-logo", storage, storageSize);
+    }
+    if (n <= 0) {
+        size_t count = 0;
+        while (ffLogoBuiltin[count] && count < FF_MAX_LOGO_LINES) {
+            lines[count] = ffLogoBuiltin[count];
+            count++;
+        }
+        return count;
+    }
+    size_t count = 0;
+    char *p = storage;
+    while (*p && count < FF_MAX_LOGO_LINES) {
+        lines[count++] = p;
+        char *nl = strchr(p, '\n');
+        if (!nl) {
+            break;
+        }
+        *nl = '\0';
+        p = nl + 1;
+    }
+    return count;
+}
+
+static void ffPrintJsonEscaped(const char *s)
+{
+    putchar('"');
+    while (*s) {
+        if (*s == '"' || *s == '\\') {
+            putchar('\\');
+            putchar(*s);
+        } else if (*s == '\n') {
+            fputs("\\n", stdout);
         } else {
-            for (int p = 0; p < logo_w; p++) putchar(' ');
+            putchar(*s);
         }
-
-        printf("  ");
-
-        /* Info column */
-        if (r < n_items) {
-            printf(ANSI_BOLD ANSI_CYAN "%-10s" ANSI_RESET
-                   ANSI_WHITE ": %s" ANSI_RESET,
-                   items[r].label, items[r].value);
-        }
-
-        printf("\n");
+        s++;
     }
-    printf("\n");
-
-    /* Colour palette strip */
-    printf("  ");
-    for (int p = 0; p < logo_w + 2; p++) putchar(' ');
-    for (int c = 40; c <= 47; c++)
-        printf("\x1b[%dm  " ANSI_RESET, c);
-    printf("\n");
-    printf("  ");
-    for (int p = 0; p < logo_w + 2; p++) putchar(' ');
-    for (int c = 100; c <= 107; c++)
-        printf("\x1b[%dm  " ANSI_RESET, c);
-    printf("\n\n");
+    putchar('"');
 }
 
-/* ------------------------------------------------------------------ */
-/* main                                                                 */
-/* ------------------------------------------------------------------ */
-
-int main(void)
+static void ffPrintJson(const FFContext *ctx)
 {
-    gather_info();
-
-    /* Try to load logo from file */
-    static char logo_buf[1024];
-    static const char *logo_ptrs[32];
-    int n_logo = 0;
-
-    int n = read_file_str(LOGO_PATH, logo_buf, (int)sizeof(logo_buf));
-    if (n > 0) {
-        /* Split into lines */
-        char *p = logo_buf;
-        while (*p && n_logo < 31) {
-            logo_ptrs[n_logo++] = p;
-            char *nl = strchr(p, '\n');
-            if (!nl) break;
-            *nl = '\0';
-            p = nl + 1;
-        }
-        logo_ptrs[n_logo] = NULL;
+    puts("[");
+    for (size_t i = 0; i < ctx->moduleCount; i++) {
+        const FFModuleResult *module = &ctx->modules[i];
+        printf("  {\"type\":");
+        ffPrintJsonEscaped(module->name);
+        printf(",\"result\":");
+        ffPrintJsonEscaped(module->ok ? module->value.chars : "");
+        printf("}%s\n", i + 1 < ctx->moduleCount ? "," : "");
     }
+    puts("]");
+}
 
-    if (n_logo == 0) {
-        /* Use built-in logo */
-        while (builtin_logo[n_logo]) {
-            logo_ptrs[n_logo] = builtin_logo[n_logo];
-            n_logo++;
+static void ffPrintLogoAndModules(const FFContext *ctx)
+{
+    const char *logoLines[FF_MAX_LOGO_LINES];
+    char logoStorage[FF_MAX_LOGO_TEXT];
+    size_t logoCount = ctx->options.showLogo ?
+                       ffLogoLoad(logoLines, logoStorage, sizeof(logoStorage)) : 0;
+    size_t logoWidth = 0;
+    for (size_t i = 0; i < logoCount; i++) {
+        size_t len = strlen(logoLines[i]);
+        if (len > logoWidth) {
+            logoWidth = len;
         }
     }
 
-    render(logo_ptrs, n_logo);
+    size_t rows = logoCount > ctx->moduleCount ? logoCount : ctx->moduleCount;
+    for (size_t row = 0; row < rows; row++) {
+        if (logoCount) {
+            if (row < logoCount) {
+                if (!ctx->options.pipe) {
+                    fputs(FF_COLOR_LOGO, stdout);
+                }
+                fputs(logoLines[row], stdout);
+                if (!ctx->options.pipe) {
+                    fputs(FF_COLOR_RESET, stdout);
+                }
+                for (size_t p = strlen(logoLines[row]); p < logoWidth; p++) {
+                    putchar(' ');
+                }
+            } else {
+                for (size_t p = 0; p < logoWidth; p++) {
+                    putchar(' ');
+                }
+            }
+            fputs("  ", stdout);
+        }
+        if (row < ctx->moduleCount) {
+            const FFModuleResult *module = &ctx->modules[row];
+            if (module->ok) {
+                if (!ctx->options.pipe && strcmp(module->name, "title") == 0) {
+                    fputs(FF_COLOR_TITLE, stdout);
+                } else if (!ctx->options.pipe) {
+                    fputs(FF_COLOR_KEY, stdout);
+                }
+                printf("%-10s", module->name);
+                if (!ctx->options.pipe) {
+                    fputs(FF_COLOR_RESET FF_COLOR_VALUE, stdout);
+                }
+                printf(": %s", module->value.chars);
+                if (!ctx->options.pipe) {
+                    fputs(FF_COLOR_RESET, stdout);
+                }
+            }
+        }
+        putchar('\n');
+    }
+}
+
+static void ffPrintHelp(void)
+{
+    puts("Fastfetch TNU port");
+    puts("Usage: fastfetch [OPTIONS]");
+    puts("  -s, --structure LIST     Colon-separated module list");
+    puts("      --format json        Print JSON module results");
+    puts("      --logo none          Disable logo");
+    puts("      --pipe false|true    Disable or enable color-aware terminal output");
+    puts("      --version            Show version and upstream provenance");
+    puts("      --help               Show this help");
+    puts("");
+    puts("Modules: title separator os kernel host shell cpu memory uptime display terminal localip colors port");
+}
+
+static bool ffParseBool(const char *s, bool fallback)
+{
+    if (!s) {
+        return fallback;
+    }
+    if (strcmp(s, "true") == 0 || strcmp(s, "1") == 0 || strcmp(s, "yes") == 0) {
+        return true;
+    }
+    if (strcmp(s, "false") == 0 || strcmp(s, "0") == 0 || strcmp(s, "no") == 0) {
+        return false;
+    }
+    return fallback;
+}
+
+int main(int argc, char **argv)
+{
+    FFContext ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.options.showLogo = true;
+    ctx.options.showColors = true;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+            ffPrintHelp();
+            return 0;
+        }
+        if (strcmp(argv[i], "--version") == 0) {
+            printf("%s %s (%s)\n", FASTFETCH_PROJECT_NAME,
+                   FASTFETCH_TNU_PORT_VERSION, FASTFETCH_UPSTREAM_URL);
+            return 0;
+        }
+        if ((strcmp(argv[i], "-s") == 0 || strcmp(argv[i], "--structure") == 0) &&
+            i + 1 < argc) {
+            ctx.options.structure = argv[++i];
+            continue;
+        }
+        if (strcmp(argv[i], "--format") == 0 && i + 1 < argc) {
+            const char *fmt = argv[++i];
+            if (strcmp(fmt, "json") == 0) {
+                ctx.options.json = true;
+                ctx.options.pipe = true;
+                ctx.options.showLogo = false;
+            }
+            continue;
+        }
+        if (strcmp(argv[i], "--logo") == 0 && i + 1 < argc) {
+            const char *logo = argv[++i];
+            if (strcmp(logo, "none") == 0) {
+                ctx.options.showLogo = false;
+            }
+            continue;
+        }
+        if (strcmp(argv[i], "--pipe") == 0 && i + 1 < argc) {
+            ctx.options.pipe = ffParseBool(argv[++i], ctx.options.pipe);
+            continue;
+        }
+        if (strncmp(argv[i], "--structure=", 12) == 0) {
+            ctx.options.structure = argv[i] + 12;
+            continue;
+        }
+        if (strncmp(argv[i], "--format=", 9) == 0) {
+            if (strcmp(argv[i] + 9, "json") == 0) {
+                ctx.options.json = true;
+                ctx.options.pipe = true;
+                ctx.options.showLogo = false;
+            }
+            continue;
+        }
+    }
+
+    ffCollectStructure(&ctx);
+    if (ctx.options.json) {
+        ffPrintJson(&ctx);
+    } else {
+        ffPrintLogoAndModules(&ctx);
+    }
     return 0;
 }
