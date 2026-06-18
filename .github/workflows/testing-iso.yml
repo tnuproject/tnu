@@ -23,7 +23,7 @@ jobs:
           sudo apt install -y build-essential nasm xorriso grub-pc-bin grub-common mtools genisoimage
 
       - name: Build
-        run: sudo make all
+        run: sudo make wolinux wlinux
 
       - name: Find ISO
         run: |
@@ -32,5 +32,5 @@ jobs:
       - name: Upload ISO artifact
         uses: actions/upload-artifact@v4
         with:
-          name: tiramisu-testing-iso
+          name: tiramisu-isos-output
           path: ${{ env.ISO_PATH }}
