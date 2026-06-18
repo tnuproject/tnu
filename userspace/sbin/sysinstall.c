@@ -383,7 +383,11 @@ static int path_is_block_or_regular(const char *path)
     if (stat(path, &st) < 0) {
         return 0;
     }
-    return S_ISBLK(st.st_mode) || S_ISREG(st.st_mode);
+    /* Tiramisu devfs currently exposes device nodes with VFS_S_IFDEV,
+     * which maps to S_IFCHR in userspace stat(). Accept character devices
+     * here so /dev/sdX installer targets are discovered correctly.
+     */
+    return S_ISBLK(st.st_mode) || S_ISCHR(st.st_mode) || S_ISREG(st.st_mode);
 }
 
 static uint64_t get_device_size_sectors(const char *path)
