@@ -50,11 +50,14 @@ struct vfs_stat {
     uint32_t gid;
     uint64_t size;
     uint64_t modified;
+    uint64_t device;
+    uint64_t inode;
     enum vfs_node_type type;
 };
 
 struct file_descriptor {
     bool used;
+    bool dirty;
     int flags;
     uint64_t offset;
     struct vfs_node *node;
