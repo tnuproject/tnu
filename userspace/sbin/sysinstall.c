@@ -19,6 +19,9 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <tnu/syscall.h>
+
+long tnu_syscall(long n, long a0, long a1, long a2, long a3, long a4, long a5);
 
 #define MAX_DISKS 16
 #define SECTOR_SIZE 512ULL
@@ -1017,6 +1020,13 @@ static int perform_installation(const char *disk_device, uint64_t disk_size_sect
         return 1;
     }
     close(fd);
+
+    /* Give the kernel time to process the new partition table.
+     * Without this delay, reopening the disk immediately may result in
+     * stale cached metadata, causing writes to fail at partition boundaries. */
+    printf("  Waiting for partition table to settle...\n");
+    sleep(2);
+    sync();
 
     printf("\nStep 2: Formatting partitions...\n");
     if (format_esp_native(disk_device, cfg) < 0) {

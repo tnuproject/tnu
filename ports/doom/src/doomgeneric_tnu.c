@@ -134,6 +134,15 @@ void DG_Init(void)
     /* Open keyboard in NON-BLOCKING mode to prevent hangs in checkKeys() */
     kbd_fd = open("/dev/input/kbd", O_RDONLY | O_NONBLOCK);
 
+    /* Flush any stale keyboard events from the buffer to prevent phantom keypresses
+     * at startup. Read and discard all pending events. */
+    if (kbd_fd >= 0) {
+        uint16_t discard_buf[256];
+        while (read(kbd_fd, discard_buf, sizeof(discard_buf)) > 0) {
+            /* Keep reading until buffer is empty */
+        }
+    }
+
     if (fb_fd >= 0) {
         struct syscall_fb_info info;
         int ret = ioctl(fb_fd, TNU_IOCTL_FB_GETINFO, &info);
@@ -409,11 +418,13 @@ int main(int argc, char **argv)
 
     const char *selected_iwad = direct_wad_path ? direct_wad_path : wad_path;
     if (selected_iwad) {
+        fprintf(stderr, "doom: checking WAD file: %s\n", selected_iwad);
         if (!readable_file(selected_iwad)) {
             fprintf(stderr, "doom: WAD not found: %s\n", selected_iwad);
             fprintf(stderr, "doom: try doom -iwad /usr/share/games/doom/Doom1.WAD\n");
             return 1;
         }
+        fprintf(stderr, "doom: WAD file found, loading...\n");
         if (new_argc + 2 > 63) {
             fprintf(stderr, "doom: too many arguments\n");
             return 1;
