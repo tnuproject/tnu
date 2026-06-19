@@ -6,10 +6,10 @@ desktop-class software.
 
 ## Working Ports
 
-- `doom`: upstream doomgeneric builds as `/usr/games/doom`.
-  It uses `/dev/fb0`, `/dev/input/kbd`, monotonic time, TFS-backed file I/O,
-  and the bundled `/usr/share/games/doom/freedoom1.wad`.
-- `nano`: GNU nano 9.0 builds as `/bin/nano`.
+- `doom`: upstream doomgeneric can be built as a standalone `/usr/games/doom`
+  binary. It uses `/dev/fb0`, `/dev/input/kbd`, monotonic time, TFS-backed
+  file I/O, and the bundled `/usr/share/games/doom/freedoom1.wad`.
+- `nano`: GNU nano 9.0 can be built as a standalone `/bin/nano` binary.
   It uses the TNU libc, a small curses/termcap shim, file descriptors,
   termios compatibility, signals compatibility, and the syscall-backed heap.
 
@@ -53,4 +53,6 @@ make ports-fetch-core
 
 This fetches GNU nano, doomgeneric, and X.Org xserver into
 `build/ports/sources/`. The versioned repo keeps recipes and compatibility
-code; fetched upstream source trees remain build artifacts.
+code; fetched upstream source trees remain build artifacts. The default TNU
+image no longer preinstalls `nano` or `doom`; build those ports explicitly if
+you want them in a custom image.

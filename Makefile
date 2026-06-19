@@ -124,8 +124,7 @@ kernel: $(KERNEL)
 userspace: $(USER_LIB) $(BUILD)/user/init $(BUILD)/user/tsh \
 	$(BUILD)/user/tnu-utils $(BUILD)/user/login $(BUILD)/user/passwd \
 	$(BUILD)/user/useradd $(BUILD)/user/userdel $(BUILD)/user/sysinstall \
-	$(BUILD)/user/bootd $(BUILD)/user/nano \
-	$(BUILD)/user/doom
+	$(BUILD)/user/bootd
 
 nano: $(BUILD)/user/nano
 
@@ -259,7 +258,6 @@ rootfs: userspace version-files firmware-iwlwifi $(KERNEL) $(EFI_BOOT)
 	cp -a $(GENERATED)/rootfs/. $(BUILD)/rootfs/
 	cp ascii.txt $(BUILD)/rootfs/etc/sysfetch-logo
 	mkdir -p $(BUILD)/rootfs/bin $(BUILD)/rootfs/sbin $(BUILD)/rootfs/usr/bin \
-		$(BUILD)/rootfs/usr/games $(BUILD)/rootfs/usr/share/games/doom \
 		$(BUILD)/rootfs/boot $(BUILD)/rootfs/EFI/BOOT \
 		$(BUILD)/rootfs/lib/modules \
 		$(BUILD)/rootfs/lib/firmware/iwlwifi \
@@ -277,8 +275,6 @@ rootfs: userspace version-files firmware-iwlwifi $(KERNEL) $(EFI_BOOT)
 	cp $(BUILD)/user/sysinstall $(BUILD)/rootfs/sbin/sysinstall
 	cp $(BUILD)/user/bootd $(BUILD)/rootfs/sbin/bootd
 	for name in $(COREUTIL_NAMES); do cp $(BUILD)/user/tnu-utils $(BUILD)/rootfs/bin/$$name; done
-	cp $(BUILD)/user/nano $(BUILD)/rootfs/usr/bin/nano
-	cp $(BUILD)/user/doom $(BUILD)/rootfs/usr/games/doom
 	cp -a $(BUILD)/firmware/iwlwifi/. $(BUILD)/rootfs/lib/firmware/iwlwifi/
 	@if [ "$(WITH_LINUX_CHROOT)" = "1" ] && [ -d "$(LINUX_CHROOT_DIR)" ]; then \
 		echo "rootfs: copying Linux chroot into rootfs/usr/linux"; \
