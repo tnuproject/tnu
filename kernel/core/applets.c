@@ -1615,15 +1615,57 @@ static void applet_read_password(char *line, size_t size)
     }
 }
 
+static int applet_save_file(const char *cmd, const char *path,
+                            const void *data, size_t len)
+{
+    struct process *proc = process_current();
+    if (!proc || !path) {
+        return -1;
+    }
+    if (report_permission_denied_if_protected(cmd, path)) {
+        return -1;
+    }
+    char normal[VFS_PATH_MAX];
+    if (vfs_normalize(path, proc->cwd, normal, sizeof(normal)) < 0) {
+        return -1;
+    }
+    struct vfs_node *node = vfs_lookup(normal, "/");
+    if (!node) {
+        if (vfs_create_file(normal, "/", VFS_S_IFREG | 0644, proc->uid, proc->gid) < 0) {
+            return -1;
+        }
+        node = vfs_lookup(normal, "/");
+    }
+    if (!node || node->type != VFS_NODE_FILE) {
+        return -1;
+    }
+    if (node->data && !node->data_borrowed) {
+        kfree(node->data);
+    }
+    node->data = NULL;
+    node->size = 0;
+    node->data_borrowed = false;
+    node->modified++;
+    if (len == 0) {
+        return 0;
+    }
+    return vfs_write_node(node, 0, data, len) < 0 ? -1 : 0;
+}
+
 static int cmd_xedit(int argc, char **argv)
 {
     if (argc != 2) {
         kprintf("usage: xedit FILE\n");
         return 1;
     }
-    struct vfs_node *node = vfs_lookup(argv[1], process_current()->cwd);
+    char normal[VFS_PATH_MAX];
+    if (vfs_normalize(argv[1], process_current()->cwd, normal, sizeof(normal)) < 0) {
+        kprintf("xedit: invalid path: %s\n", argv[1]);
+        return 1;
+    }
+    struct vfs_node *node = vfs_lookup(normal, "/");
     if (node && node->data && node->size) {
-        kprintf("--- current %s ---\n", argv[1]);
+        kprintf("--- current %s ---\n", normal);
         console_write_n((const char *)node->data, (size_t)node->size);
         if (node->data[node->size - 1] != '\n') {
             console_putc('\n');
@@ -1649,20 +1691,12 @@ static int cmd_xedit(int argc, char **argv)
         strcat(content, line);
         strcat(content, "\n");
     }
-    int fd = (int)syscall_dispatch(SYS_OPEN, (uint64_t)argv[1],
-                                   VFS_O_CREAT | VFS_O_RDWR | VFS_O_TRUNC,
-                                   0644, 0, 0, 0);
-    if (fd < 0 ||
-        syscall_dispatch(SYS_WRITE, (uint64_t)fd, (uint64_t)content,
-                         strlen(content), 0, 0, 0) < 0) {
-        if (fd >= 0) {
-            syscall_dispatch(SYS_CLOSE, (uint64_t)fd, 0, 0, 0, 0, 0);
-        }
-        kprintf("xedit: failed to write %s\n", argv[1]);
+    size_t content_len = strlen(content);
+    if (applet_save_file("xedit", normal, content, content_len) < 0) {
+        kprintf("xedit: failed to write %s\n", normal);
         return 1;
     }
-    syscall_dispatch(SYS_CLOSE, (uint64_t)fd, 0, 0, 0, 0, 0);
-    kprintf("wrote %s (%llu bytes)\n", argv[1], (uint64_t)strlen(content));
+    kprintf("wrote %s (%llu bytes)\n", normal, (uint64_t)content_len);
     return 0;
 }
 

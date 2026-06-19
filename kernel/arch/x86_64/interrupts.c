@@ -4,6 +4,7 @@
 #include <arch/pic.h>
 #include <arch/pit.h>
 #include <arch/serial.h>
+#include <tnu/iwlwifi.h>
 #include <tnu/log.h>
 #include <tnu/panic.h>
 #include <tnu/process.h>
@@ -46,6 +47,9 @@ static const char *exception_names[32] = {
 
 /* CS selector for user code ring 3: low 2 bits are the RPL */
 #define USER_CS_RPL 3
+
+static bool frame_from_userspace(const struct interrupt_frame *frame);
+static void wifi_handle_irq(void);
 
 static bool frame_from_userspace(const struct interrupt_frame *frame)
 {
@@ -94,6 +98,13 @@ static void kill_user_process(struct interrupt_frame *frame, const char *reason)
     arch_abort_user(139);
 }
 
+void keyboard_handle_irq(void);
+
+void wifi_handle_irq(void)
+{
+    iwlwifi_poll_rx_notifications_all();
+}
+
 void isr_dispatch(struct interrupt_frame *frame)
 {
     if (frame->vector < 32) {
@@ -112,6 +123,9 @@ void isr_dispatch(struct interrupt_frame *frame)
         break;
     case 1:
         keyboard_handle_irq();
+        break;
+    case 11:
+        wifi_handle_irq();
         break;
     default:
         log_debug("irq", "unhandled irq %u", irq);

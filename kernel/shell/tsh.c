@@ -131,6 +131,9 @@ static void read_file_text(const char *path, char *out, size_t out_size, const c
     size_t n = node->size < out_size - 1 ? (size_t)node->size : out_size - 1;
     memcpy(out, node->data, n);
     out[n] = '\0';
+    while (n > 0 && (out[n - 1] == '\r' || out[n - 1] == '\n')) {
+        out[--n] = '\0';
+    }
 }
 
 static void strip_first_newline(char *out)
@@ -1212,9 +1215,6 @@ static int run_linux_transparent(const char *linux_path, int argc, char **argv)
         kprintf("%s: Linux process faulted before completing (SIGSEGV)\n", argv[0]);
         return 139;
     }
-    if (rc != 0) {
-        kprintf("%s: Linux process exited with status %ld\n", argv[0], rc);
-    }
     return (int)rc;
 }
 
@@ -1629,7 +1629,10 @@ static bool tnu_command_always_priority(const char *name)
     static const char *const names[] = {
         "sysfetch", "hostname", "login", "useradd", "userdel", "passwd",
         "init", "sh", "tsh", "uname", "tirux", "shutdown", "reboot",
-        "sync", "keymap", "timezone", "layout", "nano", "ls",
+        "sync", "keymap", "timezone", "layout", "nano",
+        "cat", "chmod", "chown", "clear", "cp", "date", "dmesg", "echo",
+        "id", "kill", "ls", "mkdir", "mount", "mv", "ps", "pwd", "rm",
+        "stat", "time", "touch", "uptime", "usb", "whoami", "xedit",
         "ping", "wifi", "curl", "wget", "dns", "net", "tls", "driver",
         "linuxdrv", "ifconfig", "route", "netstat", "dhcp",
     };

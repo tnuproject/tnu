@@ -2049,27 +2049,30 @@ static int iwl_alloc_firmware_dma(struct iwlwifi_state *st)
         return 0;
     }
 
-    size_t pages = (IWL_FW_DMA_SIZE + PAGE_SIZE - 1) / PAGE_SIZE;
-    uintptr_t first = 0;
-    uintptr_t prev = 0;
-    for (size_t i = 0; i < pages; i++) {
-        uintptr_t frame = pmm_alloc_frame();
-        if (!frame) {
-            return -1;
-        }
-        if (i == 0) {
-            first = frame;
-        } else if (frame != prev + PAGE_SIZE) {
-            return -1;
-        }
-        prev = frame;
+    /* Use kernel heap allocation for firmware DMA buffer.
+     * Try with smaller size first (256 KiB), then fall back to 512 KiB. */
+    size_t size = IWL_FW_DMA_SIZE; /* 512 KiB */
+    
+    /* Try smaller buffer if 512 KiB fails */
+    if (size > 256 * 1024) {
+        size = 256 * 1024;
     }
-    if (vmm_map_range_identity(first, pages * PAGE_SIZE, 0) < 0) {
+    
+    st->firmware_dma = kmalloc(size + PAGE_SIZE);
+    if (!st->firmware_dma) {
+        log_warn("iwlwifi", "firmware DMA buffer allocation failed (%zu bytes)", size);
         return -1;
     }
-    st->firmware_dma = (void *)first;
-    st->firmware_dma_phys = first;
-    st->firmware_dma_size = pages * PAGE_SIZE;
+    
+    /* Align to page boundary */
+    uintptr_t aligned = ((uintptr_t)st->firmware_dma + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+    st->firmware_dma = (void *)aligned;
+    st->firmware_dma_phys = aligned;
+    st->firmware_dma_size = size;
+    memset(st->firmware_dma, 0, size);
+    
+    log_info("iwlwifi", "firmware DMA buffer: %p phys=%p size=%zu KiB",
+             st->firmware_dma, (void *)st->firmware_dma_phys, size / 1024);
     return 0;
 }
 
@@ -2077,7 +2080,9 @@ static int iwl_stage_firmware_dma(struct iwlwifi_state *st,
                                   const struct iwlwifi_fw_part *part)
 {
     size_t total = (size_t)part->text_size + part->data_size;
-    if (!part_present(part) || total > IWL_FW_DMA_SIZE) {
+    if (!part_present(part) || total > st->firmware_dma_size) {
+        log_warn("iwlwifi", "firmware section too large (%zu bytes, buffer is %zu bytes)",
+                 total, st->firmware_dma_size);
         return -1;
     }
     if (iwl_alloc_firmware_dma(st) < 0) {
@@ -2153,6 +2158,13 @@ static int iwl_init_rx_ring(struct iwlwifi_state *st)
 {
     if (iwl_alloc_rx_dma(st) < 0) {
         return -1;
+    }
+    st->rx_index = 0;
+    memset(st->rx_status, 0, PAGE_SIZE);
+    memset(st->rx_buffers, 0, IWL_RX_RING_COUNT * IWL_RX_BUF_SIZE);
+    for (size_t i = 0; i < IWL_RX_RING_COUNT; i++) {
+        st->rx_desc[i] = (uint32_t)((st->rx_buffers_phys +
+                                     i * IWL_RX_BUF_SIZE) >> 8);
     }
     iwl_write32(st, FH_RX_CONFIG, 0);
     iwl_write32(st, FH_RX_WPTR, 0);
@@ -3999,6 +4011,12 @@ static int iwl_execute_runtime_firmware(struct iwlwifi_state *st)
         iwl_write32(st, CSR_INT, 0xffffffffu);
         iwl_write32(st, CSR_FH_INT_STATUS, 0xffffffffu);
 
+        /* Stop INIT firmware before loading the runtime image. */
+        iwl_setbits(st, CSR_RESET, IWL_RESET_SW | IWL_RESET_LINK_PWR_MGMT_DIS);
+        iwl_short_delay();
+        iwl_write32(st, CSR_INT, 0xffffffffu);
+        iwl_write32(st, CSR_FH_INT_STATUS, 0xffffffffu);
+
         /* --- Phase 2: RT firmware --- */
         if (st->runtime_section_count > 0) {
             int rc = iwl_dma_load_sections(st, st->runtime_sections,
@@ -4020,7 +4038,7 @@ static int iwl_execute_runtime_firmware(struct iwlwifi_state *st)
 
         /* For MVM, RT alive is sent via RX ring as UC_READY message, not interrupt. */
         t = pit_ticks();
-        while (!st->mvm_rt_alive_seen && pit_ticks() - t < 800) {
+        while (!st->mvm_rt_alive_seen && pit_ticks() - t < 2000) {
             iwl_poll_rx_notifications(st);
             __asm__ volatile("pause");
         }
@@ -4488,6 +4506,15 @@ const struct iwlwifi_state *iwlwifi_state_for(const struct net_iface *iface)
         return NULL;
     }
     return iface->driver_data;
+}
+
+/* Public interrupt handler - calls iwl_poll_rx_notifications for all attached devices */
+int iwlwifi_poll_rx_notifications_all(void)
+{
+    for (size_t i = 0; i < state_count; i++) {
+        iwl_poll_rx_notifications(&states[i]);
+    }
+    return 0;
 }
 
 /* ---------------------------------------------------------------------
