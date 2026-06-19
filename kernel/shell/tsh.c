@@ -1628,7 +1628,7 @@ static bool tnu_command_always_priority(const char *name)
 {
     static const char *const names[] = {
         "sysfetch", "hostname", "login", "useradd", "userdel", "passwd",
-        "init", "sh", "tsh", "uname", "tirux", "shutdown", "reboot",
+        "init", "sh", "tsh", "uname", "shutdown", "reboot",
         "sync", "keymap", "timezone", "layout", "nano",
         "cat", "chmod", "chown", "clear", "cp", "date", "dmesg", "echo",
         "id", "kill", "ls", "mkdir", "mount", "mv", "ps", "pwd", "rm",

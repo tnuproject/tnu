@@ -66,20 +66,22 @@ void procfs_refresh(void)
               fb_kind, (void *)fb->address, fb->width, fb->height, fb->pitch, fb->bpp);
     vfs_write_file("/proc/framebuffer", "/", buf, strlen(buf));
 
-    strcpy(buf, "Type\tDriver\tPCI\tVendor\tDevice\tHID\n");
+    strcpy(buf, "Type\tDriver\tPCI\tVendor\tDevice\tHID\tHost\tMode\n");
     for (size_t i = 0; i < usb_controller_count(); i++) {
         const struct usb_controller_info *usb = usb_controller_get(i);
-        char line[160];
-        ksnprintf(line, sizeof(line), "%s\t%s\t%02x:%02x.%u\t%04x\t%04x\t%s\n",
+        char line[192];
+        ksnprintf(line, sizeof(line), "%s\t%s\t%02x:%02x.%u\t%04x\t%04x\t%s\t%s\t%s\n",
                   usb_controller_type_name(usb->type), usb->driver,
                   usb->bus, usb->slot, usb->function, usb->vendor_id,
-                  usb->device_id, usb->hid_ready ? "ready" : "not-ready");
+                  usb->device_id, usb->hid_ready ? "ready" : "not-ready",
+                  usb->host_ready ? "ready" : "pending",
+                  usb->inventory_only ? "inventory" : "runtime");
         if (strlen(buf) + strlen(line) < sizeof(buf)) {
             strcat(buf, line);
         }
     }
     if (usb_controller_count() == 0) {
-        strcat(buf, "none\t-\t-\t-\t-\tnot-ready\n");
+        strcat(buf, "none\t-\t-\t-\t-\tnot-ready\tmissing\t-\n");
     }
     vfs_write_file("/proc/usb", "/", buf, strlen(buf));
 

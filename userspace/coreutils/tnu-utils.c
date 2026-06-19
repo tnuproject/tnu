@@ -6,6 +6,7 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <signal.h>
 #include <unistd.h>
 #include <fcntl.h>
 
@@ -38,7 +39,7 @@ struct util_help {
 static int cmd_shutdown(int argc, char **argv);
 static int cmd_reboot(int argc, char **argv);
 static int cmd_sync(int argc, char **argv);
-static int cmd_tirux(int argc, char **argv);
+static int cmd_kill(int argc, char **argv);
 static int cmd_tar(int argc, char **argv);
 static int cmd_zip(int argc, char **argv);
 static int cmd_unzip(int argc, char **argv);
@@ -75,9 +76,8 @@ static const struct util_help help_topics[] = {
     { "curl", "curl URL [-o FILE]", "Fetch file: and http:// URLs; HTTPS waits for TLS." },
     { "wget", "wget URL [-O FILE]", "Fetch file: and http:// URLs; HTTPS waits for TLS." },
     { "tls", "tls status", "Show HTTPS/TLS backend readiness." },
-    { "wifi", "wifi scan|connect IFACE SSID [PASSPHRASE]|disconnect IFACE|status|debug", "Scan, connect, and show Wi-Fi status." },
+    { "wifi", "wifi start IFACE|scan|connect IFACE SSID [PASSPHRASE]|disconnect IFACE|status|debug", "Start, scan, connect, and show Wi-Fi status." },
     { "stat", "stat FILE", "Print file metadata." },
-    { "tirux", "tirux install|status|help", "Prepare and use the Tiramisu Linux compatibility root." },
     { "tar", "tar -c|-t|-x -f ARCHIVE [PATH...]", "Create, list, or extract uncompressed ustar archives." },
     { "zip", "zip ARCHIVE.zip FILE...", "Create a store-only ZIP archive." },
     { "unzip", "unzip ARCHIVE.zip", "Extract files from a store-only ZIP archive." },
@@ -620,11 +620,27 @@ static int cmd_wifi(int argc, char **argv)
 {
     if (argc < 2 || strcmp(argv[1], "help") == 0 || strcmp(argv[1], "--help") == 0) {
         println("usage: wifi scan");
+        println("       wifi start IFACE");
         println("       wifi connect IFACE SSID [PASSPHRASE]");
         println("       wifi disconnect IFACE");
         println("       wifi status");
         println("       wifi debug");
         return argc < 2 ? 1 : 0;
+    }
+    if (strcmp(argv[1], "start") == 0) {
+        if (argc < 3) {
+            println("usage: wifi start IFACE");
+            return 1;
+        }
+        struct wifi_ap aps[1];
+        int rc = wifi_scan(aps, sizeof(aps) / sizeof(aps[0]));
+        if (rc < 0) {
+            println("wifi: start failed");
+            return 1;
+        }
+        print("wifi: started ");
+        println(argv[2]);
+        return 0;
     }
     if (strcmp(argv[1], "scan") == 0) {
         struct wifi_ap aps[32];
@@ -815,154 +831,6 @@ static int cmd_sync(int argc, char **argv)
     return 0;
 }
 
-static int path_exists(const char *path)
-{
-    struct stat st;
-    return stat(path, &st) == 0;
-}
-
-static int write_text_file(const char *path, const char *text)
-{
-    int fd = open(path, O_CREAT | O_TRUNC | O_WRONLY, 0644);
-    if (fd < 0) {
-        return -1;
-    }
-    size_t len = strlen(text);
-    size_t off = 0;
-    while (off < len) {
-        ssize_t n = write(fd, text + off, len - off);
-        if (n <= 0) {
-            close(fd);
-            return -1;
-        }
-        off += (size_t)n;
-    }
-    close(fd);
-    return 0;
-}
-
-static void tirux_mkdirs(void)
-{
-    mkdir("/usr", 0755);
-    mkdir("/usr/linux", 0755);
-    mkdir("/usr/linux/bin", 0755);
-    mkdir("/usr/linux/etc", 0755);
-    mkdir("/usr/linux/home", 0755);
-    mkdir("/usr/linux/lib", 0755);
-    mkdir("/usr/linux/lib64", 0755);
-    mkdir("/usr/linux/lib/modules", 0755);
-    mkdir("/usr/linux/proc", 0555);
-    mkdir("/usr/linux/root", 0700);
-    mkdir("/usr/linux/sbin", 0755);
-    mkdir("/usr/linux/sys", 0555);
-    mkdir("/usr/linux/tmp", 01777);
-    mkdir("/usr/linux/usr", 0755);
-    mkdir("/usr/linux/usr/bin", 0755);
-    mkdir("/usr/linux/usr/lib", 0755);
-    mkdir("/usr/linux/usr/sbin", 0755);
-    mkdir("/usr/linux/var", 0755);
-    mkdir("/usr/linux/var/tmp", 01777);
-}
-
-static void tirux_print_usage(void)
-{
-    println("tirux install [alpine|manual URL]");
-    println("  prepares /usr/linux and records the chosen Linux rootfs source");
-    println("");
-    println("Current beta limitation:");
-    println("  HTTPS download is not implemented in Tiramisu userspace yet.");
-    println("  Tar extraction is available with: tar -x -f ARCHIVE.tar");
-    println("  For now, copy/extract the rootfs contents into /usr/linux before booting.");
-    println("");
-    println("After a rootfs is present:");
-    println("  linux-run /bin/busybox echo hello");
-    println("  linux-run /bin/sh");
-}
-
-static int cmd_tirux_status(void)
-{
-    println("Tirux Linux root: /usr/linux");
-    print("  /usr/linux/bin/sh: ");
-    println(path_exists("/usr/linux/bin/sh") ? "present" : "missing");
-    print("  /usr/linux/bin/busybox: ");
-    println(path_exists("/usr/linux/bin/busybox") ? "present" : "missing");
-    print("  /bin/nano native: ");
-    println(path_exists("/bin/nano") ? "present" : "missing");
-    print("  /usr/linux/lib: ");
-    println(path_exists("/usr/linux/lib") ? "present" : "missing");
-    print("  /usr/linux/lib64: ");
-    println(path_exists("/usr/linux/lib64") ? "present" : "missing");
-    if (path_exists("/usr/linux/bin/sh") || path_exists("/usr/linux/bin/busybox")) {
-        println("");
-        println("Try:");
-        println("  linux-run /bin/sh");
-        println("  linux-run /bin/busybox sh");
-        println("  nano file.txt");
-    } else {
-        println("");
-        println("No Linux userspace appears to be installed yet.");
-        println("Run: tirux install alpine");
-        println("Then place a Linux rootfs under /usr/linux.");
-    }
-    return 0;
-}
-
-static int cmd_tirux_install(int argc, char **argv)
-{
-    const char *choice = argc >= 3 ? argv[2] : "alpine";
-    tirux_mkdirs();
-
-    write_text_file("/usr/linux/TIRUX.txt",
-        "Tirux Linux compatibility root.\n"
-        "Populate this directory with a Linux rootfs.\n"
-        "Then run Linux binaries with linux-run.\n");
-    if (strcmp(choice, "manual") == 0 && argc >= 4) {
-        write_text_file("/usr/linux/TIRUX_SOURCE", argv[3]);
-    } else if (strcmp(choice, "alpine") == 0) {
-        write_text_file("/usr/linux/TIRUX_SOURCE", "alpine:latest-stable:x86_64");
-    } else {
-        write_text_file("/usr/linux/TIRUX_SOURCE", choice);
-    }
-
-    println("Tirux prepared /usr/linux.");
-    println("");
-    println("Selected source:");
-    if (strcmp(choice, "manual") == 0 && argc >= 4) {
-        println(argv[3]);
-    } else if (strcmp(choice, "alpine") == 0) {
-        println("alpine:latest-stable:x86_64");
-    } else {
-        println(choice);
-    }
-    println("");
-    println("Download backend status: pending native HTTPS support.");
-    println("Archive backend status: native tar/zip/unzip applets available.");
-    println("For this beta, put the extracted rootfs contents directly in /usr/linux.");
-    println("");
-    println("Then use:");
-    println("  tirux status");
-    println("  linux-run /bin/sh");
-    println("  linux-run /bin/busybox echo hello");
-    return 0;
-}
-
-static int cmd_tirux(int argc, char **argv)
-{
-    if (argc < 2 || strcmp(argv[1], "help") == 0 || strcmp(argv[1], "--help") == 0) {
-        tirux_print_usage();
-        return 0;
-    }
-    if (strcmp(argv[1], "install") == 0) {
-        return cmd_tirux_install(argc, argv);
-    }
-    if (strcmp(argv[1], "status") == 0) {
-        return cmd_tirux_status();
-    }
-    println("tirux: unknown command");
-    tirux_print_usage();
-    return 1;
-}
-
 static int write_all_fd(int fd, const void *buf, size_t len)
 {
     const char *p = buf;
@@ -1079,6 +947,25 @@ static int http_is_chunked(const char *header)
             return 1;
         }
     }
+    return 0;
+}
+
+static int cmd_kill(int argc, char **argv)
+{
+    if (argc != 2) {
+        println("usage: kill PID");
+        return 1;
+    }
+    int pid = atoi(argv[1]);
+    if (pid <= 0) {
+        println("kill: invalid pid");
+        return 1;
+    }
+    if (kill(pid, 15) < 0) {
+        println("kill: failed");
+        return 1;
+    }
+    println("kill: sent");
     return 0;
 }
 
@@ -2290,13 +2177,12 @@ int main(int argc, char **argv)
     if (strcmp(cmd, "clear") == 0) { print("\033[2J\033[H"); return 0; }
     if (strcmp(cmd, "date") == 0) { println("date: unavailable from userspace"); return 1; }
     if (strcmp(cmd, "ps") == 0) { print_file("/proc/processes"); return 0; }
-    if (strcmp(cmd, "kill") == 0) { println("usage: kill PID"); return 1; }
+    if (strcmp(cmd, "kill") == 0) return cmd_kill(argc, argv);
     if (strcmp(cmd, "chmod") == 0) return cmd_chmod(argc, argv);
     if (strcmp(cmd, "stat") == 0) return cmd_stat(argc, argv);
     if (strcmp(cmd, "tar") == 0) return cmd_tar(argc, argv);
     if (strcmp(cmd, "zip") == 0) return cmd_zip(argc, argv);
     if (strcmp(cmd, "unzip") == 0) return cmd_unzip(argc, argv);
-    if (strcmp(cmd, "tirux") == 0) return cmd_tirux(argc, argv);
     if (strcmp(cmd, "shutdown") == 0) return cmd_shutdown(argc, argv);
     if (strcmp(cmd, "reboot") == 0) return cmd_reboot(argc, argv);
     if (strcmp(cmd, "sync") == 0) return cmd_sync(argc, argv);

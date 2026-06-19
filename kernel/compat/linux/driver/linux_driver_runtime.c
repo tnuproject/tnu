@@ -20,6 +20,9 @@ struct ldr_device_slot {
     struct ldr_device_info info;
     struct net_iface *iface;
     const struct pci_device *pci;
+    char connected_ssid[33];
+    struct wifi_ap scan_cache[32];
+    size_t scan_count;
 };
 
 static struct ldr_module_slot ldr_modules[LDR_MAX_MODULES];
@@ -280,6 +283,7 @@ int ldr_probe_pci_netdev(struct net_iface *iface, const struct pci_device *dev)
 
     iface->driver = "linux-iwlwifi";
     iface->driver_data = slot;
+    iface->configurable = true;
     iface->up = false;
     iface->link = false;
 
@@ -310,23 +314,28 @@ int ldr_wifi_scan(struct net_iface *iface)
     if (!slot) {
         return LDR_ERR_NOTFOUND;
     }
-    slot->info.last_error = LDR_ERR_UNSUPPORTED;
-    ldr_stats_data.last_error = LDR_ERR_UNSUPPORTED;
-    return ldr_cfg80211_scan(iface);
+    int rc = ldr_cfg80211_scan(iface);
+    slot->info.last_error = rc < 0 ? rc : 0;
+    ldr_stats_data.last_error = slot->info.last_error;
+    return rc;
 }
 
 int ldr_wifi_connect(struct net_iface *iface, const char *ssid, const char *passphrase)
 {
-    (void)ssid;
-    (void)passphrase;
     struct ldr_device_slot *slot = ldr_find_device_by_iface(iface);
     ldr_stats_data.connect_requests++;
     if (!slot) {
         return LDR_ERR_NOTFOUND;
     }
-    slot->info.last_error = LDR_ERR_UNSUPPORTED;
-    ldr_stats_data.last_error = LDR_ERR_UNSUPPORTED;
-    return ldr_cfg80211_connect(iface, ssid, passphrase);
+    int rc = ldr_cfg80211_connect(iface, ssid, passphrase);
+    if (rc == 0) {
+        strncpy(slot->connected_ssid, ssid, sizeof(slot->connected_ssid) - 1);
+        slot->connected_ssid[sizeof(slot->connected_ssid) - 1] = '\0';
+        slot->info.state = LDR_DEVICE_RUNNING;
+    }
+    slot->info.last_error = rc < 0 ? rc : 0;
+    ldr_stats_data.last_error = slot->info.last_error;
+    return rc;
 }
 
 int ldr_wifi_status(const struct net_iface *iface, struct wifi_status *out)
@@ -335,14 +344,31 @@ int ldr_wifi_status(const struct net_iface *iface, struct wifi_status *out)
         return -1;
     }
     memset(out, 0, sizeof(*out));
-    return ldr_find_device_by_iface(iface) ? 0 : LDR_ERR_NOTFOUND;
+    struct ldr_device_slot *slot = ldr_find_device_by_iface(iface);
+    if (!slot) {
+        return LDR_ERR_NOTFOUND;
+    }
+    out->connected = iface->link;
+    if (slot->connected_ssid[0]) {
+        strncpy(out->ssid, slot->connected_ssid, sizeof(out->ssid) - 1);
+    }
+    return 0;
 }
 
 int ldr_wifi_scan_results(const struct net_iface *iface, struct wifi_ap *out, size_t max_aps)
 {
-    (void)out;
-    (void)max_aps;
-    return ldr_find_device_by_iface(iface) ? 0 : LDR_ERR_NOTFOUND;
+    struct ldr_device_slot *slot = ldr_find_device_by_iface(iface);
+    if (!slot) {
+        return LDR_ERR_NOTFOUND;
+    }
+    if (!out || max_aps == 0) {
+        return LDR_ERR_INVALID;
+    }
+    size_t n = slot->scan_count < max_aps ? slot->scan_count : max_aps;
+    for (size_t i = 0; i < n; i++) {
+        out[i] = slot->scan_cache[i];
+    }
+    return (int)n;
 }
 
 void ldr_get_stats(struct ldr_stats *out)

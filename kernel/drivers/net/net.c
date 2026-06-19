@@ -1648,6 +1648,12 @@ int net_wifi_connect(const char *iface_name, const char *ssid, const char *passp
         if (rc == 0) {
             iface->up = true;
             iface->link = true;
+            if (!iface->ops || !iface->ops->transmit || !iface->ops->poll) {
+                log_warn("linuxdrv", "%s Linux iwlwifi control plane connected to '%s' but no packet data path is bound",
+                         iface_name, ssid);
+                iface->link = false;
+                return -5;
+            }
             int dhcp = net_iface_dhcp(iface_name);
             if (dhcp < 0) {
                 log_warn("linuxdrv", "%s Linux iwlwifi connected to '%s' but DHCP failed (%d)",

@@ -102,7 +102,7 @@ USER_LIB := $(BUILD)/user/libtnu.a
 
 COREUTIL_NAMES := cat chmod chown clear cp curl date dmesg dns driver echo hostname \
 	id ifconfig keymap kill linuxdrv ls mkdir mount mv net xedit netstat ping ps pwd reboot rm route dhcp \
-	shutdown stat sysfetch sync tar time timezone tirux tls touch uname unzip uptime usb wget whoami wifi zip
+	shutdown stat sysfetch sync tar time timezone tls touch uname unzip uptime usb wget whoami wifi zip
 
 IWN_FW_SRC := $(shell find freebsd-src/sys/contrib/dev/iwn freebsd-src/sys/contrib/dev/wpi -maxdepth 1 -name '*.fw.uu' 2>/dev/null | sort)
 IWM_FW_SRC := $(shell find freebsd-src/sys/contrib/dev/iwm -maxdepth 1 -name '*.fw' 2>/dev/null | sort)
@@ -275,6 +275,7 @@ rootfs: userspace version-files firmware-iwlwifi $(KERNEL) $(EFI_BOOT)
 	cp $(BUILD)/user/useradd $(BUILD)/rootfs/sbin/useradd
 	cp $(BUILD)/user/userdel $(BUILD)/rootfs/sbin/userdel
 	cp $(BUILD)/user/sysinstall $(BUILD)/rootfs/sbin/sysinstall
+	cp $(BUILD)/user/bootd $(BUILD)/rootfs/sbin/bootd
 	for name in $(COREUTIL_NAMES); do cp $(BUILD)/user/tnu-utils $(BUILD)/rootfs/bin/$$name; done
 	cp $(BUILD)/user/nano $(BUILD)/rootfs/usr/bin/nano
 	cp $(BUILD)/user/doom $(BUILD)/rootfs/usr/games/doom

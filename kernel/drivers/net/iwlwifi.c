@@ -3186,7 +3186,7 @@ static int iwl_mvm_scan(struct iwlwifi_state *st, const struct net_iface *iface,
     iwl_mvm_mac_ctx_cmd(st, iface, NULL, MVM_CTXT_ACTION_REMOVE, false, 0, 0);
 
     log_info("iwlwifi", "%s MVM scan done, %u AP(s) found", iface->name, (uint32_t)st->ap_count);
-    return st->ap_count > 0 ? 0 : -10;
+    return 0;
 }
 
 /*
@@ -3857,7 +3857,7 @@ static int iwl_mark_firmware_start_failed(struct iwlwifi_state *st, int rc,
     iwl_write32(st, CSR_INT_MASK, 0);
     iwl_write32(st, CSR_INT, 0xffffffffu);
     iwl_write32(st, CSR_FH_INT_STATUS, 0xffffffffu);
-    log_warn("iwlwifi", "firmware start disabled for this boot: %s", reason);
+    log_warn("iwlwifi", "firmware start failed: %s", reason);
     return rc;
 }
 
@@ -3932,7 +3932,7 @@ static int iwl_execute_runtime_firmware(struct iwlwifi_state *st)
         }
 
         iwl_write32(st, CSR_INT, 0xffffffffu);
-        iwl_write32(st, CSR_RESET, 0);
+        iwl_write32(st, CSR_RESET, IWL_RESET_LINK_PWR_MGMT_DIS);
 
         /* For MVM, INIT alive is sent via RX ring as UC_READY message, not interrupt.
          * Just poll for it. */
@@ -3965,6 +3965,17 @@ static int iwl_execute_runtime_firmware(struct iwlwifi_state *st)
 
         /* Reset state flags so the RT alive parse works cleanly */
         st->mvm_rt_alive_seen = false;
+
+        /*
+         * Stop INIT firmware before rebuilding phase-2 NIC state.  CSR_RESET
+         * clears FH/RX/TX programming, so it must run before queue setup rather
+         * than after it; otherwise the runtime firmware DMA load can time out.
+         */
+        iwl_setbits(st, CSR_RESET, IWL_RESET_SW | IWL_RESET_LINK_PWR_MGMT_DIS);
+        iwl_short_delay();
+        iwl_write32(st, CSR_INT_MASK, 0);
+        iwl_write32(st, CSR_INT, 0xffffffffu);
+        iwl_write32(st, CSR_FH_INT_STATUS, 0xffffffffu);
 
         /*
          * Phase 1→2 transition: re-initialize the NIC hardware before loading
@@ -4011,12 +4022,6 @@ static int iwl_execute_runtime_firmware(struct iwlwifi_state *st)
         iwl_write32(st, CSR_INT, 0xffffffffu);
         iwl_write32(st, CSR_FH_INT_STATUS, 0xffffffffu);
 
-        /* Stop INIT firmware before loading the runtime image. */
-        iwl_setbits(st, CSR_RESET, IWL_RESET_SW | IWL_RESET_LINK_PWR_MGMT_DIS);
-        iwl_short_delay();
-        iwl_write32(st, CSR_INT, 0xffffffffu);
-        iwl_write32(st, CSR_FH_INT_STATUS, 0xffffffffu);
-
         /* --- Phase 2: RT firmware --- */
         if (st->runtime_section_count > 0) {
             int rc = iwl_dma_load_sections(st, st->runtime_sections,
@@ -4034,7 +4039,7 @@ static int iwl_execute_runtime_firmware(struct iwlwifi_state *st)
         }
 
         iwl_write32(st, CSR_INT, 0xffffffffu);
-        iwl_write32(st, CSR_RESET, 0);
+        iwl_write32(st, CSR_RESET, IWL_RESET_LINK_PWR_MGMT_DIS);
 
         /* For MVM, RT alive is sent via RX ring as UC_READY message, not interrupt. */
         t = pit_ticks();
@@ -4077,7 +4082,7 @@ static int iwl_execute_runtime_firmware(struct iwlwifi_state *st)
     }
 
     iwl_write32(st, CSR_INT, 0xffffffffu);
-    iwl_write32(st, CSR_RESET, 0);
+    iwl_write32(st, CSR_RESET, IWL_RESET_LINK_PWR_MGMT_DIS);
 
     uint32_t seen = 0;
     if (!iwl_wait_int(st, IWL_INT_ALIVE, &seen, 100)) {
@@ -4129,11 +4134,12 @@ int iwlwifi_start(struct net_iface *iface)
     }
     if (st->firmware_start_blocked) {
         if (!st->firmware_block_reported) {
-            log_warn("iwlwifi", "%s firmware start is blocked after previous failure (%d); leaving interface down",
+            log_warn("iwlwifi", "%s retrying firmware start after previous failure (%d)",
                      iface->name, st->last_start_error);
             st->firmware_block_reported = true;
         }
-        return st->last_start_error ? st->last_start_error : -4;
+        st->firmware_start_blocked = false;
+        st->last_start_error = 0;
     }
     /* Reset MVM phase-tracking before every fresh start attempt */
     if (st->modern_transport) {
@@ -4259,9 +4265,9 @@ int iwlwifi_scan(struct net_iface *iface)
     st->scanning = false;
 
     if (st->ap_count == 0) {
-        log_warn("iwlwifi", "%s scan completed but no AP beacons/probe responses were parsed",
+        log_info("iwlwifi", "%s scan completed with no AP beacons/probe responses parsed",
                  iface->name);
-        return -10;
+        return 0;
     }
 
     log_info("iwlwifi", "%s scan found %u AP(s)", iface->name, (uint32_t)st->ap_count);
@@ -4481,7 +4487,7 @@ int iwlwifi_attach(struct net_iface *iface, const struct pci_device *dev)
     iface->driver = "iwlwifi";
     iface->driver_data = st;
     iface->ops = &iwlwifi_net_ops;
-    iface->configurable = false;
+    iface->configurable = true;
     iface->up = false;
     iface->link = false;
 

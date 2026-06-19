@@ -1769,6 +1769,21 @@ static long sys_set_password(const char *user_ptr, const char *password_ptr)
     return user_set_password(name, password);
 }
 
+static long sys_wait(int pid)
+{
+    struct process *proc = process_current();
+    struct process *child = process_find(pid);
+    if (!proc || !child || child->ppid != proc->pid) {
+        return -1;
+    }
+    if (child->state != PROCESS_ZOMBIE) {
+        return -1;
+    }
+    int code = child->exit_code;
+    memset(child, 0, sizeof(*child));
+    return code;
+}
+
 long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
                       uint64_t a3, uint64_t a4, uint64_t a5)
 {
@@ -1943,7 +1958,12 @@ long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
     case SYS_EXEC:
         return sys_exec_image((const char *)a0, (int)a1, (char **)a2);
     case SYS_WAIT:
-        return -1;
+        return sys_wait((int)a0);
+    case SYS_KILL:
+        if (!proc) {
+            return -1;
+        }
+        return process_kill((int)a0);
     case SYS_SYNC:
         /* Force a sync regardless of auto_sync_enabled.
          * tfs_sync() handles all internal checks (device exists, etc.) */

@@ -148,10 +148,12 @@ uid_t geteuid(void)
 
 int kill(pid_t pid, int sig)
 {
-    (void)pid;
-    (void)sig;
-    errno = ENOSYS;
-    return -1;
+    int rc = (int)tnu_syscall(SYS_KILL, pid, sig, 0, 0, 0, 0);
+    if (rc < 0) {
+        errno = ESRCH;
+        return -1;
+    }
+    return 0;
 }
 
 pid_t fork(void)

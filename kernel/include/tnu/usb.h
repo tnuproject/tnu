@@ -23,6 +23,8 @@ struct usb_controller_info {
     uint8_t prog_if;
     const char *driver;
     bool hid_ready;
+    bool host_ready;
+    bool inventory_only;
 };
 
 void usb_init(void);

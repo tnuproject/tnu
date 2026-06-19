@@ -37,7 +37,7 @@ Linux path.
 
 Tiramisu branding and system-management commands always keep native priority:
 `sysfetch`, `hostname`, `login`, `useradd`, `userdel`, `passwd`, `init`, `sh`,
-`tsh`, `uname`, `tirux`, `shutdown`, `reboot`, `sync`, `keymap`, `timezone`,
+`tsh`, `uname`, `shutdown`, `reboot`, `sync`, `keymap`, `timezone`,
 `layout`, `nano`, `ls`, and networking/driver commands such as `ping`, `wifi`,
 `curl`, `wget`, `dns`, `net`, `tls`, `driver`, `linuxdrv`, `ifconfig`, `route`,
 `netstat`, and `dhcp`.
