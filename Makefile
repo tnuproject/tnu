@@ -124,7 +124,7 @@ kernel: $(KERNEL)
 userspace: $(USER_LIB) $(BUILD)/user/init $(BUILD)/user/tsh \
 	$(BUILD)/user/tnu-utils $(BUILD)/user/login $(BUILD)/user/passwd \
 	$(BUILD)/user/useradd $(BUILD)/user/userdel $(BUILD)/user/sysinstall \
-	$(BUILD)/user/bootd $(BUILD)/user/nano \
+	$(BUILD)/user/bootd $(BUILD)/user/nano $(BUILD)/user/pkg \
 	$(BUILD)/user/doom
 
 nano: $(BUILD)/user/nano
@@ -236,6 +236,10 @@ $(BUILD)/user/bootd: $(BUILD)/obj/userspace/sbin/bootd.o $(USER_LIB) $(USER_CRT)
 	@mkdir -p $(dir $@)
 	$(CC) $(USER_CFLAGS) $(USER_LDFLAGS) -o $@ $(USER_CRT) $< $(USER_LIB) -lgcc
 
+$(BUILD)/user/pkg: $(BUILD)/obj/userspace/pkg/pkg.o $(USER_LIB) $(USER_CRT) userspace/linker.ld
+	@mkdir -p $(dir $@)
+	$(CC) $(USER_CFLAGS) $(USER_LDFLAGS) -o $@ $(USER_CRT) $< $(USER_LIB) -lgcc
+
 $(BUILD)/user/dhclient: $(BUILD)/obj/userspace/sbin/dhclient.o $(USER_LIB) $(USER_CRT) userspace/linker.ld
 	@mkdir -p $(dir $@)
 	$(CC) $(USER_CFLAGS) $(USER_LDFLAGS) -o $@ $(USER_CRT) $< $(USER_LIB) -lgcc
@@ -275,6 +279,7 @@ rootfs: userspace version-files firmware-iwlwifi $(KERNEL) $(EFI_BOOT)
 	cp $(BUILD)/user/useradd $(BUILD)/rootfs/sbin/useradd
 	cp $(BUILD)/user/userdel $(BUILD)/rootfs/sbin/userdel
 	cp $(BUILD)/user/sysinstall $(BUILD)/rootfs/sbin/sysinstall
+	cp $(BUILD)/user/pkg $(BUILD)/rootfs/usr/bin/pkg
 	for name in $(COREUTIL_NAMES); do cp $(BUILD)/user/tnu-utils $(BUILD)/rootfs/bin/$$name; done
 	cp $(BUILD)/user/nano $(BUILD)/rootfs/usr/bin/nano
 	cp $(BUILD)/user/doom $(BUILD)/rootfs/usr/games/doom
