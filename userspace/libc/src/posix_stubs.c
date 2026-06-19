@@ -18,6 +18,82 @@
 #include <time.h>
 #include <unistd.h>
 
+static char current_locale[32] = "C";
+static char locale_buffer[32];
+static int locale_initialized;
+
+static const char *normalize_locale_name(const char *locale)
+{
+    if (!locale || !locale[0] || strcmp(locale, "C") == 0 || strcmp(locale, "POSIX") == 0) {
+        return "C";
+    }
+    if (strcmp(locale, "en") == 0 || strcmp(locale, "en_US") == 0 ||
+        strcmp(locale, "en_US.CP437") == 0) {
+        return "en_US";
+    }
+    if (strcmp(locale, "de") == 0 || strcmp(locale, "de_DE") == 0 ||
+        strcmp(locale, "de_DE.CP437") == 0) {
+        return "de_DE";
+    }
+    if (strcmp(locale, "nl") == 0 || strcmp(locale, "nl_NL") == 0 ||
+        strcmp(locale, "nl_NL.CP437") == 0) {
+        return "nl_NL";
+    }
+    if (strcmp(locale, "lt") == 0 || strcmp(locale, "lt_LT") == 0 ||
+        strcmp(locale, "lt_LT.CP437") == 0) {
+        return "lt_LT";
+    }
+    if (strcmp(locale, "pl") == 0 || strcmp(locale, "pl_PL") == 0 ||
+        strcmp(locale, "pl_PL.CP437") == 0) {
+        return "pl_PL";
+    }
+    return NULL;
+}
+
+static const char *system_locale_name(void)
+{
+    int fd = open("/etc/locale", O_RDONLY);
+    if (fd < 0) {
+        return "C";
+    }
+    ssize_t n = read(fd, locale_buffer, sizeof(locale_buffer) - 1);
+    close(fd);
+    if (n <= 0) {
+        return "C";
+    }
+    locale_buffer[n] = '\0';
+    for (char *p = locale_buffer; *p; p++) {
+        if (*p == '\r' || *p == '\n') {
+            *p = '\0';
+            break;
+        }
+    }
+    if (!locale_buffer[0]) {
+        return "C";
+    }
+    {
+        const char *normalized = normalize_locale_name(locale_buffer);
+        if (!normalized) {
+            return "C";
+        }
+        if (normalized != locale_buffer) {
+            strncpy(locale_buffer, normalized, sizeof(locale_buffer) - 1);
+            locale_buffer[sizeof(locale_buffer) - 1] = '\0';
+        }
+    }
+    return locale_buffer;
+}
+
+static void init_current_locale(void)
+{
+    if (locale_initialized) {
+        return;
+    }
+    strncpy(current_locale, system_locale_name(), sizeof(current_locale) - 1);
+    current_locale[sizeof(current_locale) - 1] = '\0';
+    locale_initialized = 1;
+}
+
 int raise(int sig)
 {
     (void)sig;
@@ -241,7 +317,24 @@ int closedir(DIR *dirp)
 char *setlocale(int category, const char *locale)
 {
     (void)category;
-    return locale && locale[0] && strcmp(locale, "C") != 0 ? 0 : "C";
+    init_current_locale();
+    if (!locale) {
+        return current_locale;
+    }
+    if (!locale[0]) {
+        strncpy(current_locale, system_locale_name(), sizeof(current_locale) - 1);
+        current_locale[sizeof(current_locale) - 1] = '\0';
+        return current_locale;
+    }
+    {
+        const char *normalized = normalize_locale_name(locale);
+        if (!normalized) {
+            return 0;
+        }
+        strncpy(current_locale, normalized, sizeof(current_locale) - 1);
+        current_locale[sizeof(current_locale) - 1] = '\0';
+    }
+    return current_locale;
 }
 
 uint16_t htons(uint16_t hostshort)
@@ -336,40 +429,40 @@ const char *inet_ntop(int af, const void *src, char *dst, socklen_t size)
 
 int socket(int domain, int type, int protocol)
 {
-    int fd = (int)tnu_syscall(SYS_SOCKET, domain, type, protocol, 0, 0, 0);
-    if (fd < 0) {
-        errno = ENOSYS;
-    }
-    return fd;
+    (void)domain;
+    (void)type;
+    (void)protocol;
+    errno = ENOSYS;
+    return -1;
 }
 
 int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
 {
-    int rc = (int)tnu_syscall(SYS_CONNECT, sockfd, (long)addr, addrlen, 0, 0, 0);
-    if (rc < 0) {
-        errno = EIO;
-    }
-    return rc;
+    (void)sockfd;
+    (void)addr;
+    (void)addrlen;
+    errno = ENOSYS;
+    return -1;
 }
 
 ssize_t send(int sockfd, const void *buf, size_t len, int flags)
 {
+    (void)sockfd;
+    (void)buf;
+    (void)len;
     (void)flags;
-    ssize_t rc = (ssize_t)tnu_syscall(SYS_SEND, sockfd, (long)buf, len, 0, 0, 0);
-    if (rc < 0) {
-        errno = EIO;
-    }
-    return rc;
+    errno = ENOSYS;
+    return -1;
 }
 
 ssize_t recv(int sockfd, void *buf, size_t len, int flags)
 {
+    (void)sockfd;
+    (void)buf;
+    (void)len;
     (void)flags;
-    ssize_t rc = (ssize_t)tnu_syscall(SYS_RECV, sockfd, (long)buf, len, 0, 0, 0);
-    if (rc < 0) {
-        errno = EIO;
-    }
-    return rc;
+    errno = ENOSYS;
+    return -1;
 }
 
 int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen)

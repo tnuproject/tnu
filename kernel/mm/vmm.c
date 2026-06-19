@@ -67,7 +67,6 @@ static int map_huge_identity(uintptr_t addr, uint64_t flags)
     size_t pml4_index = (size_t)((aligned >> 39) & 0x1ff);
     size_t pdpt_index = (size_t)((aligned >> 30) & 0x1ff);
     size_t pd_index = (size_t)((aligned >> 21) & 0x1ff);
-    bool modified = false;
 
     if (!(pml4_table[pml4_index] & PTE_PRESENT)) {
         uint64_t *new_pdpt = alloc_pdpt_table();
@@ -76,7 +75,6 @@ static int map_huge_identity(uintptr_t addr, uint64_t flags)
         }
         pml4_table[pml4_index] = ((uint64_t)(uintptr_t)new_pdpt) |
                                   PTE_PRESENT | PTE_WRITABLE | (flags & PTE_USER);
-        modified = true;
     } else {
         pml4_table[pml4_index] |= flags & PTE_USER;
     }
@@ -89,7 +87,6 @@ static int map_huge_identity(uintptr_t addr, uint64_t flags)
         }
         pdpt[pdpt_index] = ((uint64_t)(uintptr_t)new_pd) |
                             PTE_PRESENT | PTE_WRITABLE | (flags & PTE_USER);
-        modified = true;
     } else {
         pdpt[pdpt_index] |= flags & PTE_USER;
     }
@@ -104,11 +101,10 @@ static int map_huge_identity(uintptr_t addr, uint64_t flags)
             pte_flags |= PTE_PWT;                  /* apply hardware bit */
         }
         pd[pd_index] = aligned | PTE_PRESENT | PTE_WRITABLE | PTE_HUGE | pte_flags;
-        modified = true;
     } else {
         pd[pd_index] |= flags;
     }
-    return modified ? 1 : 0;
+    return 0;
 }
 
 void vmm_init(void)
@@ -136,21 +132,11 @@ int vmm_map_range_identity(uintptr_t phys, size_t length, uint64_t flags)
         return -1;
     }
 
-    bool any_modified = false;
     for (uint64_t addr = start; addr < end; addr += HUGE_PAGE_SIZE) {
-        int rc = map_huge_identity((uintptr_t)addr, flags);
-        if (rc < 0) {
+        if (map_huge_identity((uintptr_t)addr, flags) < 0) {
             return -1;
         }
-        if (rc > 0) {
-            any_modified = true;
-        }
     }
-    /* Only flush TLB if we actually modified page tables. On subsequent runs
-     * (e.g. running multiple Linux commands), pages are already mapped and we
-     * skip the expensive TLB flush, improving real hardware performance. */
-    if (any_modified) {
-        reload_cr3();
-    }
+    reload_cr3();
     return 0;
 }

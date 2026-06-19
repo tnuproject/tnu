@@ -25,13 +25,13 @@ static inline void cpu_sti(void)
 
 void cpu_get_brand(char *out, size_t out_size);
 uint64_t cpu_read_cr2(void);
-void cpu_init_fpu(void);
-void cpu_set_fs_base(uint64_t base);
 uint64_t cpu_get_fs_base(void);
+void cpu_set_fs_base(uint64_t base);
+void cpu_init_fpu(void);
 void syscall_init(void);
 int arch_enter_user(uint64_t entry, uint64_t user_stack);
-__attribute__((noreturn)) void arch_abort_user(int exit_code);
 uintptr_t arch_get_exec_rsp(void);
 void arch_set_exec_rsp(uintptr_t rsp);
+__attribute__((noreturn)) void arch_abort_user(int exit_code);
 
 #endif

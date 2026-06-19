@@ -49,8 +49,6 @@ struct process *process_create(const char *name, int ppid, uint32_t uid, uint32_
             memset(p, 0, sizeof(*p));
             p->pid = next_pid++;
             p->ppid = ppid;
-            p->tgid = p->pid;
-            p->sid = ppid == 0 ? p->pid : ppid;
             p->pgid = p->pid;
             p->uid = uid;
             p->gid = gid;

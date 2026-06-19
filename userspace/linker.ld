@@ -5,7 +5,7 @@ ENTRY(_start)
  *
  * The original script placed the load address at 0x4000000, which collides with
  * the reserved boot module area used by the kernel during exec. This caused
- * binaries such as doom to fail with:
+ * binaries such as doom, nano and fastfetch to fail with:
  *   "ELF image overlaps reserved boot area"
  *
  * To avoid this, we move the base address up to 0x8000000. The kernel's

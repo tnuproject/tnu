@@ -46,9 +46,6 @@ struct iwlwifi_state {
     bool firmware_staged;
     bool firmware_running;
     bool firmware_alive;
-    bool firmware_start_blocked;
-    bool firmware_block_reported;
-    int last_start_error;
     bool firmware_tlv;
     bool modern_transport;
     bool associated;
@@ -153,8 +150,6 @@ int iwlwifi_attach(struct net_iface *iface, const struct pci_device *dev);
 int iwlwifi_start(struct net_iface *iface);
 int iwlwifi_scan(struct net_iface *iface);
 int iwlwifi_associate(struct net_iface *iface, const char *ssid, const char *passphrase);
-int iwlwifi_disconnect(struct net_iface *iface);
-int iwlwifi_poll_rx_notifications_all(void);
 const struct iwlwifi_state *iwlwifi_state_for(const struct net_iface *iface);
 void iwlwifi_exit(void);
 

@@ -868,7 +868,7 @@ static int tls_parse_https_url(const char *url, struct tls_url *out)
 static int tls_tcp_connect(const struct tls_url *url)
 {
     uint32_t ip = 0;
-    if (resolve4(url->host, &ip) < 0) {
+    if (net_resolve4(url->host, &ip) < 0) {
         return TNU_TLS_ERR_NETWORK;
     }
     int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);

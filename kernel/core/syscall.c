@@ -2,7 +2,6 @@
 #include <tnu/elf.h>
 #include <tnu/framebuffer.h>
 #include <tnu/log.h>
-#include <tnu/linux_compat.h>
 #include <tnu/memory.h>
 #include <tnu/multiboot2.h>
 #include <tnu/net.h>
@@ -89,26 +88,6 @@ static bool is_root(const struct process *proc)
     return proc && proc->uid == 0;
 }
 
-static uint16_t sys_ntohs(uint16_t v)
-{
-    return (uint16_t)((v << 8) | (v >> 8));
-}
-
-static uint32_t sys_ntohl(uint32_t v)
-{
-    return ((v & 0x000000ffu) << 24) |
-           ((v & 0x0000ff00u) << 8) |
-           ((v & 0x00ff0000u) >> 8) |
-           ((v & 0xff000000u) >> 24);
-}
-
-struct syscall_sockaddr_in {
-    uint16_t sin_family;
-    uint16_t sin_port;
-    uint32_t sin_addr;
-    uint8_t sin_zero[8];
-};
-
 static bool path_is_or_under(const char *path, const char *prefix)
 {
     size_t len = strlen(prefix);
@@ -149,8 +128,6 @@ static bool path_is_public_device(const char *normal)
 {
     return strcmp(normal, "/dev/null") == 0 ||
            strcmp(normal, "/dev/zero") == 0 ||
-           strcmp(normal, "/dev/random") == 0 ||
-           strcmp(normal, "/dev/urandom") == 0 ||
            strcmp(normal, "/dev/tty") == 0 ||
            strcmp(normal, "/dev/console") == 0;
 }
@@ -643,19 +620,6 @@ static long sys_read(int fd, void *buf, size_t count)
             memset(buf, 0, count);
             return (long)count;
         }
-        if (strcmp(file->node->name, "random") == 0 ||
-            strcmp(file->node->name, "urandom") == 0) {
-            uint8_t *p = buf;
-            uint64_t x = pit_get_ticks() ^ (uint64_t)(uintptr_t)buf ^
-                         ((uint64_t)process_current()->pid << 32);
-            for (size_t i = 0; i < count; i++) {
-                x ^= x << 13;
-                x ^= x >> 7;
-                x ^= x << 17;
-                p[i] = (uint8_t)x;
-            }
-            return (long)count;
-        }
         if (strcmp(file->node->name, "tty") == 0 || strcmp(file->node->name, "console") == 0) {
             char *cbuf = buf;
             bool canonical = (tty_c_lflag & TNU_TTYF_ICANON) != 0;
@@ -740,18 +704,6 @@ static long sys_read(int fd, void *buf, size_t count)
             }
             return (long)n;
         }
-        const struct block_device_info *bdev = block_device_find(file->node->name);
-        if (bdev) {
-            uint32_t sector_size = bdev->sector_size ? bdev->sector_size : 512u;
-            if ((file->offset % sector_size) != 0) {
-                return -1;
-            }
-            if (block_read(file->node->name, file->offset / sector_size, buf, count) < 0) {
-                return -1;
-            }
-            file->offset += (uint64_t)count;
-            return (long)count;
-        }
         return -1;
     }
     ssize_t ret = vfs_read_node(file->node, file->offset, buf, count);
@@ -800,21 +752,6 @@ static long sys_write(int fd, const void *buf, size_t count)
                              (const uint32_t *)buf, fb->width);
             return (long)(pixels * sizeof(uint32_t));
         }
-        const struct block_device_info *bdev = block_device_find(file->node->name);
-        if (bdev) {
-            uint32_t sector_size = bdev->sector_size ? bdev->sector_size : 512u;
-            if ((file->offset % sector_size) != 0) {
-                return -1;
-            }
-            if (!bdev->writable) {
-                return -1;
-            }
-            if (block_write_lba28(file->node->name, (uint32_t)(file->offset / sector_size), buf, count) < 0) {
-                return -1;
-            }
-            file->offset += (uint64_t)count;
-            return (long)count;
-        }
         return -1;
     }
     if (file->flags & VFS_O_APPEND) {
@@ -844,17 +781,9 @@ static long sys_lseek(int fd, int64_t offset, int whence)
     case 1:
         base = (int64_t)file->offset;
         break;
-        case 2:
-        if (file->node->type == VFS_NODE_DEV) {
-            const struct block_device_info *bdev = block_device_find(file->node->name);
-            if (bdev) {
-                base = (int64_t)(bdev->sector_count * (uint64_t)(bdev->sector_size ? bdev->sector_size : 512u));
-                break;
-            }
-        }
+    case 2:
         base = (int64_t)file->node->size;
         break;
-
     default:
         return -1;
     }
@@ -1019,10 +948,10 @@ static long sys_exec_image(const char *path, int argc, char **argv)
         /* Original base addresses matching userspace linker script */
         USER_BASE = 0x4000000,
         USER_HEAP_BASE = 0x8000000,
-        USER_STACK_BOTTOM_SMALL = 0x38000000,  /* 896MB */
-        USER_STACK_TOP_SMALL = 0x38400000,     /* 4MB stack */
-        USER_STACK_BOTTOM_LARGE = 0x48000000,  /* 1152MB */
-        USER_STACK_TOP_LARGE = 0x48400000,
+        USER_STACK_BOTTOM_SMALL = 0x30000000,  /* 768MB - leave room for boot modules */
+        USER_STACK_TOP_SMALL = 0x30400000,    /* 4MB stack */
+        USER_STACK_BOTTOM_LARGE = 0x40000000,  /* 1GB */
+        USER_STACK_TOP_LARGE = 0x40400000,
         MAX_ARGS = 16,
         MAX_ARG_LEN = 127,
     };
@@ -1087,7 +1016,9 @@ static long sys_exec_image(const char *path, int argc, char **argv)
     uintptr_t user_heap_base = USER_HEAP_BASE;
     uintptr_t user_heap_limit = user_stack_bottom;
     uintptr_t protected_end = boot_modules_end_in_range(USER_BASE, user_stack_bottom);
-    (void)protected_end;
+    if (protected_end > user_heap_base) {
+        user_heap_base = page_align_up(protected_end);
+    }
     if (user_heap_base >= user_heap_limit || user_heap_limit - user_heap_base < PAGE_SIZE) {
         log_warn("exec", "no userspace heap window path=%s heap_base=%p heap_limit=%p",
                  resolved, (void *)user_heap_base, (void *)user_heap_limit);
@@ -1113,10 +1044,10 @@ static long sys_exec_image(const char *path, int argc, char **argv)
      * ELF segments lie within the user address space bounds.
      */
     if (info.lowest_vaddr < USER_BASE ||
-        info.highest_vaddr > user_heap_limit) {
-        log_warn("exec", "ELF image out of user address space path=%s low=%p high=%p heap_limit=%p",
+        info.highest_vaddr > user_heap_base) {
+        log_warn("exec", "ELF image out of user address space path=%s low=%p high=%p heap_base=%p",
                  resolved, (void *)(uintptr_t)info.lowest_vaddr,
-                 (void *)(uintptr_t)info.highest_vaddr, (void *)user_heap_limit);
+                 (void *)(uintptr_t)info.highest_vaddr, (void *)user_heap_base);
         return -1;
     }
 
@@ -1183,9 +1114,7 @@ static long sys_exec_image(const char *path, int argc, char **argv)
     }
 
     user_exec_active = true;
-    uintptr_t saved_exec_rsp = arch_get_exec_rsp();
     int rc = arch_enter_user(info.entry, (uint64_t)(uintptr_t)stack);
-    arch_set_exec_rsp(saved_exec_rsp);
     user_exec_active = false;
     if (proc) {
         strncpy(proc->name, saved_name, PROCESS_NAME_MAX);
@@ -1769,19 +1698,33 @@ static long sys_set_password(const char *user_ptr, const char *password_ptr)
     return user_set_password(name, password);
 }
 
-static long sys_wait(int pid)
+static long sys_add_user(const char *user_ptr)
 {
+    char name[USER_NAME_MAX + 1];
     struct process *proc = process_current();
-    struct process *child = process_find(pid);
-    if (!proc || !child || child->ppid != proc->pid) {
+
+    if (!proc || !is_root(proc) ||
+        copy_user_string_bounded(user_ptr, name, sizeof(name)) < 0) {
         return -1;
     }
-    if (child->state != PROCESS_ZOMBIE) {
+    if (!user_name_valid(name)) {
         return -1;
     }
-    int code = child->exit_code;
-    memset(child, 0, sizeof(*child));
-    return code;
+
+    uint32_t uid = user_next_uid();
+    return user_add(name, uid, uid);
+}
+
+static long sys_del_user(const char *user_ptr)
+{
+    char name[USER_NAME_MAX + 1];
+    struct process *proc = process_current();
+
+    if (!proc || !is_root(proc) ||
+        copy_user_string_bounded(user_ptr, name, sizeof(name)) < 0) {
+        return -1;
+    }
+    return user_del(name);
 }
 
 long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
@@ -1792,10 +1735,6 @@ long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
     (void)a5;
 
     struct process *proc = process_current();
-
-    if (proc && proc->personality == LINUX_PERSONALITY) {
-        return linux_syscall_entry(number, a0, a1, a2, a3, a4, a5);
-    }
 
     if (user_exec_active && number != SYS_EXIT &&
         (!proc || proc->signal_disposition[SIGINT_NUMBER] == SIGNAL_DISPOSITION_DEFAULT) &&
@@ -1813,9 +1752,6 @@ long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
     case SYS_OPEN:
         return sys_open((const char *)a0, (int)a1, (int)a2);
     case SYS_CLOSE:
-        if (net_socket_close((int)a0) == 0) {
-            return 0;
-        }
         if (proc) {
             struct file_descriptor *file = process_get_fd(proc, (int)a0);
             if (file && file->dirty) {
@@ -1958,12 +1894,7 @@ long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
     case SYS_EXEC:
         return sys_exec_image((const char *)a0, (int)a1, (char **)a2);
     case SYS_WAIT:
-        return sys_wait((int)a0);
-    case SYS_KILL:
-        if (!proc) {
-            return -1;
-        }
-        return process_kill((int)a0);
+        return -1;
     case SYS_SYNC:
         /* Force a sync regardless of auto_sync_enabled.
          * tfs_sync() handles all internal checks (device exists, etc.) */
@@ -1971,17 +1902,6 @@ long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
             return 0;
         }
         return (long)tfs_sync();
-    case SYS_TFS_INSTALL_ROOT:
-    {
-        if (!proc || !is_root(proc) || !uptr_ok((const void *)a0, 1)) {
-            return -1;
-        }
-        char dev[32];
-        if (copy_user_string_bounded((const char *)a0, dev, sizeof(dev)) < 0) {
-            return -1;
-        }
-        return (long)tfs_install_current_root(dev, (uint64_t)a1);
-    }
     case SYS_MMAP:
         return sys_mmap((int)a0, (size_t)a1, (int)a2, (int)a3, (int)a4, (off_t)a5);
     case SYS_SELECT:
@@ -2000,12 +1920,8 @@ long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
     case SYS_WIFI_SCAN: {
         struct wifi_ap *out = (struct wifi_ap *)a0;
         size_t max_aps = (size_t)a1;
-        if (max_aps > 64 || !uptr_ok(out, max_aps * sizeof(*out))) {
+        if (!uptr_ok(out, max_aps * sizeof(*out)) || max_aps > 64) {
             return -1;
-        }
-        int scan = net_wifi_scan();
-        if (scan < 0) {
-            return scan;
         }
         return net_wifi_scan_results(out, max_aps);
     }
@@ -2037,56 +1953,14 @@ long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
         }
         return net_wifi_status(out);
     }
-    case SYS_WIFI_DISCONNECT: {
-        if (!proc || !is_root(proc) || !uptr_ok((const void *)a0, 1)) {
-            return -1;
-        }
-        char iface[NET_NAME_MAX + 1];
-        if (copy_user_string_bounded((const char *)a0, iface, sizeof(iface)) < 0) {
-            return -1;
-        }
-        return net_wifi_disconnect(iface);
-    }
-    case SYS_RESOLVE4: {
-        if (!uptr_ok((const void *)a0, 1) || !uptr_ok((void *)a1, sizeof(uint32_t))) {
-            return -1;
-        }
-        char host[256];
-        uint32_t ipv4 = 0;
-        if (copy_user_string_bounded((const char *)a0, host, sizeof(host)) < 0) {
-            return -1;
-        }
-        if (net_resolve4(host, &ipv4) < 0 || !ipv4) {
-            return -1;
-        }
-        *(uint32_t *)a1 = ipv4;
-        return 0;
-    }
-    case SYS_SOCKET:
-        return net_socket_create((int)a0, (int)a1, (int)a2);
-    case SYS_CONNECT: {
-        const struct syscall_sockaddr_in *addr = (const struct syscall_sockaddr_in *)a1;
-        if (!uptr_ok(addr, sizeof(*addr)) || (size_t)a2 < sizeof(*addr) ||
-            addr->sin_family != 2) {
-            return -1;
-        }
-        return net_socket_connect((int)a0, sys_ntohl(addr->sin_addr),
-                                  sys_ntohs(addr->sin_port));
-    }
-    case SYS_SEND:
-        if (!uptr_ok((const void *)a1, (size_t)a2)) {
-            return -1;
-        }
-        return net_socket_send((int)a0, (const void *)a1, (size_t)a2);
-    case SYS_RECV:
-        if (!uptr_ok((void *)a1, (size_t)a2)) {
-            return -1;
-        }
-        return net_socket_recv((int)a0, (void *)a1, (size_t)a2);
     case SYS_SHUTDOWN:
         /* Only root can shutdown the system */
         if (!is_root(proc)) {
             return -1;
+        }
+        /* Force sync before shutdown */
+        if (tfs_is_persistent()) {
+            tfs_sync();
         }
         power_shutdown();
         return 0; /* never reached */
@@ -2096,12 +1970,24 @@ long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
         if (!is_root(proc)) {
             return -1;
         }
+        /* Force sync before reboot */
+        if (tfs_is_persistent()) {
+            tfs_sync();
+        }
         power_reboot();
         return 0; /* never reached */
 
     case SYS_SET_PASSWORD:
         return sys_set_password((const char *)a0, (const char *)a1);
+    case SYS_ADD_USER:
+        return sys_add_user((const char *)a0);
+    case SYS_DEL_USER:
+        return sys_del_user((const char *)a0);
     case SYS_EXIT:
+        /* Flush the persistent TFS before the process exits so that any
+         * changes made during this session are not lost if the user shuts
+         * down without an explicit sync call. */
+        tfs_sync_if_mounted();
         process_exit(proc, (int)a0);
         return (long)syscall_encode_result((long)a0, SYSCALL_RET_TO_KERNEL);
 

@@ -55,7 +55,7 @@ dmesg | grep tfs
 
 Look for:
 ```
-[tfs] persistent root mounted from sda@LBA526336 (1234 KiB)
+[tfs] persistent root mounted from sda@LBA2048 (1234 KiB)
 ```
 If you see this, filesystem IS persistent.
 
@@ -169,12 +169,12 @@ However, manual `sync` provides extra assurance.
 
 Successful sync:
 ```
-[tfs] synced 42 entries to sda@LBA526336 (1234 KiB)
+[tfs] synced 42 entries to sda@LBA2048 (1234 KiB)
 ```
 
 Failed sync:
 ```
-[tfs] sync failed (header) for sda@LBA526336
+[tfs] sync failed (header) for sda@LBA2048
 [tfs] sync data write failed for sda@LBA4096
 ```
 

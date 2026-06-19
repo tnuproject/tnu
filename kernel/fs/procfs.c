@@ -66,35 +66,26 @@ void procfs_refresh(void)
               fb_kind, (void *)fb->address, fb->width, fb->height, fb->pitch, fb->bpp);
     vfs_write_file("/proc/framebuffer", "/", buf, strlen(buf));
 
-    strcpy(buf, "Type\tDriver\tPCI\tVendor\tDevice\tHID\tHost\tMode\n");
+    strcpy(buf, "Type\tDriver\tPCI\tVendor\tDevice\tHID\n");
     for (size_t i = 0; i < usb_controller_count(); i++) {
         const struct usb_controller_info *usb = usb_controller_get(i);
-        char line[192];
-        ksnprintf(line, sizeof(line), "%s\t%s\t%02x:%02x.%u\t%04x\t%04x\t%s\t%s\t%s\n",
+        char line[160];
+        ksnprintf(line, sizeof(line), "%s\t%s\t%02x:%02x.%u\t%04x\t%04x\t%s\n",
                   usb_controller_type_name(usb->type), usb->driver,
                   usb->bus, usb->slot, usb->function, usb->vendor_id,
-                  usb->device_id, usb->hid_ready ? "ready" : "not-ready",
-                  usb->host_ready ? "ready" : "pending",
-                  usb->inventory_only ? "inventory" : "runtime");
+                  usb->device_id, usb->hid_ready ? "ready" : "not-ready");
         if (strlen(buf) + strlen(line) < sizeof(buf)) {
             strcat(buf, line);
         }
     }
     if (usb_controller_count() == 0) {
-        strcat(buf, "none\t-\t-\t-\t-\tnot-ready\tmissing\t-\n");
+        strcat(buf, "none\t-\t-\t-\t-\tnot-ready\n");
     }
     vfs_write_file("/proc/usb", "/", buf, strlen(buf));
 
     strcpy(buf, "PID\tPPID\tSTATE\tNAME\n");
     process_each(proc_process_visitor, buf);
     vfs_write_file("/proc/processes", "/", buf, strlen(buf));
-
-    strcpy(buf,
-           "rootfs / tfs rw 0 0\n"
-           "proc /proc proc rw,nosuid,nodev,noexec 0 0\n"
-           "devtmpfs /dev devtmpfs rw,nosuid 0 0\n"
-           "tmpfs /tmp tmpfs rw,nosuid,nodev 0 0\n");
-    vfs_write_file("/proc/mounts", "/", buf, strlen(buf));
 
     strcpy(buf, "Iface\tType\tDriver\tState\tLink\tIPv4\tGateway\tRX-pkts\tTX-pkts\tMAC\n");
     for (size_t i = 0; i < net_iface_count(); i++) {
@@ -157,9 +148,6 @@ void procfs_init(void)
     make_proc("/proc/framebuffer");
     make_proc("/proc/usb");
     make_proc("/proc/processes");
-    vfs_mkdir("/proc/self", "/", VFS_S_IFDIR | 0555, 0, 0);
-    vfs_mkdir("/proc/self/fd", "/", VFS_S_IFDIR | 0555, 0, 0);
-    make_proc("/proc/mounts");
     vfs_mkdir("/proc/net", "/", VFS_S_IFDIR | 0555, 0, 0);
     make_proc("/proc/net/dev");
     make_proc("/proc/net/route");

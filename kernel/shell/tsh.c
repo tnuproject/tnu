@@ -3,13 +3,10 @@
 #include <arch/keyboard.h>
 #include <arch/pci.h>
 #include <arch/pit.h>
-#include <arch/power.h>
 #include <tnu/applets.h>
 #include <tnu/block.h>
 #include <tnu/console.h>
 #include <tnu/elf.h>
-#include <tnu/linux_compat.h>
-#include <tnu/linux_driver_runtime.h>
 #include <tnu/log.h>
 #include <tnu/memory.h>
 #include <tnu/multiboot2.h>
@@ -31,7 +28,6 @@
 #define SCRIPT_MAX_DEPTH 4
 #define SCRIPT_BLOCK_MAX 4096
 #define DEFAULT_EXEC_PATH "/bin:/sbin:/usr/bin:/usr/games"
-#define DEFAULT_LINUX_EXEC_PATH "/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin"
 
 struct env_pair {
     char key[32];
@@ -39,12 +35,10 @@ struct env_pair {
 };
 
 static const char *env_get_value(const char *key);
+static int env_set_value(const char *key, const char *value);
 static bool shell_can_execute_node(struct vfs_node *node);
 static bool bin_entry_exists(const char *name);
 static struct vfs_node *resolve_command_node(const char *command, char *resolved, size_t resolved_size);
-static struct vfs_node *resolve_linux_command_node(const char *command, char *linux_path,
-                                                   size_t linux_path_size,
-                                                   char *host_path, size_t host_path_size);
 static const char *command_basename(const char *path);
 
 static int shell_apply_user_session(const char *name);
@@ -67,19 +61,22 @@ static char *script_arg_argv[ARGV_MAX];
 static char shell_clipboard[LINE_MAX];
 
 static const char *env_get_value(const char *key);
+static int env_set_value(const char *key, const char *value);
 static bool shell_can_execute_node(struct vfs_node *node);
 static bool bin_entry_exists(const char *name);
 static struct vfs_node *resolve_command_node(const char *command, char *resolved, size_t resolved_size);
-static struct vfs_node *resolve_linux_command_node(const char *command, char *linux_path,
-                                                   size_t linux_path_size,
-                                                   char *host_path, size_t host_path_size);
 static const char *command_basename(const char *path);
-static int run_command(int argc, char **argv, const char *stdin_data);
 
 struct shell_builtin_doc {
     const char *name;
     const char *usage;
     const char *help;
+};
+
+struct help_path_ctx {
+    size_t column;
+    const char *seen[64];
+    size_t seen_count;
 };
 
 static const struct shell_builtin_doc shell_builtin_docs[] = {
@@ -91,8 +88,6 @@ static const struct shell_builtin_doc shell_builtin_docs[] = {
       "Authenticate and switch the current shell session to USER." },
     { "exec", "exec PATH [ARG...]",
       "Execute an ELF userspace program directly." },
-    { "linux-run", "linux-run PATH [ARG...]",
-      "Execute a Linux ELF binary through the Linux compatibility layer." },
     { "history", "history",
       "Print the shell command history." },
     { "env", "env",
@@ -103,18 +98,8 @@ static const struct shell_builtin_doc shell_builtin_docs[] = {
       "Run a TSH script without requiring executable mode." },
     { "sudo", "sudo COMMAND [ARG...]",
       "Authenticate as root and run COMMAND with uid/gid 0, preserving argv." },
-    { "sysinstall", "sysinstall [OPTIONS]",
-      "Run /sbin/sysinstall. Use --raw-image only for unsafe live-image cloning." },
-    { "driver", "driver list|stats",
-      "Inspect kernel driver providers, including Linux Driver Runtime backends." },
-    { "linuxdrv", "linuxdrv load MODULE|logs|modules|stats",
-      "Inspect the Linux Driver Runtime module manager and bridge state." },
-    { "net", "net trace",
-      "Inspect native networking bridge paths." },
-    { "shutdown", "shutdown",
-      "Sync persistent storage and power off the machine. Requires root." },
-    { "reboot", "reboot",
-      "Sync persistent storage and restart the machine. Requires root." },
+    { "sysinstall", "sysinstall",
+      "Run the text installer. Requires root and a loaded install image." },
 };
 
 static void read_file_text(const char *path, char *out, size_t out_size, const char *fallback)
@@ -138,9 +123,11 @@ static void read_file_text(const char *path, char *out, size_t out_size, const c
 
 static void strip_first_newline(char *out)
 {
-    char *nl = strchr(out, '\n');
-    if (nl) {
-        *nl = '\0';
+    for (char *p = out; *p; ++p) {
+        if (*p == '\r' || *p == '\n') {
+            *p = '\0';
+            break;
+        }
     }
 }
 
@@ -951,22 +938,40 @@ static int expand_args(int argc, char **argv, char **expanded,
 
 static void help_command_emit(struct vfs_node *node, void *ctx)
 {
-    size_t *column = ctx;
+    struct help_path_ctx *help = ctx;
     if (!node || node->type != VFS_NODE_FILE || !shell_can_execute_node(node)) {
         return;
     }
-    kprintf("  %s", node->name);
-    (*column)++;
-    if ((*column % 6) == 0) {
+    for (size_t i = 0; i < sizeof(shell_builtin_docs) / sizeof(shell_builtin_docs[0]); i++) {
+        if (strcmp(node->name, shell_builtin_docs[i].name) == 0) {
+            return;
+        }
+    }
+    if (tnu_applet_is_command(node->name)) {
+        return;
+    }
+    for (size_t i = 0; i < help->seen_count; i++) {
+        if (strcmp(help->seen[i], node->name) == 0) {
+            return;
+        }
+    }
+    if (help->seen_count < sizeof(help->seen) / sizeof(help->seen[0])) {
+        help->seen[help->seen_count++] = node->name;
+    }
+    kprintf("  %-12s", node->name);
+    help->column++;
+    if ((help->column % 4) == 0) {
         kprintf("\n");
     }
 }
 
-static void help_list_path_commands(void)
+static size_t help_list_external_commands(void)
 {
     const char *path = shell_path();
     char dir[VFS_PATH_MAX];
-    size_t column = 0;
+    struct help_path_ctx ctx;
+
+    memset(&ctx, 0, sizeof(ctx));
 
     while (*path) {
         size_t n = 0;
@@ -977,16 +982,66 @@ static void help_list_path_commands(void)
         dir[n] = '\0';
         struct vfs_node *node = vfs_lookup(dir[0] ? dir : ".", process_current()->cwd);
         if (node && node->type == VFS_NODE_DIR) {
-            vfs_list(node, help_command_emit, &column);
+            vfs_list(node, help_command_emit, &ctx);
         }
         path += n;
         if (*path == ':') {
             path++;
         }
     }
-    if (column % 6 != 0) {
+    if (ctx.column % 4 != 0) {
         kprintf("\n");
     }
+    return ctx.column;
+}
+
+static void help_print_topic(const char *usage, const char *help)
+{
+    kprintf("Usage: %s\n", usage);
+    kprintf("  %s\n", help);
+}
+
+static void help_print_builtin_summary(void)
+{
+    for (size_t i = 0; i < sizeof(shell_builtin_docs) / sizeof(shell_builtin_docs[0]); i++) {
+        kprintf("  %-12s%s\n", shell_builtin_docs[i].name, shell_builtin_docs[i].help);
+    }
+}
+
+static void help_print_name_grid(const char *list)
+{
+    size_t column = 0;
+    char name[32];
+
+    while (list && *list) {
+        size_t len = 0;
+        while (*list == ' ') {
+            list++;
+        }
+        while (*list && *list != ' ' && len + 1 < sizeof(name)) {
+            name[len++] = *list++;
+        }
+        while (*list && *list != ' ') {
+            list++;
+        }
+        if (len == 0) {
+            continue;
+        }
+        name[len] = '\0';
+        kprintf("  %-12s", name);
+        column++;
+        if ((column % 4) == 0) {
+            kprintf("\n");
+        }
+    }
+    if (column % 4 != 0) {
+        kprintf("\n");
+    }
+}
+
+static void help_print_applet_summary(void)
+{
+    help_print_name_grid(tnu_applet_list());
 }
 
 static int cmd_help(int argc, char **argv)
@@ -999,8 +1054,7 @@ static int cmd_help(int argc, char **argv)
         const char *name = command_basename(argv[1]);
         for (size_t i = 0; i < sizeof(shell_builtin_docs) / sizeof(shell_builtin_docs[0]); i++) {
             if (strcmp(name, shell_builtin_docs[i].name) == 0) {
-                kprintf("Usage: %s\n\n%s\n", shell_builtin_docs[i].usage,
-                        shell_builtin_docs[i].help);
+                help_print_topic(shell_builtin_docs[i].usage, shell_builtin_docs[i].help);
                 return 0;
             }
         }
@@ -1017,18 +1071,14 @@ static int cmd_help(int argc, char **argv)
         kprintf("help: no help topic for %s\n", argv[1]);
         return 1;
     }
-    kprintf("Tiramisu shell builtins:\n");
-    for (size_t i = 0; i < sizeof(shell_builtin_docs) / sizeof(shell_builtin_docs[0]); i++) {
-        kprintf("  %s", shell_builtin_docs[i].name);
-        if ((i + 1) % 6 == 0) {
-            kprintf("\n");
-        }
+    kprintf("Builtins:\n");
+    help_print_builtin_summary();
+    kprintf("\nApplets:\n");
+    help_print_applet_summary();
+    kprintf("\nExternal executables:\n");
+    if (help_list_external_commands() == 0) {
+        kprintf("  (none)\n");
     }
-    if (sizeof(shell_builtin_docs) / sizeof(shell_builtin_docs[0]) % 6 != 0) {
-        kprintf("\n");
-    }
-    kprintf("PATH executables:\n");
-    help_list_path_commands();
     kprintf("Use 'help COMMAND' or 'COMMAND --help' for details.\n");
     return 0;
 }
@@ -1166,58 +1216,6 @@ static int cmd_exec(int argc, char **argv)
     return (int)rc;
 }
 
-static int cmd_linux_run(int argc, char **argv)
-{
-    if (argc < 2) {
-        kprintf("usage: linux-run PATH [ARG...]\n");
-        return 1;
-    }
-    long rc = linux_run_binary(argv[1], argc - 1, argv + 1);
-    if (rc == -2) {
-        kprintf("linux-run: no such Linux binary: %s\n", argv[1]);
-        return 127;
-    }
-    if (rc == -8) {
-        kprintf("linux-run: unsupported or invalid Linux ELF: %s\n", argv[1]);
-        return 126;
-    }
-    if (rc == -38) {
-        kprintf("linux-run: Linux ABI feature not implemented yet\n");
-        return 126;
-    }
-    if (rc < 0) {
-        kprintf("linux-run: failed: %s (%ld)\n", argv[1], rc);
-        return 126;
-    }
-    return (int)rc;
-}
-
-static int run_linux_transparent(const char *linux_path, int argc, char **argv)
-{
-    long rc = linux_run_binary(linux_path, argc, argv);
-    if (rc == -2) {
-        kprintf("%s: Linux command not found\n", argv[0]);
-        return 127;
-    }
-    if (rc == -8) {
-        kprintf("%s: unsupported or invalid Linux ELF\n", argv[0]);
-        return 126;
-    }
-    if (rc == -38) {
-        kprintf("%s: Linux ABI feature not implemented yet\n", argv[0]);
-        return 126;
-    }
-    if (rc < 0) {
-        kprintf("%s: Linux execution failed (%ld)\n", argv[0], rc);
-        return 126;
-    }
-    if (rc == 139) {
-        kprintf("%s: Linux process faulted before completing (SIGSEGV)\n", argv[0]);
-        return 139;
-    }
-    return (int)rc;
-}
-
 static int cmd_history(int argc, char **argv)
 {
     (void)argc;
@@ -1259,35 +1257,250 @@ static int cmd_set(int argc, char **argv)
     return 0;
 }
 
+#define SYSINSTALL_SECTOR_SIZE 512u
+#define SYSINSTALL_GPT_ENTRY_COUNT 128u
+#define SYSINSTALL_GPT_ENTRY_SIZE 128u
+#define SYSINSTALL_GPT_HEADER_SIZE 92u
+#define SYSINSTALL_GPT_ENTRY_SECTORS ((SYSINSTALL_GPT_ENTRY_COUNT * SYSINSTALL_GPT_ENTRY_SIZE) / SYSINSTALL_SECTOR_SIZE)
+
+struct sysinstall_gpt_header {
+    uint8_t signature[8];
+    uint32_t revision;
+    uint32_t header_size;
+    uint32_t header_crc32;
+    uint32_t reserved;
+    uint64_t my_lba;
+    uint64_t alternate_lba;
+    uint64_t first_usable_lba;
+    uint64_t last_usable_lba;
+    uint8_t disk_guid[16];
+    uint64_t partition_entry_lba;
+    uint32_t num_partition_entries;
+    uint32_t partition_entry_size;
+    uint32_t partition_array_crc32;
+} __attribute__((packed));
+
+struct sysinstall_gpt_entry {
+    uint8_t type_guid[16];
+    uint8_t partition_guid[16];
+    uint64_t first_lba;
+    uint64_t last_lba;
+    uint64_t attrs;
+    uint16_t name[36];
+} __attribute__((packed));
+
+static uint32_t sysinstall_crc32_update(uint32_t crc, const void *data, size_t len)
+{
+    const uint8_t *p = (const uint8_t *)data;
+    crc = ~crc;
+    while (len--) {
+        crc ^= *p++;
+        for (int bit = 0; bit < 8; bit++) {
+            crc = (crc >> 1) ^ (0xedb88320u & (0u - (crc & 1u)));
+        }
+    }
+    return ~crc;
+}
+
+static uint32_t sysinstall_crc32(const void *data, size_t len)
+{
+    return sysinstall_crc32_update(0, data, len);
+}
+
+static uint64_t sysinstall_next_random(uint64_t *state)
+{
+    *state += 0x9e3779b97f4a7c15ull;
+    uint64_t z = *state;
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111ebull;
+    return z ^ (z >> 31);
+}
+
+static void sysinstall_generate_guid(uint8_t guid[16], const struct block_device_info *target,
+                                     uint64_t image_size, uint64_t salt)
+{
+    uint64_t state = pit_ticks() ^ image_size ^ salt;
+    if (target) {
+        state ^= target->sector_count;
+        state ^= (uint64_t)target->sector_size << 32;
+        for (const char *p = target->name; p && *p; ++p) {
+            state = sysinstall_next_random(&state) ^ (uint8_t)*p;
+        }
+    }
+    uint64_t a = sysinstall_next_random(&state);
+    uint64_t b = sysinstall_next_random(&state);
+    memcpy(guid, &a, sizeof(a));
+    memcpy(guid + 8, &b, sizeof(b));
+    guid[6] = (uint8_t)((guid[6] & 0x0f) | 0x40);
+    guid[8] = (uint8_t)((guid[8] & 0x3f) | 0x80);
+}
+
+static void sysinstall_write_protective_mbr(uint8_t out[SYSINSTALL_SECTOR_SIZE], uint64_t disk_sectors)
+{
+    memset(out, 0, SYSINSTALL_SECTOR_SIZE);
+    out[446 + 4] = 0xee;
+    *(uint32_t *)&out[446 + 8] = 1u;
+    *(uint32_t *)&out[446 + 12] =
+        disk_sectors > 0xffffffffull ? 0xffffffffu : (uint32_t)(disk_sectors - 1u);
+    out[510] = 0x55;
+    out[511] = 0xaa;
+}
+
+static int sysinstall_write_lba28_checked(const char *device, uint64_t lba, const void *data, size_t bytes)
+{
+    if (!device || !data || bytes == 0 || lba >= 0x100000000ull) {
+        return -1;
+    }
+    return block_write_lba28(device, (uint32_t)lba, data, bytes);
+}
+
+static int sysinstall_load_template_layout(const uint8_t *image, uint64_t image_size,
+                                           struct sysinstall_gpt_entry *esp,
+                                           struct sysinstall_gpt_entry *root)
+{
+    if (!image || !esp || !root || image_size < SYSINSTALL_SECTOR_SIZE * 3u ||
+        (image_size % SYSINSTALL_SECTOR_SIZE) != 0) {
+        return -1;
+    }
+
+    const struct sysinstall_gpt_header *header =
+        (const struct sysinstall_gpt_header *)(image + SYSINSTALL_SECTOR_SIZE);
+    if (memcmp(header->signature, "EFI PART", 8) != 0 ||
+        header->partition_entry_size != SYSINSTALL_GPT_ENTRY_SIZE ||
+        header->num_partition_entries < 2 ||
+        header->partition_entry_lba >= image_size / SYSINSTALL_SECTOR_SIZE) {
+        return -1;
+    }
+
+    uint64_t entries_offset = header->partition_entry_lba * SYSINSTALL_SECTOR_SIZE;
+    uint64_t entries_size = (uint64_t)header->num_partition_entries * header->partition_entry_size;
+    if (entries_offset + entries_size > image_size) {
+        return -1;
+    }
+
+    const uint8_t *entry_base = image + entries_offset;
+    memcpy(esp, entry_base, sizeof(*esp));
+    memcpy(root, entry_base + header->partition_entry_size, sizeof(*root));
+    if (esp->first_lba == 0 || root->first_lba == 0 || root->last_lba < root->first_lba) {
+        return -1;
+    }
+    return 0;
+}
+
+static void sysinstall_fill_gpt_header(struct sysinstall_gpt_header *header,
+                                       const uint8_t disk_guid[16],
+                                       uint64_t current_lba,
+                                       uint64_t alternate_lba,
+                                       uint64_t first_usable_lba,
+                                       uint64_t last_usable_lba,
+                                       uint64_t partition_entry_lba,
+                                       uint32_t partition_array_crc32)
+{
+    memset(header, 0, sizeof(*header));
+    memcpy(header->signature, "EFI PART", 8);
+    header->revision = 0x00010000u;
+    header->header_size = SYSINSTALL_GPT_HEADER_SIZE;
+    header->my_lba = current_lba;
+    header->alternate_lba = alternate_lba;
+    header->first_usable_lba = first_usable_lba;
+    header->last_usable_lba = last_usable_lba;
+    memcpy(header->disk_guid, disk_guid, 16);
+    header->partition_entry_lba = partition_entry_lba;
+    header->num_partition_entries = SYSINSTALL_GPT_ENTRY_COUNT;
+    header->partition_entry_size = SYSINSTALL_GPT_ENTRY_SIZE;
+    header->partition_array_crc32 = partition_array_crc32;
+    header->header_crc32 = 0;
+    header->header_crc32 = sysinstall_crc32(header, SYSINSTALL_GPT_HEADER_SIZE);
+}
+
+static int sysinstall_finalize_disk_layout(const struct block_device_info *target,
+                                           const uint8_t *image,
+                                           uint64_t image_size)
+{
+    if (!target || !image || image_size == 0) {
+        return -1;
+    }
+    if (target->sector_size != SYSINSTALL_SECTOR_SIZE || target->sector_count == 0 ||
+        target->sector_count >= 0x100000000ull || (image_size % SYSINSTALL_SECTOR_SIZE) != 0) {
+        return -1;
+    }
+
+    struct sysinstall_gpt_entry esp_template;
+    struct sysinstall_gpt_entry root_template;
+    if (sysinstall_load_template_layout(image, image_size, &esp_template, &root_template) < 0) {
+        return -1;
+    }
+
+    uint64_t min_required_sectors = image_size / SYSINSTALL_SECTOR_SIZE;
+    if (min_required_sectors > target->sector_count) {
+        return -1;
+    }
+
+    uint64_t backup_entries_lba = target->sector_count - SYSINSTALL_GPT_ENTRY_SECTORS - 1u;
+    uint64_t last_usable_lba = backup_entries_lba - 1u;
+    if (root_template.first_lba > last_usable_lba || esp_template.last_lba >= root_template.first_lba) {
+        return -1;
+    }
+
+    size_t entry_bytes = SYSINSTALL_GPT_ENTRY_COUNT * SYSINSTALL_GPT_ENTRY_SIZE;
+    uint8_t *entries = kcalloc(1, entry_bytes);
+    if (!entries) {
+        return -1;
+    }
+
+    struct sysinstall_gpt_entry *esp = (struct sysinstall_gpt_entry *)entries;
+    struct sysinstall_gpt_entry *root =
+        (struct sysinstall_gpt_entry *)(entries + SYSINSTALL_GPT_ENTRY_SIZE);
+    memcpy(esp, &esp_template, sizeof(*esp));
+    memcpy(root, &root_template, sizeof(*root));
+    root->last_lba = last_usable_lba;
+
+    uint8_t disk_guid[16];
+    sysinstall_generate_guid(disk_guid, target, image_size, 0x544e5501ull);
+    sysinstall_generate_guid(esp->partition_guid, target, image_size, 0x544e5502ull);
+    sysinstall_generate_guid(root->partition_guid, target, image_size, 0x544e5503ull);
+
+    uint32_t entries_crc = sysinstall_crc32(entries, entry_bytes);
+    uint8_t mbr[SYSINSTALL_SECTOR_SIZE];
+    uint8_t primary_sector[SYSINSTALL_SECTOR_SIZE];
+    uint8_t backup_sector[SYSINSTALL_SECTOR_SIZE];
+    struct sysinstall_gpt_header primary;
+    struct sysinstall_gpt_header backup;
+
+    sysinstall_write_protective_mbr(mbr, target->sector_count);
+    sysinstall_fill_gpt_header(&primary, disk_guid, 1u, target->sector_count - 1u,
+                               2u + SYSINSTALL_GPT_ENTRY_SECTORS, last_usable_lba, 2u, entries_crc);
+    sysinstall_fill_gpt_header(&backup, disk_guid, target->sector_count - 1u, 1u,
+                               2u + SYSINSTALL_GPT_ENTRY_SECTORS, last_usable_lba,
+                               backup_entries_lba, entries_crc);
+    memset(primary_sector, 0, sizeof(primary_sector));
+    memset(backup_sector, 0, sizeof(backup_sector));
+    memcpy(primary_sector, &primary, sizeof(primary));
+    memcpy(backup_sector, &backup, sizeof(backup));
+
+    int rc = 0;
+    if (sysinstall_write_lba28_checked(target->name, 0u, mbr, sizeof(mbr)) < 0 ||
+        sysinstall_write_lba28_checked(target->name, 1u, primary_sector, sizeof(primary_sector)) < 0 ||
+        sysinstall_write_lba28_checked(target->name, 2u, entries, entry_bytes) < 0 ||
+        sysinstall_write_lba28_checked(target->name, backup_entries_lba, entries, entry_bytes) < 0 ||
+        sysinstall_write_lba28_checked(target->name, target->sector_count - 1u,
+                                       backup_sector, sizeof(backup_sector)) < 0 ||
+        block_sync(target->name) < 0) {
+        rc = -1;
+    }
+
+    kfree(entries);
+    return rc;
+}
+
 static int cmd_sysinstall(int argc, char **argv)
 {
+    (void)argc;
+    (void)argv;
     if (!process_current() || process_current()->uid != 0) {
         kprintf("sysinstall: permission denied; try sudo sysinstall\n");
         return 1;
     }
-
-    if (argc < 2 || strcmp(argv[1], "--raw-image") != 0) {
-        struct vfs_node *installer = vfs_lookup("/sbin/sysinstall", process_current()->cwd);
-        if (installer && shell_can_execute_node(installer)) {
-            long rc = syscall_dispatch(SYS_EXEC, (uint64_t)"/sbin/sysinstall",
-                                       (uint64_t)argc, (uint64_t)argv,
-                                       0, 0, 0);
-            if (rc >= 0) {
-                return (int)rc;
-            }
-            kprintf("sysinstall: failed to execute /sbin/sysinstall (%ld).\n", rc);
-            return 126;
-        }
-        kprintf("sysinstall: /sbin/sysinstall is missing or not executable.\n");
-        kprintf("sysinstall: refusing unsafe raw image install by default.\n");
-        kprintf("sysinstall: rebuild the rootfs or use sysinstall --raw-image knowingly.\n");
-        return 1;
-    }
-
-    kprintf("sysinstall: WARNING: --raw-image clones the live ISO image to disk.\n");
-    kprintf("sysinstall: this is not a real disk bootloader installation and may hang at GRUB on hardware.\n");
-    kprintf("sysinstall: prefer /sbin/sysinstall once native GRUB disk install is available.\n\n");
-
     char answer[LINE_MAX];
     const struct boot_info *boot = boot_info_get();
     const uint8_t *image = (const uint8_t *)boot->install_image.start;
@@ -1296,11 +1509,15 @@ static int cmd_sysinstall(int argc, char **argv)
                               : 0;
 
     kprintf("Tiramisu sysinstall\n");
-    kprintf("Mode: unsafe raw boot image clone\n");
+    kprintf("Mode: raw disk template install\n");
     kprintf("Detected PCI devices: %llu\n", (uint64_t)pci_count());
     if (!image || image_size == 0) {
         kprintf("sysinstall: no install image was loaded by GRUB.\n");
         kprintf("sysinstall: rebuild the ISO; /boot/install.img must be present.\n");
+        return 1;
+    }
+    if ((image_size % SYSINSTALL_SECTOR_SIZE) != 0) {
+        kprintf("sysinstall: install image is not sector aligned.\n");
         return 1;
     }
     size_t disk_count = block_device_count();
@@ -1338,11 +1555,23 @@ static int cmd_sysinstall(int argc, char **argv)
         kprintf("sysinstall: invalid or unsupported disk target.\n");
         return 1;
     }
+    if (target->sector_size != SYSINSTALL_SECTOR_SIZE) {
+        kprintf("sysinstall: unsupported target sector size %u.\n", target->sector_size);
+        return 1;
+    }
+    if (target->sector_count == 0 || target->sector_count >= 0x100000000ull) {
+        kprintf("sysinstall: unsupported target disk size.\n");
+        return 1;
+    }
+    if ((image_size / SYSINSTALL_SECTOR_SIZE) > target->sector_count) {
+        kprintf("sysinstall: target disk is too small for the install template.\n");
+        return 1;
+    }
 
     char disk_path[32];
     ksnprintf(disk_path, sizeof(disk_path), "/dev/%s", target->name);
     kprintf("Selected target: %s (%s)\n", disk_path, target->description);
-    kprintf("\nWARNING: this will overwrite the beginning of %s.\n", disk_path);
+    kprintf("\nWARNING: this will overwrite all existing data on %s.\n", disk_path);
     kprintf("Type INSTALL to continue: ");
     read_line(answer, sizeof(answer));
     if (strcmp(answer, "INSTALL") != 0) {
@@ -1367,9 +1596,14 @@ static int cmd_sysinstall(int argc, char **argv)
         }
     }
 
-    kprintf("sysinstall: boot image written to %s.\n", disk_path);
+    if (sysinstall_finalize_disk_layout(target, image, image_size) < 0) {
+        kprintf("sysinstall: failed to finalize GPT layout for %s.\n", disk_path);
+        return 1;
+    }
+
+    kprintf("sysinstall: installed bootable disk image to %s.\n", disk_path);
     kprintf("Remove the USB media and boot from the target disk.\n");
-    kprintf("If this target hangs at a plain GRUB screen, boot the USB again and reinstall with the real installer path.\n");
+    kprintf("After first boot, run passwd to set the root password.\n");
     return 0;
 }
 
@@ -1378,6 +1612,7 @@ struct command {
     int (*fn)(int argc, char **argv);
 };
 
+static int run_command(int argc, char **argv, const char *stdin_data);
 static int run_tokens(int argc, char **argv);
 static int run_shell_script(struct vfs_node *node, int argc, char **argv,
                             bool require_exec, bool force_script);
@@ -1448,95 +1683,11 @@ static int cmd_sudo(int argc, char **argv)
     return rc;
 }
 
-static int cmd_driver(int argc, char **argv)
-{
-    if (argc < 2 || strcmp(argv[1], "list") == 0) {
-        ldr_print_modules();
-        return 0;
-    }
-    if (strcmp(argv[1], "stats") == 0) {
-        ldr_print_stats();
-        return 0;
-    }
-    kprintf("usage: driver list|stats\n");
-    return 1;
-}
-
-static int cmd_linuxdrv(int argc, char **argv)
-{
-    if (argc < 2 || strcmp(argv[1], "logs") == 0) {
-        ldr_print_logs();
-        return 0;
-    }
-    if (strcmp(argv[1], "modules") == 0) {
-        ldr_print_modules();
-        return 0;
-    }
-    if (strcmp(argv[1], "stats") == 0) {
-        ldr_print_stats();
-        return 0;
-    }
-    if (strcmp(argv[1], "load") == 0) {
-        if (argc < 3) {
-            kprintf("usage: linuxdrv load MODULE\n");
-            return 1;
-        }
-        int rc = ldr_load_module(argv[2]);
-        if (rc < 0) {
-            kprintf("linuxdrv: load %s failed (%d)\n", argv[2], rc);
-            return 1;
-        }
-        kprintf("linuxdrv: loaded %s\n", argv[2]);
-        return 0;
-    }
-    kprintf("usage: linuxdrv load MODULE|logs|modules|stats\n");
-    return 1;
-}
-
-static int cmd_net(int argc, char **argv)
-{
-    if (argc >= 2 && strcmp(argv[1], "trace") == 0) {
-        ldr_print_net_trace();
-        return 0;
-    }
-    kprintf("usage: net trace\n");
-    return 1;
-}
-
-static int cmd_shutdown(int argc, char **argv)
-{
-    (void)argc;
-    (void)argv;
-    struct process *proc = process_current();
-    if (!proc || proc->uid != 0) {
-        kprintf("shutdown: permission denied; try sudo shutdown\n");
-        return 1;
-    }
-    power_shutdown();
-    return 0;
-}
-
-static int cmd_reboot(int argc, char **argv)
-{
-    (void)argc;
-    (void)argv;
-    struct process *proc = process_current();
-    if (!proc || proc->uid != 0) {
-        kprintf("reboot: permission denied; try sudo reboot\n");
-        return 1;
-    }
-    power_reboot();
-    return 0;
-}
-
 static const struct command commands[] = {
     { "help", cmd_help },       { "cd", cmd_cd },             { "login", cmd_login },
-    { "exec", cmd_exec },       { "linux-run", cmd_linux_run },
-    { "history", cmd_history }, { "env", cmd_env },
+    { "exec", cmd_exec },       { "history", cmd_history },   { "env", cmd_env },
     { "set", cmd_set },         { "sh", cmd_sh },             { "sudo", cmd_sudo },
     { "sysinstall", cmd_sysinstall },
-    { "driver", cmd_driver },   { "linuxdrv", cmd_linuxdrv }, { "net", cmd_net },
-    { "shutdown", cmd_shutdown }, { "reboot", cmd_reboot },
 };
 
 static int read_node_text(const char *path, char *buf, size_t size)
@@ -1566,108 +1717,6 @@ static bool bin_entry_exists(const char *name)
     }
     ksnprintf(path, sizeof(path), "/sbin/%s", name);
     return vfs_lookup(path, "/") != NULL;
-}
-
-static int parse_priority_value(const char *text, const char *key, int fallback)
-{
-    if (!text || !key) {
-        return fallback;
-    }
-    size_t key_len = strlen(key);
-    const char *p = text;
-    while (*p) {
-        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') {
-            p++;
-        }
-        if (strncmp(p, key, key_len) == 0 && p[key_len] == ':') {
-            p += key_len + 1;
-            while (*p == ' ' || *p == '\t') {
-                p++;
-            }
-            int sign = 1;
-            if (*p == '-') {
-                sign = -1;
-                p++;
-            }
-            int value = 0;
-            bool any = false;
-            while (*p >= '0' && *p <= '9') {
-                any = true;
-                if (value < 100000000) {
-                    value = value * 10 + (*p - '0');
-                }
-                p++;
-            }
-            return any ? value * sign : fallback;
-        }
-        while (*p && *p != '\n') {
-            p++;
-        }
-    }
-    return fallback;
-}
-
-static void command_priority_read(int *linux_weight, int *tnu_weight)
-{
-    char buf[256];
-    int linux_env_weight = 99999;
-    int tnu = 1;
-    if (read_node_text("/etc/priority", buf, sizeof(buf)) >= 0) {
-        linux_env_weight = parse_priority_value(buf, "linux", linux_env_weight);
-        tnu = parse_priority_value(buf, "tnu", tnu);
-    }
-    if (linux_weight) {
-        *linux_weight = linux_env_weight;
-    }
-    if (tnu_weight) {
-        *tnu_weight = tnu;
-    }
-}
-
-static bool tnu_command_always_priority(const char *name)
-{
-    static const char *const names[] = {
-        "sysfetch", "hostname", "login", "useradd", "userdel", "passwd",
-        "init", "sh", "tsh", "uname", "shutdown", "reboot",
-        "sync", "keymap", "timezone", "layout", "nano",
-        "cat", "chmod", "chown", "clear", "cp", "date", "dmesg", "echo",
-        "id", "kill", "ls", "mkdir", "mount", "mv", "ps", "pwd", "rm",
-        "stat", "time", "touch", "uptime", "usb", "whoami", "xedit",
-        "ping", "wifi", "curl", "wget", "dns", "net", "tls", "driver",
-        "linuxdrv", "ifconfig", "route", "netstat", "dhcp",
-    };
-    const char *base = command_basename(name);
-    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
-        if (strcmp(base, names[i]) == 0) {
-            return true;
-        }
-    }
-    return false;
-}
-
-static bool path_is_linux_root(const char *path)
-{
-    return path && strncmp(path, "/usr/linux/", 11) == 0;
-}
-
-static bool linux_busybox_applet_candidate(const char *name)
-{
-    static const char *const applets[] = {
-        "ash", "awk", "basename", "cat", "chmod", "chown", "clear", "cp",
-        "date", "dd", "df", "dirname", "dmesg", "du", "echo", "egrep",
-        "env", "false", "fgrep", "find", "grep", "head", "hostname", "id",
-        "ln", "ls", "mkdir", "mktemp", "mount", "mv", "pidof", "ping",
-        "printf", "ps", "pwd", "rm", "rmdir", "sed", "sh", "sleep", "sort",
-        "stat", "sync", "tail", "tar", "test", "touch", "tr", "true",
-        "uname", "vi", "wget", "which", "whoami", "xargs",
-    };
-    const char *base = command_basename(name);
-    for (size_t i = 0; i < sizeof(applets) / sizeof(applets[0]); i++) {
-        if (strcmp(base, applets[i]) == 0) {
-            return true;
-        }
-    }
-    return false;
 }
 
 static bool shell_can_execute_node(struct vfs_node *node)
@@ -1721,65 +1770,6 @@ static struct vfs_node *resolve_command_node(const char *command, char *resolved
             path++;
         }
     }
-    return NULL;
-}
-
-static struct vfs_node *resolve_linux_command_node(const char *command, char *linux_path,
-                                                   size_t linux_path_size,
-                                                   char *host_path, size_t host_path_size)
-{
-    if (!command || !command[0] || !linux_path || !host_path ||
-        linux_path_size == 0 || host_path_size == 0) {
-        return NULL;
-    }
-
-    if (strchr(command, '/')) {
-        if (path_is_linux_root(command)) {
-            ksnprintf(host_path, host_path_size, "%s", command);
-            ksnprintf(linux_path, linux_path_size, "%s", command + 10);
-            return vfs_lookup(host_path, process_current()->cwd);
-        }
-        return NULL;
-    }
-
-    const char *path = DEFAULT_LINUX_EXEC_PATH;
-    char dir[VFS_PATH_MAX];
-    while (*path) {
-        size_t n = 0;
-        while (path[n] && path[n] != ':' && n + 1 < sizeof(dir)) {
-            dir[n] = path[n];
-            n++;
-        }
-        dir[n] = '\0';
-        if (dir[0]) {
-            ksnprintf(linux_path, linux_path_size, "%s/%s", dir, command);
-            ksnprintf(host_path, host_path_size, "/usr/linux%s/%s", dir, command);
-        } else {
-            ksnprintf(linux_path, linux_path_size, "/%s", command);
-            ksnprintf(host_path, host_path_size, "/usr/linux/%s", command);
-        }
-        struct vfs_node *node = vfs_lookup(host_path, "/");
-        if (node) {
-            return node;
-        }
-        path += n;
-        if (*path == ':') {
-            path++;
-        }
-    }
-
-    /* Alpine/BusyBox rootfs images often expose common commands as symlinks
-     * to /bin/busybox. TFS does not preserve symlinks yet, and the rootfs
-     * packaging step may delete absolute symlinks, so fall back to the BusyBox
-     * dispatcher while preserving argv[0] as the requested applet name. */
-    struct vfs_node *busybox = linux_busybox_applet_candidate(command) ?
-        vfs_lookup("/usr/linux/bin/busybox", "/") : NULL;
-    if (busybox && busybox->type == VFS_NODE_FILE) {
-        ksnprintf(linux_path, linux_path_size, "/bin/busybox");
-        ksnprintf(host_path, host_path_size, "/usr/linux/bin/busybox");
-        return busybox;
-    }
-
     return NULL;
 }
 
@@ -2255,27 +2245,8 @@ static int run_command(int argc, char **argv, const char *stdin_data)
     }
 
     const char *cmd_name = command_basename(argv[0]);
-    bool applet_available = tnu_applet_is_command(cmd_name) &&
-                            (bin_entry_exists(cmd_name) || strcmp(cmd_name, "layout") == 0);
-    bool force_tnu = tnu_command_always_priority(cmd_name);
-    char linux_path[VFS_PATH_MAX];
-    char linux_host_path[VFS_PATH_MAX];
-    struct vfs_node *linux_node = (force_tnu || strchr(argv[0], '/')) ? NULL :
-        resolve_linux_command_node(argv[0], linux_path, sizeof(linux_path),
-                                   linux_host_path, sizeof(linux_host_path));
-    int linux_weight = 0;
-    int tnu_weight = 1;
-    command_priority_read(&linux_weight, &tnu_weight);
-
-    if (!force_tnu && linux_node && linux_weight > tnu_weight) {
-        if (!shell_can_execute_node(linux_node)) {
-            kprintf("%s: permission denied\n", argv[0]);
-            return 126;
-        }
-        return run_linux_transparent(linux_path, argc, argv);
-    }
-
-    if (applet_available) {
+    if (tnu_applet_is_command(cmd_name) &&
+        (bin_entry_exists(cmd_name) || strcmp(cmd_name, "layout") == 0)) {
         return tnu_applet_run(argc, argv, stdin_data);
     }
 
@@ -2285,10 +2256,6 @@ static int run_command(int argc, char **argv, const char *stdin_data)
         if (!shell_can_execute_node(node)) {
             kprintf("%s: permission denied\n", argv[0]);
             return 126;
-        }
-        if (path_is_linux_root(path)) {
-            const char *inner = path + 10;
-            return run_linux_transparent(inner, argc, argv);
         }
         int script_rc = run_shell_script(node, argc, argv, true, false);
         if (script_rc >= 0) {
@@ -2437,6 +2404,8 @@ static int run_tokens(int argc, char **argv)
 
 static void init_env(void)
 {
+    char locale[32];
+
     env_count = 0;
     strcpy(envs[env_count].key, "PATH");
     strcpy(envs[env_count++].value, DEFAULT_EXEC_PATH);
@@ -2444,6 +2413,14 @@ static void init_env(void)
     strcpy(envs[env_count++].value, "/bin/tsh");
     strcpy(envs[env_count].key, "TERM");
     strcpy(envs[env_count++].value, "tnu-vga");
+
+    read_file_text("/etc/locale", locale, sizeof(locale), "en_US");
+    strip_first_newline(locale);
+    if (!locale[0]) {
+        strcpy(locale, "en_US");
+    }
+    env_set_value("LANG", locale);
+    env_set_value("LC_ALL", locale);
 }
 
 static void init_keymap(void)

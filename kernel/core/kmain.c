@@ -10,7 +10,6 @@
 #include <tnu/drivers.h>
 #include <tnu/framebuffer.h>
 #include <tnu/log.h>
-#include <tnu/linux_compat.h>
 #include <tnu/memory.h>
 #include <tnu/multiboot2.h>
 #include <tnu/net.h>
@@ -256,14 +255,6 @@ void arch_entry(uint32_t magic, uintptr_t mbi_addr)
 
     boot_begin("Proc filesystem");
     procfs_init();
-    boot_ok();
-
-    boot_begin("Linux compatibility");
-    linux_compat_init();
-    linux_net_init();
-    linux_ipc_init();
-    linux_signal_init();
-    linux_proc_init();
     boot_ok();
 
     boot_begin("Network stack");

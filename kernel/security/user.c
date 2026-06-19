@@ -1,6 +1,5 @@
 #include <tnu/printf.h>
 #include <tnu/string.h>
-#include <tnu/tfs.h>
 #include <tnu/user.h>
 #include <tnu/vfs.h>
 
@@ -62,6 +61,32 @@ static uint64_t parse_hex64(const char *s)
     return value;
 }
 
+bool user_name_valid(const char *name)
+{
+    if (!name || !name[0]) {
+        return false;
+    }
+    for (size_t i = 0; name[i]; i++) {
+        char c = name[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') || c == '_' || c == '-')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+uint32_t user_next_uid(void)
+{
+    uint32_t max_uid = 999;
+    for (size_t i = 0; i < users_len; i++) {
+        if (users[i].uid > max_uid) {
+            max_uid = users[i].uid;
+        }
+    }
+    return max_uid + 1;
+}
+
 static void add_record(const char *name, uint32_t uid, uint32_t gid,
                        const char *home, const char *shell)
 {
@@ -96,44 +121,6 @@ static void parse_passwd_line(char *line)
     }
 }
 
-static bool file_content_equals(const char *path, const char *data, size_t size)
-{
-    struct vfs_node *node = vfs_lookup(path, "/");
-    if (!node || node->type != VFS_NODE_FILE || node->size != size) {
-        return false;
-    }
-    if (size == 0) {
-        return true;
-    }
-    if (!node->data) {
-        return false;
-    }
-    return memcmp(node->data, data, size) == 0;
-}
-
-static void write_file_if_changed(const char *path, const char *data, size_t size)
-{
-    if (!file_content_equals(path, data, size)) {
-        vfs_write_file(path, "/", data, size);
-    }
-}
-
-static void chmod_if_needed(const char *path, uint32_t mode)
-{
-    struct vfs_stat st;
-    if (vfs_stat(path, "/", &st) == 0 && (st.mode & 07777) != (mode & 07777)) {
-        vfs_chmod(path, "/", mode);
-    }
-}
-
-static void chown_if_needed(const char *path, uint32_t uid, uint32_t gid)
-{
-    struct vfs_stat st;
-    if (vfs_stat(path, "/", &st) == 0 && (st.uid != uid || st.gid != gid)) {
-        vfs_chown(path, "/", uid, gid);
-    }
-}
-
 static void rebuild_passwd(void)
 {
     char buf[2048];
@@ -147,7 +134,7 @@ static void rebuild_passwd(void)
             strcat(buf, line);
         }
     }
-    write_file_if_changed("/etc/passwd", buf, strlen(buf));
+    vfs_write_file("/etc/passwd", "/", buf, strlen(buf));
 }
 
 static void rebuild_group(void)
@@ -166,7 +153,7 @@ static void rebuild_group(void)
             strcat(buf, line);
         }
     }
-    write_file_if_changed("/etc/group", buf, strlen(buf));
+    vfs_write_file("/etc/group", "/", buf, strlen(buf));
 }
 
 static void rebuild_shadow(void)
@@ -186,9 +173,9 @@ static void rebuild_shadow(void)
             strcat(buf, line);
         }
     }
-    write_file_if_changed("/etc/shadow", buf, strlen(buf));
-    chmod_if_needed("/etc/shadow", 0600);
-    chown_if_needed("/etc/shadow", 0, 0);
+    vfs_write_file("/etc/shadow", "/", buf, strlen(buf));
+    vfs_chmod("/etc/shadow", "/", 0600);
+    vfs_chown("/etc/shadow", "/", 0, 0);
 }
 
 static void parse_shadow_line(char *line)
@@ -255,11 +242,6 @@ static void parse_shadow(void)
 
 void users_init(void)
 {
-    bool restore_auto_sync = tfs_is_persistent();
-    if (restore_auto_sync) {
-        tfs_set_auto_sync(false);
-    }
-
     users_len = 0;
     current_user = 0;
 
@@ -299,12 +281,8 @@ void users_init(void)
     rebuild_group();
     rebuild_shadow();
     vfs_mkdir("/root", "/", VFS_S_IFDIR | 0700, 0, 0);
-    chmod_if_needed("/root", 0700);
-    chown_if_needed("/root", 0, 0);
-
-    if (restore_auto_sync) {
-        tfs_set_auto_sync(true);
-    }
+    vfs_chmod("/root", "/", 0700);
+    vfs_chown("/root", "/", 0, 0);
 }
 
 const struct user_record *user_current(void)
@@ -353,7 +331,8 @@ const struct user_record *user_find_uid(uint32_t uid)
 
 int user_add(const char *name, uint32_t uid, uint32_t gid)
 {
-    if (!name || user_find_name(name) || users_len >= MAX_USERS) {
+    if (!user_name_valid(name) || user_find_name(name) ||
+        user_find_uid(uid) || users_len >= MAX_USERS) {
         return -1;
     }
     char home[USER_HOME_MAX + 1];
@@ -372,10 +351,13 @@ int user_del(const char *name)
 {
     for (size_t i = 0; i < users_len; i++) {
         if (strcmp(users[i].name, name) == 0 && users[i].uid != 0) {
+            bool deleting_current = current_user == i;
             memmove(&users[i], &users[i + 1], (users_len - i - 1) * sizeof(users[0]));
             users_len--;
-            if (current_user >= users_len) {
+            if (deleting_current || current_user >= users_len) {
                 current_user = 0;
+            } else if (current_user > i) {
+                current_user--;
             }
             rebuild_passwd();
             rebuild_group();

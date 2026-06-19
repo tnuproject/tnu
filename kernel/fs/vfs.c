@@ -39,46 +39,6 @@ static void attach_child(struct vfs_node *parent, struct vfs_node *child)
     parent->first_child = child;
 }
 
-static void release_node_data(struct vfs_node *node)
-{
-    if (node && node->data && !node->data_borrowed) {
-        kfree(node->data);
-    }
-}
-
-static bool node_is_runtime_fs(struct vfs_node *node)
-{
-    for (struct vfs_node *n = node; n; n = n->parent) {
-        if (n->type == VFS_NODE_PROC || n->type == VFS_NODE_DEV) {
-            return true;
-        }
-        bool volatile_name =
-            strcmp(n->name, "proc") == 0 ||
-            strcmp(n->name, "dev") == 0 ||
-            strcmp(n->name, "sys") == 0 ||
-            strcmp(n->name, "run") == 0 ||
-            strcmp(n->name, "tmp") == 0;
-        if (n->parent == root_node &&
-            volatile_name) {
-            return true;
-        }
-        if (volatile_name &&
-            n->parent && strcmp(n->parent->name, "linux") == 0 &&
-            n->parent->parent && strcmp(n->parent->parent->name, "usr") == 0 &&
-            n->parent->parent->parent == root_node) {
-            return true;
-        }
-    }
-    return false;
-}
-
-static void sync_if_persistent_node(struct vfs_node *node)
-{
-    if (!node_is_runtime_fs(node)) {
-        tfs_sync_if_mounted();
-    }
-}
-
 static struct vfs_node *find_child(struct vfs_node *parent, const char *name)
 {
     for (struct vfs_node *n = parent->first_child; n; n = n->next_sibling) {
@@ -246,7 +206,7 @@ int vfs_mkdir(const char *path, const char *cwd, uint32_t mode, uint32_t uid, ui
         return -3;
     }
     attach_child(parent, node);
-    sync_if_persistent_node(node);
+    tfs_sync_if_mounted();
     return 0;
 }
 
@@ -265,7 +225,7 @@ int vfs_create_file(const char *path, const char *cwd, uint32_t mode, uint32_t u
         return -3;
     }
     attach_child(parent, node);
-    sync_if_persistent_node(node);
+    tfs_sync_if_mounted();
     return 0;
 }
 
@@ -291,12 +251,11 @@ int vfs_write_file(const char *path, const char *cwd, const void *data, size_t s
         memcpy(copy, data, size);
         copy[size] = 0;
     }
-    release_node_data(node);
     node->data = copy;
     node->data_borrowed = false;
     node->size = size;
     node->modified = ++vfs_clock;
-    sync_if_persistent_node(node);
+    tfs_sync_if_mounted();
     return 0;
 }
 
@@ -313,10 +272,9 @@ int vfs_unlink(const char *path, const char *cwd)
             if ((*link)->first_child) {
                 return -2;
             }
-            release_node_data(*link);
             *link = (*link)->next_sibling;
             parent->modified = ++vfs_clock;
-            sync_if_persistent_node(parent);
+            tfs_sync_if_mounted();
             return 0;
         }
         link = &(*link)->next_sibling;
@@ -332,7 +290,7 @@ int vfs_chmod(const char *path, const char *cwd, uint32_t mode)
     }
     node->mode = (node->mode & 0170000) | (mode & 07777);
     node->modified = ++vfs_clock;
-    sync_if_persistent_node(node);
+    tfs_sync_if_mounted();
     return 0;
 }
 
@@ -345,7 +303,7 @@ int vfs_chown(const char *path, const char *cwd, uint32_t uid, uint32_t gid)
     node->uid = uid;
     node->gid = gid;
     node->modified = ++vfs_clock;
-    sync_if_persistent_node(node);
+    tfs_sync_if_mounted();
     return 0;
 }
 
@@ -389,8 +347,6 @@ ssize_t vfs_write_node(struct vfs_node *node, uint64_t offset, const void *buf, 
     }
     uint64_t end = offset + count;
     if (end > node->size || node->data_borrowed) {
-        uint8_t *old_data = node->data;
-        bool old_borrowed = node->data_borrowed;
         uint64_t new_size = end > node->size ? end : node->size;
         uint8_t *new_data = kmalloc((size_t)new_size + 1);
         if (!new_data) {
@@ -406,9 +362,6 @@ ssize_t vfs_write_node(struct vfs_node *node, uint64_t offset, const void *buf, 
         node->size = new_size;
         node->data[node->size] = 0;
         node->data_borrowed = false;
-        if (old_data && !old_borrowed) {
-            kfree(old_data);
-        }
     }
     memcpy(node->data + offset, buf, count);
     node->modified = ++vfs_clock;

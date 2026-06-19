@@ -19,8 +19,6 @@ enum process_state {
 struct process {
     int pid;
     int ppid;
-    int tgid;
-    int sid;
     int pgid;
     uint32_t uid;
     uint32_t gid;
@@ -28,14 +26,13 @@ struct process {
     enum process_state state;
     char name[PROCESS_NAME_MAX + 1];
     char cwd[VFS_PATH_MAX];
+    char linux_exec_path[VFS_PATH_MAX];
+    uintptr_t linux_tls_base;
+    uintptr_t linux_vdso_base;
     uint64_t started_ticks;
     int exit_code;
     uint8_t signal_disposition[PROCESS_SIGNAL_MAX];
     uintptr_t signal_handler[PROCESS_SIGNAL_MAX];
-    uint64_t signal_mask;
-    uintptr_t linux_tls_base;
-    uintptr_t linux_vdso_base;
-    char linux_exec_path[VFS_PATH_MAX];
     struct file_descriptor fds[VFS_MAX_FDS];
 };
 
