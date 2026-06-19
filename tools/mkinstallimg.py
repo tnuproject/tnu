@@ -215,14 +215,13 @@ class Fat32Image:
 
 
 def build_esp_image(efi_boot: bytes, kernel: bytes, rootfs: bytes, grub_cfg: bytes, grub_font: bytes) -> bytes:
-    payload_bytes = len(efi_boot) + len(kernel) + len(rootfs) + len(grub_cfg) + len(grub_font)
+    # Exclude rootfs from payload calculation since it's not in the ESP
+    payload_bytes = len(efi_boot) + len(kernel) + len(grub_cfg) + len(grub_font)
     esp_size = max(ESP_MIN_BYTES, align_up(payload_bytes + ESP_SLACK_BYTES, ESP_ALIGN_BYTES))
     fat = Fat32Image(esp_size, "TIRAMISU")
 
-    # The ESP (EFI System Partition) only needs the bootloader, kernel and
-    # GRUB configuration/font. Storing the full TFS rootfs inside the ESP
-    # inflates the image and makes the FAT32 construction extremely slow.
-    # The rootfs is written later as a separate partition, so we omit it here.
+    # TEMPORARY: Rootfs excluded from ESP to speed up build (~200 MB in bytearray is slow).
+    # GRUB will load root.tfs from /boot/root.tfs on the ISO or installed partition instead.
     files = {
         "BOOTX64.EFI": efi_boot,
         "KERNEL.ELF": kernel,
@@ -254,8 +253,7 @@ def build_esp_image(efi_boot: bytes, kernel: bytes, rootfs: bytes, grub_cfg: byt
         ],
         boot_dir,
     )
-    # The ESP does not contain the rootfs; it is a separate partition.
-    # Therefore we only add the kernel and GRUB entries here.
+    # The ESP contains only the kernel and GRUB directory (rootfs excluded for speed).
     fat.write_directory(
         boot_dir,
         [

@@ -10,6 +10,9 @@ include version.mk
 ARCH ?= $(TNU_ARCH)
 PROJECT := $(TNU_PROJECT)
 
+# Include Alpine Linux chroot into final image
+WITH_LINUX_CHROOT ?= 1
+
 # Set architecture-specific compiler if cross-compiling
 ifeq ($(ARCH),i386)
     ifeq ($(origin CC),default)
@@ -49,19 +52,16 @@ MFORMAT ?= mformat
 GIT ?= git
 PATCH ?= patch
 
-# Upstream source mirrors used only when the local clones are missing.
-# Freedoom official GitHub repo: https://github.com/freedoom/freedoom
-FREEDOOM_UPSTREAM_URL ?= https://github.com/freedoom/freedoom.git
-FREEDOOM_UPSTREAM_DIR ?= ports/doom/freedoom
-
-DOOM_TNU_PATCH ?= patches/doom/i_video_tnu_fast.patch
-DOOM_UPSTREAM_VIDEO ?= ports/doom/upstream/i_video.c
-
 BUILD := build
 KERNEL := $(BUILD)/kernel.elf
 ROOTFS := $(BUILD)/root.tfs
 # ISO filename reflects the actual architecture being built
-ISO := $(BUILD)/$(PROJECT)-$(TNU_VERSION)-$(ARCH).iso
+ISO_SUFFIX :=
+ifeq ($(WITH_LINUX_CHROOT),1)
+    ISO_SUFFIX := -linuxchroot
+endif
+
+ISO := $(BUILD)/$(PROJECT)-$(TNU_VERSION)-$(ARCH)$(ISO_SUFFIX).iso
 EFI_BOOT := $(BUILD)/BOOTX64.EFI
 INSTALL_IMAGE := $(BUILD)/install.img
 GENERATED := $(BUILD)/generated
@@ -100,9 +100,9 @@ LIBC_OBJS := $(patsubst %.c,$(BUILD)/obj/%.o,$(LIBC_C)) \
 USER_CRT := $(BUILD)/obj/userspace/libc/src/crt0.o
 USER_LIB := $(BUILD)/user/libtnu.a
 
-COREUTIL_NAMES := cat chmod chown clear cp date dmesg echo hostname \
-	id ifconfig keymap kill language locale ls mkdir mount mv xedit netstat ping ps pwd reboot rm route dhcp \
-	shutdown stat sysfetch sync time timezone touch uname uptime usb whoami wifi
+COREUTIL_NAMES := cat chmod chown clear cp curl date dmesg dns driver echo hostname \
+	id ifconfig keymap kill linuxdrv ls mkdir mount mv net xedit netstat ping ps pwd reboot rm route dhcp \
+	shutdown stat sysfetch sync tar time timezone tls touch uname unzip uptime usb wget whoami wifi zip
 
 IWN_FW_SRC := $(shell find freebsd-src/sys/contrib/dev/iwn freebsd-src/sys/contrib/dev/wpi -maxdepth 1 -name '*.fw.uu' 2>/dev/null | sort)
 IWM_FW_SRC := $(shell find freebsd-src/sys/contrib/dev/iwm -maxdepth 1 -name '*.fw' 2>/dev/null | sort)
@@ -110,21 +110,23 @@ LINUX_IWL_FW_SRC := $(shell find rootfs/lib/firmware rootfs/lib/firmware/iwlwifi
 
 .PHONY: all kernel userspace iso run clean rootfs version-files permission-tests verify verify-kernel verify-iso \
 	firmware-iwlwifi ports-preflight ports-fetch ports-fetch-core \
-	nano doom fastfetch ports-fetch-nano ports-fetch-freedoom ports-fetch-doom-upstream ports-patch-doom
+	nano doom ports-fetch-freedoom \
+	linux-chroot-fetch linux-chroot linux-chroot-packages
 
+ifeq ($(WITH_LINUX_CHROOT),1)
+all: ports-fetch linux-chroot-fetch linux-chroot-packages iso
+else
 all: ports-fetch iso
+endif
 
 kernel: $(KERNEL)
 
 userspace: $(USER_LIB) $(BUILD)/user/init $(BUILD)/user/tsh \
 	$(BUILD)/user/tnu-utils $(BUILD)/user/login $(BUILD)/user/passwd \
 	$(BUILD)/user/useradd $(BUILD)/user/userdel $(BUILD)/user/sysinstall \
-	$(BUILD)/user/bootd \
-	$(BUILD)/user/nano $(BUILD)/user/doom $(BUILD)/user/fastfetch
-
-nano: $(BUILD)/user/nano
+        $(BUILD)/user/bootd \
+        $(BUILD)/user/pkg
 doom: $(BUILD)/user/doom
-fastfetch: $(BUILD)/user/fastfetch $(BUILD)/user/fastfetch
 
 iso: $(ISO)
 
@@ -165,6 +167,15 @@ $(KERNEL): $(KERNEL_OBJS) kernel/linker.ld $(GENERATED_VERSION)
 $(BUILD)/obj/kernel/%.o: kernel/%.c $(KERNEL_HEADERS)
 	@mkdir -p $(dir $@)
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
+
+$(BUILD)/obj/kernel/compat/linux/syscall/linux_syscall_table.o: \
+	kernel/compat/linux/syscall/linux_syscall_table.c \
+	kernel/compat/linux/syscall/linux_syscall.tbl \
+	tools/gen_linux_syscalls.py \
+	$(KERNEL_HEADERS)
+	$(HOSTPY) tools/gen_linux_syscalls.py kernel/compat/linux/syscall/linux_syscall.tbl kernel/compat/linux/syscall/linux_syscall_table.c
+	@mkdir -p $(dir $@)
+	$(CC) $(KERNEL_CFLAGS) -c kernel/compat/linux/syscall/linux_syscall_table.c -o $@
 
 $(BUILD)/obj/kernel/%.o: kernel/%.S $(KERNEL_HEADERS)
 	@mkdir -p $(dir $@)
@@ -222,37 +233,41 @@ $(BUILD)/user/bootd: $(BUILD)/obj/userspace/sbin/bootd.o $(USER_LIB) $(USER_CRT)
 	@mkdir -p $(dir $@)
 	$(CC) $(USER_CFLAGS) $(USER_LDFLAGS) -o $@ $(USER_CRT) $< $(USER_LIB) -lgcc
 
+$(BUILD)/user/pkg: $(BUILD)/obj/userspace/pkg/pkg.o $(USER_LIB) $(USER_CRT) userspace/linker.ld
+	@mkdir -p $(dir $@)
+	$(CC) $(USER_CFLAGS) $(USER_LDFLAGS) -o $@ $(USER_CRT) $< $(USER_LIB) -lgcc
+
 $(BUILD)/user/dhclient: $(BUILD)/obj/userspace/sbin/dhclient.o $(USER_LIB) $(USER_CRT) userspace/linker.ld
 	@mkdir -p $(dir $@)
 	$(CC) $(USER_CFLAGS) $(USER_LDFLAGS) -o $@ $(USER_CRT) $< $(USER_LIB) -lgcc
 
 $(BUILD)/user/nano: $(USER_LIB) $(USER_CRT) userspace/linker.ld \
-	$(shell find ports/nano/src -type f 2>/dev/null) | ports-fetch-nano
+	$(shell find ports/nano/src -type f 2>/dev/null)
 	$(MAKE) -C ports/nano CC="$(CC)" \
 		USER_CRT="$(abspath $(USER_CRT))" \
 		USER_LIB="$(abspath $(USER_LIB))"
 
 $(BUILD)/user/doom: $(USER_LIB) $(USER_CRT) userspace/linker.ld \
-	$(shell find ports/doom/src -type f 2>/dev/null) | ports-fetch-freedoom ports-fetch-doom-upstream ports-patch-doom
+	$(shell find ports/doom/src -type f 2>/dev/null)
 	$(MAKE) -C ports/doom CC="$(CC)" \
 		USER_CRT="$(abspath $(USER_CRT))" \
 		USER_LIB="$(abspath $(USER_LIB))"
 
-$(BUILD)/user/fastfetch: $(USER_LIB) $(USER_CRT) userspace/linker.ld \
-	$(shell find ports/fastfetch/src -type f 2>/dev/null)
-	$(MAKE) -C ports/fastfetch CC="$(CC)" \
-		USER_CRT="$(abspath $(USER_CRT))" \
-		USER_LIB="$(abspath $(USER_LIB))"
-
-rootfs: userspace version-files firmware-iwlwifi
+rootfs: userspace version-files firmware-iwlwifi nano doom $(KERNEL) $(EFI_BOOT)
 	rm -rf $(BUILD)/rootfs
 	mkdir -p $(BUILD)/rootfs
 	cp -a rootfs/. $(BUILD)/rootfs/
 	cp -a $(GENERATED)/rootfs/. $(BUILD)/rootfs/
 	cp ascii.txt $(BUILD)/rootfs/etc/sysfetch-logo
 	mkdir -p $(BUILD)/rootfs/bin $(BUILD)/rootfs/sbin $(BUILD)/rootfs/usr/bin \
-		$(BUILD)/rootfs/usr/games $(BUILD)/rootfs/usr/share/games/doom \
-		$(BUILD)/rootfs/lib/firmware/iwlwifi
+		$(BUILD)/rootfs/boot $(BUILD)/rootfs/EFI/BOOT \
+		$(BUILD)/rootfs/lib/modules \
+		$(BUILD)/rootfs/lib/firmware/iwlwifi \
+		$(BUILD)/rootfs/usr/games/doom \
+		$(BUILD)/rootfs/usr/share/games/doom \
+		$(BUILD)/rootfs/usr/linux
+	cp $(KERNEL) $(BUILD)/rootfs/boot/kernel.elf
+	cp $(EFI_BOOT) $(BUILD)/rootfs/EFI/BOOT/BOOTX64.EFI
 	cp $(BUILD)/user/init $(BUILD)/rootfs/sbin/init
 	cp $(BUILD)/user/tsh $(BUILD)/rootfs/bin/tsh
 	cp $(BUILD)/user/tsh $(BUILD)/rootfs/bin/sh
@@ -262,13 +277,43 @@ rootfs: userspace version-files firmware-iwlwifi
 	cp $(BUILD)/user/useradd $(BUILD)/rootfs/sbin/useradd
 	cp $(BUILD)/user/userdel $(BUILD)/rootfs/sbin/userdel
 	cp $(BUILD)/user/sysinstall $(BUILD)/rootfs/sbin/sysinstall
-	for name in $(COREUTIL_NAMES); do cp $(BUILD)/user/tnu-utils $(BUILD)/rootfs/bin/$$name; done
-	cp $(BUILD)/user/nano $(BUILD)/rootfs/bin/nano
-	cp $(BUILD)/user/doom $(BUILD)/rootfs/usr/games/doom
-	cp $(BUILD)/user/fastfetch $(BUILD)/rootfs/usr/bin/fastfetch
+	cp $(BUILD)/user/bootd $(BUILD)/rootfs/sbin/bootd
+	cp $(BUILD)/user/pkg $(BUILD)/rootfs/bin/pkg
+	# Create real binaries for builtins (TFS doesn't support hardlinks)
+	$(foreach cmd,$(COREUTIL_NAMES),cp $(BUILD)/user/tnu-utils $(BUILD)/rootfs/bin/$(cmd);)
+	@if [ -f $(BUILD)/user/nano ]; then cp $(BUILD)/user/nano $(BUILD)/rootfs/bin/nano; fi
+	@if [ -f $(BUILD)/user/doom ]; then cp $(BUILD)/user/doom $(BUILD)/rootfs/usr/games/doom; fi
+	@if [ -d ports/doom/freedoom ] && [ -d ports/doom/freedoom/wads ]; then \
+		cp -a ports/doom/freedoom/wads/. $(BUILD)/rootfs/usr/share/games/doom/ 2>/dev/null || true; \
+	fi
 	cp -a $(BUILD)/firmware/iwlwifi/. $(BUILD)/rootfs/lib/firmware/iwlwifi/
+	# Remove Linux binaries from PATH directories to prevent accidental execution
+	rm -f $(BUILD)/rootfs/bin/busybox
+	rm -f $(BUILD)/rootfs/usr/bin/busybox
+	rm -f $(BUILD)/rootfs/usr/linux/bin/busybox
+	rm -f $(BUILD)/rootfs/usr/linux/sbin/*
+	rm -f $(BUILD)/rootfs/usr/linux/bin/*
+	mkdir -p $(BUILD)/rootfs/usr/linux/bin $(BUILD)/rootfs/usr/linux/sbin
+	# Symlink to tnu-utils for basic utilities if needed (for consistency)
+	@echo "linux-chroot: disabled in live system. Use 'chroot /usr/linux /bin/sh' for Linux binaries." > $(BUILD)/rootfs/usr/linux/README.TNU
+	@if [ "$(WITH_LINUX_CHROOT)" = "1" ] && [ -d "$(LINUX_CHROOT_DIR)" ]; then \
+		echo "rootfs: copying Linux chroot into rootfs/usr/linux"; \
+		rm -rf $(BUILD)/rootfs/usr/linux; \
+		mkdir -p $(BUILD)/rootfs/usr/linux; \
+		tar -C $(LINUX_CHROOT_DIR) -cf - bin lib lib64 sbin usr var etc 2>/dev/null | \
+			tar -C $(BUILD)/rootfs/usr/linux -xf -; \
+		if [ -d "$(LINUX_CHROOT_DIR)/lib/modules" ]; then \
+			mkdir -p $(BUILD)/rootfs/lib/modules; \
+			cp -a $(LINUX_CHROOT_DIR)/lib/modules/. $(BUILD)/rootfs/lib/modules/; \
+		fi; \
+		$(HOSTPY) tools/materialize_linux_symlinks.py $(BUILD)/rootfs/usr/linux; \
+	else \
+		echo "rootfs: Linux chroot disabled or not present"; \
+	fi
 
 $(ROOTFS): rootfs tools/mktfs.py
+	@echo "rootfs: normalizing ownership to root:root..."
+	chown -R root:root $(BUILD)/rootfs
 	$(HOSTPY) tools/mktfs.py $(BUILD)/rootfs $@
 
 $(EFI_BOOT): $(GENERATED_GRUB)
@@ -277,17 +322,24 @@ $(EFI_BOOT): $(GENERATED_GRUB)
 		--modules="part_gpt part_msdos iso9660 fat search search_fs_file test normal boot multiboot2 font gfxterm all_video efi_gop efi_uga video video_fb video_bochs video_cirrus" \
 		"boot/grub/grub.cfg=$(GENERATED_GRUB)"
 
-$(INSTALL_IMAGE): $(KERNEL) $(ROOTFS) $(GENERATED_GRUB) $(EFI_BOOT) tools/mkinstallimg.py
-	$(GRUB_FILE) --is-x86-multiboot2 $(KERNEL)
-	@LC_ALL=C $(READELF) -h $(KERNEL) | grep -q '$(ELF_CLASS_RE)' || { LC_ALL=C $(READELF) -h $(KERNEL); echo "error: install kernel is not the expected $(ARCH)-class kernel"; false; }
-	$(READELF) -l $(KERNEL) | grep -q 'LOAD'
-	$(HOSTPY) tools/mkinstallimg.py \
-		--out $@ \
-		--efi $(EFI_BOOT) \
-		--kernel $(KERNEL) \
-		--rootfs $(ROOTFS) \
-		--grub-cfg $(GENERATED_GRUB) \
-		--grub-font $(GRUB_FONT)
+$(INSTALL_IMAGE): $(KERNEL) $(ROOTFS) $(GENERATED_GRUB) $(EFI_BOOT)
+	rm -rf $(BUILD)/install-iso
+	mkdir -p $(BUILD)/install-iso/boot/grub/fonts $(BUILD)/install-iso/EFI/BOOT
+	cp $(KERNEL) $(BUILD)/install-iso/boot/kernel.elf
+	$(GRUB_FILE) --is-x86-multiboot2 $(BUILD)/install-iso/boot/kernel.elf
+	@LC_ALL=C $(READELF) -h $(BUILD)/install-iso/boot/kernel.elf | grep -q '$(ELF_CLASS_RE)' || { LC_ALL=C $(READELF) -h $(BUILD)/install-iso/boot/kernel.elf; echo "error: install kernel is not the expected $(ARCH)-class kernel"; false; }
+	$(READELF) -l $(BUILD)/install-iso/boot/kernel.elf | grep -q 'LOAD'
+	cp $(ROOTFS) $(BUILD)/install-iso/boot/root.tfs
+	cp $(GENERATED_GRUB) $(BUILD)/install-iso/boot/grub/grub.cfg
+	cp $(GRUB_FONT) $(BUILD)/install-iso/boot/grub/fonts/unicode.pf2
+	cp $(EFI_BOOT) $(BUILD)/install-iso/EFI/BOOT/BOOTX64.EFI
+	@command -v $(MFORMAT) >/dev/null 2>&1 || { echo "error: $(GRUB_MKRESCUE) needs $(MFORMAT) from mtools; install the mtools package"; false; }
+	$(GRUB_MKRESCUE) -V TNU_BOOT -o $@ $(BUILD)/install-iso
+	$(ISOINFO) -i $@ -R -f | grep -qx '/boot/kernel.elf'
+	$(ISOINFO) -i $@ -R -f | grep -qx '/boot/root.tfs'
+	$(ISOINFO) -i $@ -R -f | grep -qx '/boot/grub/grub.cfg'
+	$(ISOINFO) -i $@ -R -f | grep -qx '/boot/grub/fonts/unicode.pf2'
+	$(ISOINFO) -i $@ -R -f | grep -qx '/EFI/BOOT/BOOTX64.EFI'
 
 $(ISO): $(KERNEL) $(ROOTFS) $(GENERATED_GRUB) $(EFI_BOOT) $(INSTALL_IMAGE)
 	rm -rf $(BUILD)/iso
@@ -320,45 +372,12 @@ permission-tests:
 ports-preflight:
 	$(HOSTPY) tools/ports_preflight.py
 
-ports-fetch: ports-fetch-core ports-fetch-nano ports-fetch-freedoom ports-fetch-doom-upstream ports-patch-doom
+ports-fetch: ports-fetch-core
 
 # ports-fetch-core: fetch core dependencies.
 # Xorg is not required for the current TNU console-only workflow.
 ports-fetch-core:
 	@echo "ports-fetch-core: skipping xorg"
-
-ports-fetch-nano:
-	$(MAKE) -C ports/nano fetch
-
-ports-fetch-freedoom:
-	@mkdir -p $(dir $(FREEDOOM_UPSTREAM_DIR))
-	@if [ -d "$(FREEDOOM_UPSTREAM_DIR)/.git" ]; then \
-		echo "Freedoom upstream already cloned at $(FREEDOOM_UPSTREAM_DIR)"; \
-	else \
-		echo "cloning Freedoom upstream into $(FREEDOOM_UPSTREAM_DIR)"; \
-		rm -rf "$(FREEDOOM_UPSTREAM_DIR)"; \
-		$(GIT) clone --depth 1 "$(FREEDOOM_UPSTREAM_URL)" "$(FREEDOOM_UPSTREAM_DIR)"; \
-	fi
-
-ports-fetch-doom-upstream:
-	@if [ -f "$(DOOM_UPSTREAM_VIDEO)" ]; then \
-		echo "Doom upstream already available at ports/doom/upstream"; \
-	else \
-		echo "Doom upstream missing; trying tools/ports_fetch.py doom"; \
-		$(HOSTPY) tools/ports_fetch.py doom || true; \
-	fi
-
-ports-patch-doom: ports-fetch-doom-upstream
-	@if [ ! -f "$(DOOM_TNU_PATCH)" ]; then \
-		echo "warning: missing $(DOOM_TNU_PATCH); Doom TNU video patch was not applied"; \
-	elif [ ! -f "$(DOOM_UPSTREAM_VIDEO)" ]; then \
-		echo "warning: missing $(DOOM_UPSTREAM_VIDEO); run make ports-fetch or check ports/doom upstream fetch"; \
-	elif grep -q "TNU_DOOM_FAST_NATIVE" "$(DOOM_UPSTREAM_VIDEO)"; then \
-		echo "Doom TNU fast video patch already applied"; \
-	else \
-		echo "applying Doom TNU fast video patch"; \
-		$(PATCH) -p0 < "$(DOOM_TNU_PATCH)" || $(PATCH) -p1 < "$(DOOM_TNU_PATCH)"; \
-	fi
 
 verify-kernel: $(KERNEL)
 	$(GRUB_FILE) --is-x86-multiboot2 $(KERNEL)
@@ -374,3 +393,115 @@ verify-iso: $(ISO)
 	$(ISOINFO) -i $(ISO) -R -f | grep -qx '/EFI/BOOT/BOOTX64.EFI'
 	$(XORRISO) -indev $(ISO) -report_el_torito plain 2>/dev/null | grep -q 'BIOS'
 	$(XORRISO) -indev $(ISO) -report_el_torito plain 2>/dev/null | grep -q 'UEFI'
+
+# Linux chroot fetch - downloads Alpine Linux minirootfs for Linux ABI compatibility
+ALPINE_VERSION := 3.20
+ALPINE_RELEASE := 3.20.0
+ALPINE_ARCH := x86_64
+ALPINE_MIRROR := https://dl-cdn.alpinelinux.org/alpine/v$(ALPINE_VERSION)/releases/$(ALPINE_ARCH)
+ALPINE_REPO_BASE := https://dl-cdn.alpinelinux.org/alpine/v$(ALPINE_VERSION)
+ALPINE_TARBALL := alpine-minirootfs-$(ALPINE_RELEASE)-$(ALPINE_ARCH).tar.gz
+ALPINE_URL := $(ALPINE_MIRROR)/$(ALPINE_TARBALL)
+LINUX_CHROOT_DIR := $(BUILD)/linux-chroot
+LINUX_CHROOT_TARBALL := $(BUILD)/downloads/$(ALPINE_TARBALL)
+LINUX_CHROOT_REQUIRED_PACKAGES :=
+LINUX_CHROOT_OPTIONAL_PACKAGES := freedoom
+LINUX_CHROOT_PACKAGES := $(LINUX_CHROOT_REQUIRED_PACKAGES) $(LINUX_CHROOT_OPTIONAL_PACKAGES)
+APK_RETRIES ?= 3
+
+linux-chroot-fetch: $(LINUX_CHROOT_DIR)/bin/busybox
+
+$(LINUX_CHROOT_TARBALL):
+	@mkdir -p $(dir $@)
+	@echo "linux-chroot: downloading Alpine Linux minirootfs..."
+	@curl -fsSL -o $@ "$(ALPINE_URL)" || wget -q -O $@ "$(ALPINE_URL)" || \
+		{ echo "linux-chroot: failed to download from $(ALPINE_URL)"; \
+		  echo "linux-chroot: you can manually download $(ALPINE_TARBALL) and place it at $@"; \
+		  false; }
+
+$(LINUX_CHROOT_DIR)/bin/busybox: $(LINUX_CHROOT_TARBALL)
+	@rm -rf $(LINUX_CHROOT_DIR)
+	@mkdir -p $(LINUX_CHROOT_DIR)
+	@echo "linux-chroot: extracting Alpine minirootfs..."
+	@tar -xzf $(LINUX_CHROOT_TARBALL) -C $(LINUX_CHROOT_DIR)
+	@touch $@
+	@echo "linux-chroot: Alpine Linux chroot ready at $(LINUX_CHROOT_DIR)"
+
+# Install optional packages into the Alpine chroot. Native nano is a TNU port.
+# Freedoom is optional because it lives in community
+# and should not make the OS build fail when Alpine mirrors are temporarily flaky.
+linux-chroot-packages: $(LINUX_CHROOT_DIR)/bin/busybox
+	@echo "linux-chroot: Installing required Linux packages: $(LINUX_CHROOT_REQUIRED_PACKAGES)"
+	@mkdir -p $(LINUX_CHROOT_DIR)/etc/apk
+	@printf '%s\n%s\n' '$(ALPINE_REPO_BASE)/main' '$(ALPINE_REPO_BASE)/community' > $(LINUX_CHROOT_DIR)/etc/apk/repositories
+	@if [ -f /etc/resolv.conf ]; then \
+		cp /etc/resolv.conf $(LINUX_CHROOT_DIR)/etc/resolv.conf; \
+	else \
+		printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > $(LINUX_CHROOT_DIR)/etc/resolv.conf; \
+	fi
+	@if [ -z "$(strip $(LINUX_CHROOT_REQUIRED_PACKAGES))" ]; then \
+		echo "linux-chroot: no required Linux packages; native ports provide nano."; \
+	elif command -v apk >/dev/null 2>&1; then \
+		echo "linux-chroot: Running host apk --root add $(LINUX_CHROOT_REQUIRED_PACKAGES)..."; \
+		ok=0; n=1; while [ $$n -le $(APK_RETRIES) ]; do \
+			apk --root $(LINUX_CHROOT_DIR) --initdb --no-cache \
+				--repository '$(ALPINE_REPO_BASE)/main' \
+				--repository '$(ALPINE_REPO_BASE)/community' \
+				add $(LINUX_CHROOT_REQUIRED_PACKAGES) && { ok=1; break; }; \
+			echo "linux-chroot: host apk attempt $$n failed, retrying..."; \
+			n=$$((n + 1)); sleep 2; \
+		done; \
+		if [ $$ok -ne 1 ]; then \
+			echo "linux-chroot: host apk failed, trying chroot apk..."; \
+			ok=0; n=1; while [ $$n -le $(APK_RETRIES) ]; do \
+				chroot $(LINUX_CHROOT_DIR) /bin/sh -c \
+					'apk add --no-cache --repository "$(ALPINE_REPO_BASE)/main" --repository "$(ALPINE_REPO_BASE)/community" $(LINUX_CHROOT_REQUIRED_PACKAGES)' && { ok=1; break; }; \
+				echo "linux-chroot: chroot apk attempt $$n failed, retrying..."; \
+				n=$$((n + 1)); sleep 2; \
+			done; \
+			[ $$ok -eq 1 ]; \
+		fi; \
+	elif command -v chroot >/dev/null 2>&1; then \
+		echo "linux-chroot: Running chroot apk add $(LINUX_CHROOT_REQUIRED_PACKAGES)..."; \
+		ok=0; n=1; while [ $$n -le $(APK_RETRIES) ]; do \
+			chroot $(LINUX_CHROOT_DIR) /bin/sh -c \
+				'apk add --no-cache --repository "$(ALPINE_REPO_BASE)/main" --repository "$(ALPINE_REPO_BASE)/community" $(LINUX_CHROOT_REQUIRED_PACKAGES)' && { ok=1; break; }; \
+			echo "linux-chroot: chroot apk attempt $$n failed, retrying..."; \
+			n=$$((n + 1)); sleep 2; \
+		done; \
+		[ $$ok -eq 1 ]; \
+	else \
+		echo "linux-chroot: neither apk nor chroot is available; cannot preinstall Linux packages"; \
+		false; \
+	fi
+	@if [ -n "$(strip $(LINUX_CHROOT_OPTIONAL_PACKAGES))" ]; then \
+		echo "linux-chroot: Installing optional Linux packages: $(LINUX_CHROOT_OPTIONAL_PACKAGES)"; \
+		if command -v apk >/dev/null 2>&1; then \
+			apk --root $(LINUX_CHROOT_DIR) --initdb --no-cache \
+				--repository '$(ALPINE_REPO_BASE)/main' \
+				--repository '$(ALPINE_REPO_BASE)/community' \
+				add $(LINUX_CHROOT_OPTIONAL_PACKAGES) || \
+				echo "linux-chroot: optional packages unavailable; continuing without $(LINUX_CHROOT_OPTIONAL_PACKAGES)."; \
+		elif command -v chroot >/dev/null 2>&1; then \
+			chroot $(LINUX_CHROOT_DIR) /bin/sh -c \
+				'apk add --no-cache --repository "$(ALPINE_REPO_BASE)/main" --repository "$(ALPINE_REPO_BASE)/community" $(LINUX_CHROOT_OPTIONAL_PACKAGES)' || \
+				echo "linux-chroot: optional packages unavailable; continuing without $(LINUX_CHROOT_OPTIONAL_PACKAGES)."; \
+		fi; \
+	fi
+	@echo "linux-chroot: Required Linux packages installed."
+	@echo "linux-chroot: Freedoom WAD files are at /usr/linux/usr/share/games/doom/"
+
+linux-chroot: $(LINUX_CHROOT_DIR)/bin/busybox
+	@echo "linux-chroot: Alpine Linux chroot ready at $(LINUX_CHROOT_DIR)"
+
+
+
+.PHONY: wlinux wolinux
+
+# Build WITH Alpine Linux chroot
+wlinux:
+	$(MAKE) WITH_LINUX_CHROOT=1
+
+# Build WITHOUT Alpine Linux chroot
+wolinux:
+	$(MAKE) WITH_LINUX_CHROOT=0

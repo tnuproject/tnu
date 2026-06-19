@@ -115,6 +115,73 @@ static void early_boot_msg(const char *msg)
     }
 }
 
+/* Copy iwlwifi firmware files from /rootfs/lib/firmware/iwlwifi to /lib/firmware/iwlwifi */
+static void iwl_copy_firmware_callback(struct vfs_node *node, void *ctx)
+{
+    const char *dst_dir = (const char *)ctx;
+    
+    /* Only copy files, not directories */
+    if (node->type != VFS_NODE_FILE) return;
+    
+    /* Build destination path: dst_dir + "/" + node->name */
+    char dst_path[256];
+    size_t i = 0;
+    
+    /* Copy dst_dir */
+    while (dst_dir[i] && i < 255) {
+        dst_path[i] = dst_dir[i];
+        i++;
+    }
+    
+    /* Add "/" */
+    if (i < 255) dst_path[i++] = '/';
+    
+    /* Add filename */
+    size_t j = 0;
+    while (node->name[j] && i < 255 && j < VFS_NAME_MAX) {
+        dst_path[i++] = node->name[j++];
+    }
+    dst_path[i] = '\0';
+    
+    /* Read source file */
+    char *buf = kmalloc(512 * 1024);  /* 512KB max firmware */
+    if (!buf) return;
+    
+    ssize_t bytes_read = vfs_read_node(node, 0, buf, 512 * 1024);
+    if (bytes_read <= 0) {
+        kfree(buf);
+        return;
+    }
+    
+    /* Write to destination */
+    if (vfs_write_file(dst_path, "/", buf, bytes_read) == 0) {
+        serial_write("[IWL] Copied: ");
+        serial_write(node->name);
+        serial_write("\n");
+    }
+    
+    kfree(buf);
+}
+
+static void iwl_setup_firmware(void)
+{
+    /* Create destination directory */
+    vfs_mkdir("/lib", "/", 0755, 0, 0);
+    vfs_mkdir("/lib/firmware", "/", 0755, 0, 0);
+    vfs_mkdir("/lib/firmware/iwlwifi", "/", 0755, 0, 0);
+    
+    /* List source directory and copy each file */
+    struct vfs_node *src_dir = vfs_lookup("/rootfs/lib/firmware/iwlwifi", "/");
+    if (!src_dir) {
+        serial_write("[IWL] Source firmware dir not found, skipping\n");
+        return;
+    }
+    
+    vfs_list(src_dir, iwl_copy_firmware_callback, (void *)"/lib/firmware/iwlwifi");
+    
+    serial_write("[IWL] Firmware setup complete\n");
+}
+
 void arch_entry(uint32_t magic, uintptr_t mbi_addr)
 {
     serial_init();
@@ -232,12 +299,13 @@ void arch_entry(uint32_t magic, uintptr_t mbi_addr)
      * On a live-CD with no installed disk this returns -1 silently.
      */
     if (!tfs_is_persistent()) {
-        boot_begin("TFS persistence attach");
-        if (tfs_attach_persistent_disk() == 0) {
-            boot_ok();
-        } else {
-            boot_warn();
-        }
+        // Disabled: TFS persistence is not supported on live systems
+        // boot_begin("TFS persistence attach");
+        // if (tfs_attach_persistent_disk() == 0) {
+        //     boot_ok();
+        // } else {
+        //     boot_warn();
+        // }
     }
 
     /* Recreate volatile device nodes after mounting root, so /dev is always live. */
@@ -261,13 +329,17 @@ void arch_entry(uint32_t magic, uintptr_t mbi_addr)
     net_init();
     boot_ok();
 
+    /* Copy iwlwifi firmware from /rootfs to /lib for WiFi driver */
+    boot_begin("WiFi firmware");
+    iwl_setup_firmware();
+    boot_ok();
+
     /* ------------------------------------------------------------------ */
     /* Phase 5: hand off to userspace                                      */
     /* ------------------------------------------------------------------ */
 
     console_banner();
     cpu_sti();
-    net_wifi_autoconnect();
     tsh_run();
 
     panic("tsh returned unexpectedly");
