@@ -1,76 +1,3 @@
-#include <tnu/libc.h>
-#include <tnu/tls.h>
-#include <dirent.h>
-#include <stdio.h>
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <sys/stat.h>
-#include <unistd.h>
-#include <fcntl.h>
-
-static const char sysfetch_default_logo[] =
-    "___________           \n"
-    "\\__    ___/___  __ __ \n"
-    "  |    | /    \\|  |  \\\n"
-    "  |    ||   |  \\  |  /\n"
-    "  |____||___|  /____/ \n"
-    "             \\/       \n";
-
-static const char *basename(const char *path)
-{
-    const char *last = path;
-    for (const char *p = path; *p; p++) {
-        if (*p == '/') {
-            last = p + 1;
-        }
-    }
-    return last;
-}
-
-struct util_help {
-    const char *name;
-    const char *usage;
-    const char *help;
-};
-
-/* Forward declarations */
-static int cmd_shutdown(int argc, char **argv);
-static int cmd_reboot(int argc, char **argv);
-static int cmd_sync(int argc, char **argv);
-static int cmd_tirux(int argc, char **argv);
-static int cmd_tar(int argc, char **argv);
-static int cmd_zip(int argc, char **argv);
-static int cmd_unzip(int argc, char **argv);
-static int cmd_dns(int argc, char **argv);
-static int cmd_curl(int argc, char **argv);
-static int cmd_wget(int argc, char **argv);
-static int cmd_tls(int argc, char **argv);
-static int cmd_driver(int argc, char **argv);
-static int cmd_linuxdrv(int argc, char **argv);
-static int cmd_net(int argc, char **argv);
-
-static const struct util_help help_topics[] = {
-    { "echo", "echo [-n] [ARG...]", "Print arguments separated by spaces." },
-    { "pwd", "pwd", "Print the current working directory." },
-    { "cat", "cat FILE...", "Print files to standard output." },
-    { "touch", "touch FILE...", "Create files if they do not exist." },
-    { "mkdir", "mkdir DIR...", "Create directories." },
-    { "rm", "rm FILE...", "Remove files through the kernel unlink syscall." },
-    { "uname", "uname", "Print kernel version information." },
-    { "whoami", "whoami", "Print the current username." },
-    { "id", "id", "Print current uid and gid." },
-    { "sysfetch", "sysfetch", "Print OS identity and machine summary." },
-    { "hostname", "hostname [NAME]", "Show or set hostname; setting requires root." },
-    { "uptime", "uptime", "Print uptime from procfs." },
-    { "timezone", "timezone [ZONE]", "Show or set /etc/timezone; setting requires root." },
-    { "keymap", "keymap [LAYOUT]", "Show or set /etc/keymap; setting requires root." },
-    { "layout", "layout [LAYOUT]", "Alias for keymap." },
-    { "ping", "ping IPv4", "Send a minimal ICMP test when networking is available." },
-    { "dns", "dns HOST", "Resolve an IPv4 address through the kernel DNS resolver." },
-    { "nano", "nano FILE", "Edit a text file with the nano port." },
-    { "driver", "driver list|stats", "Inspect native and Linux driver providers." },
-    { "linuxdrv", "linuxdrv load MODULE|logs|modules|stats", "Inspect Linux Driver Runtime state." },
     { "net", "net trace", "Show native/TNAI/Linux netdev bridge path." },
     { "curl", "curl URL [-o FILE]", "Fetch file: and http:// URLs; HTTPS waits for TLS." },
     { "wget", "wget URL [-O FILE]", "Fetch file: and http:// URLs; HTTPS waits for TLS." },
@@ -984,6 +911,126 @@ static int write_fd_cb(const void *data, size_t len, void *ctx)
     return write_all_fd(fd, data, len);
 }
 
+static int ascii_tolower(int c)
+{
+    return (c >= 'A' && c <= 'Z') ? (c - 'A' + 'a') : c;
+}
+
+static int strncaseeq_local(const char *a, const char *b, size_t n)
+{
+    for (size_t i = 0; i < n; i++) {
+        if (ascii_tolower((unsigned char)a[i]) != ascii_tolower((unsigned char)b[i])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static const char *http_header_value(const char *header, const char *name)
+{
+    size_t name_len = strlen(name);
+    const char *line = header;
+    while (*line) {
+        const char *end = strstr(line, "\r\n");
+        size_t line_len = end ? (size_t)(end - line) : strlen(line);
+        if (line_len > name_len + 1 &&
+            strncaseeq_local(line, name, name_len) &&
+            line[name_len] == ':') {
+            const char *value = line + name_len + 1;
+            while (*value == ' ' || *value == '\t') {
+                value++;
+            }
+            return value;
+        }
+        if (!end || line_len == 0) {
+            break;
+        }
+        line = end + 2;
+    }
+    return NULL;
+}
+
+static int http_parse_content_length(const char *header, size_t *out)
+{
+    const char *value = http_header_value(header, "Content-Length");
+    if (!value) {
+        return -1;
+    }
+    size_t n = 0;
+    while (*value >= '0' && *value <= '9') {
+        n = n * 10 + (size_t)(*value - '0');
+        value++;
+    }
+    *out = n;
+    return 0;
+}
+
+static int http_is_chunked(const char *header)
+{
+    const char *value = http_header_value(header, "Transfer-Encoding");
+    if (!value) {
+        return 0;
+    }
+    while (*value && *value != '\r' && *value != '\n') {
+        if (strncaseeq_local(value, "chunked", 7)) {
+            return 1;
+        }
+        value++;
+    }
+    return 0;
+}
+
+static int hex_digit_local(int c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return 10 + c - 'a';
+    if (c >= 'A' && c <= 'F') return 10 + c - 'A';
+    return -1;
+}
+
+static int http_decode_chunked_to_fd(int out, const char *buf, size_t len)
+{
+    size_t pos = 0;
+    while (pos < len) {
+        size_t chunk_len = 0;
+        int saw_digit = 0;
+        while (pos < len) {
+            int hv = hex_digit_local((unsigned char)buf[pos]);
+            if (hv < 0) {
+                break;
+            }
+            chunk_len = (chunk_len << 4) | (size_t)hv;
+            saw_digit = 1;
+            pos++;
+        }
+        if (!saw_digit) {
+            return -1;
+        }
+        while (pos + 1 < len && !(buf[pos] == '\r' && buf[pos + 1] == '\n')) {
+            pos++;
+        }
+        if (pos + 1 >= len) {
+            return -1;
+        }
+        pos += 2;
+        if (chunk_len == 0) {
+            return 0;
+        }
+        if (pos + chunk_len + 2 > len) {
+            return -1;
+        }
+        if (write_all_fd(out, buf + pos, chunk_len) < 0) {
+            return -1;
+        }
+        pos += chunk_len;
+        if (buf[pos] != '\r' || buf[pos + 1] != '\n') {
+            return -1;
+        }
+        pos += 2;
+    }
+    return 0;
+}
+
 static uint32_t crc32_update(uint32_t crc, const uint8_t *buf, size_t len)
 {
     crc = ~crc;
@@ -1480,89 +1527,139 @@ static int parse_http_url(const char *url, struct parsed_url *out)
 
 static int http_get_to_fd(const char *url, int out)
 {
-    struct parsed_url u;
-    if (parse_http_url(url, &u) < 0 || strcmp(u.scheme, "http") != 0) {
-        return -1;
-    }
-    uint32_t ip = 0;
-    if (resolve4(u.host, &ip) < 0) {
-        print("http: cannot resolve ");
-        println(u.host);
-        return 1;
-    }
-
-    int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (fd < 0) {
-        println("http: socket unavailable");
-        return 1;
-    }
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(u.port);
-    addr.sin_addr.s_addr = htonl(ip);
-    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        println("http: connect failed");
-        close(fd);
-        return 1;
-    }
-
-    char req[512];
-    snprintf(req, sizeof(req),
-             "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: tiramisu/0.1\r\nConnection: close\r\n\r\n",
-             u.path, u.host);
-    if (send(fd, req, strlen(req), 0) < 0) {
-        println("http: send failed");
-        close(fd);
-        return 1;
-    }
-
-    char buf[512];
-    char header[1024];
-    size_t header_len = 0;
-    int header_done = 0;
-    int status_code = 0;
-    ssize_t n;
-    while ((n = recv(fd, buf, sizeof(buf), 0)) > 0) {
-        if (header_done) {
-            write_all_fd(out, buf, (size_t)n);
-            continue;
+    enum { HTTP_MAX_REDIRECTS = 4, HTTP_BODY_MAX = 131072 };
+    char current_url[512];
+    strncpy(current_url, url, sizeof(current_url) - 1);
+    current_url[sizeof(current_url) - 1] = '\0';
+    for (int redirect = 0; redirect <= HTTP_MAX_REDIRECTS; redirect++) {
+        struct parsed_url u;
+        if (parse_http_url(current_url, &u) < 0 || strcmp(u.scheme, "http") != 0) {
+            return -1;
         }
-        size_t pos = 0;
-        while (pos < (size_t)n && header_len + 1 < sizeof(header)) {
-            header[header_len++] = buf[pos++];
-            header[header_len] = '\0';
-            if (header_len >= 4 &&
-                header[header_len - 4] == '\r' && header[header_len - 3] == '\n' &&
-                header[header_len - 2] == '\r' && header[header_len - 1] == '\n') {
-                header_done = 1;
-                if (strncmp(header, "HTTP/", 5) == 0) {
-                    const char *sp = strchr(header, ' ');
-                    if (sp) {
-                        status_code = atoi(sp + 1);
-                    }
-                }
-                if (status_code < 200 || status_code >= 400) {
-                    print("http: bad status ");
-                    print_int(status_code);
-                    print("\n");
-                    close(fd);
-                    return 1;
-                }
-                if (pos < (size_t)n) {
-                    write_all_fd(out, buf + pos, (size_t)n - pos);
-                }
-                break;
-            }
+        uint32_t ip = 0;
+        if (resolve4(u.host, &ip) < 0) {
+            print("http: cannot resolve ");
+            println(u.host);
+            return 1;
         }
-        if (!header_done && header_len + 1 >= sizeof(header)) {
-            println("http: response header too large");
+
+        int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (fd < 0) {
+            println("http: socket unavailable");
+            return 1;
+        }
+        struct sockaddr_in addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(u.port);
+        addr.sin_addr.s_addr = htonl(ip);
+        if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+            println("http: connect failed");
             close(fd);
             return 1;
         }
+
+        char req[768];
+        snprintf(req, sizeof(req),
+                 "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: tiramisu/0.1\r\nAccept: */*\r\nConnection: close\r\n\r\n",
+                 u.path, u.host);
+        if (send(fd, req, strlen(req), 0) < 0) {
+            println("http: send failed");
+            close(fd);
+            return 1;
+        }
+
+        char buf[512];
+        char response[HTTP_BODY_MAX];
+        char header[2048];
+        size_t header_len = 0;
+        size_t response_len = 0;
+        int header_done = 0;
+        int status_code = 0;
+        ssize_t n;
+        while ((n = recv(fd, buf, sizeof(buf), 0)) > 0) {
+            if (response_len + (size_t)n > sizeof(response)) {
+                println("http: response too large");
+                close(fd);
+                return 1;
+            }
+            memcpy(response + response_len, buf, (size_t)n);
+            response_len += (size_t)n;
+            if (!header_done) {
+                while (header_len + 1 < response_len && header_len + 1 < sizeof(header)) {
+                    header[header_len] = response[header_len];
+                    header_len++;
+                    header[header_len] = '\0';
+                    if (header_len >= 4 &&
+                        header[header_len - 4] == '\r' && header[header_len - 3] == '\n' &&
+                        header[header_len - 2] == '\r' && header[header_len - 1] == '\n') {
+                        header_done = 1;
+                        break;
+                    }
+                }
+            }
+            if (!header_done && header_len + 1 >= sizeof(header)) {
+                println("http: response header too large");
+                close(fd);
+                return 1;
+            }
+        }
+        close(fd);
+        if (!header_done) {
+            return 1;
+        }
+        if (strncmp(header, "HTTP/", 5) == 0) {
+            const char *sp = strchr(header, ' ');
+            if (sp) {
+                status_code = atoi(sp + 1);
+            }
+        }
+        if (status_code >= 300 && status_code < 400) {
+            const char *location = http_header_value(header, "Location");
+            if (location) {
+                size_t loc_len = 0;
+                while (location[loc_len] && location[loc_len] != '\r' && location[loc_len] != '\n') {
+                    loc_len++;
+                }
+                if (loc_len >= sizeof(current_url)) {
+                    println("http: redirect URL too long");
+                    return 1;
+                }
+                memcpy(current_url, location, loc_len);
+                current_url[loc_len] = '\0';
+                continue;
+            }
+        }
+        if (status_code < 200 || status_code >= 400) {
+            print("http: bad status ");
+            print_int(status_code);
+            print("\n");
+            return 1;
+        }
+        size_t body_off = 0;
+        while (body_off + 3 < response_len) {
+            if (response[body_off] == '\r' && response[body_off + 1] == '\n' &&
+                response[body_off + 2] == '\r' && response[body_off + 3] == '\n') {
+                body_off += 4;
+                break;
+            }
+            body_off++;
+        }
+        if (body_off > response_len) {
+            return 1;
+        }
+        size_t body_len = response_len - body_off;
+        if (http_is_chunked(header)) {
+            return http_decode_chunked_to_fd(out, response + body_off, body_len) < 0 ? 1 : 0;
+        }
+        size_t content_length = 0;
+        if (http_parse_content_length(header, &content_length) == 0 && content_length < body_len) {
+            body_len = content_length;
+        }
+        return write_all_fd(out, response + body_off, body_len) < 0 ? 1 : 0;
     }
-    close(fd);
-    return header_done ? 0 : 1;
+    println("http: too many redirects");
+    return 1;
 }
 
 static int copy_url_to_fd(const char *url, int out)
