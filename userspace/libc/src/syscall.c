@@ -3,6 +3,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 
 #define ATEXIT_MAX 16
 
@@ -26,6 +27,38 @@ static void run_atexit_handlers(void)
             handler();
         }
     }
+}
+
+struct kernel_vfs_stat {
+    uint32_t mode;
+    uint32_t uid;
+    uint32_t gid;
+    uint64_t size;
+    uint64_t modified;
+    uint64_t device;
+    uint64_t inode;
+    int type;
+};
+
+static void stat_from_kernel(struct stat *st, const struct kernel_vfs_stat *kst)
+{
+    memset(st, 0, sizeof(*st));
+    st->st_mode = (mode_t)kst->mode;
+    st->st_uid = (uid_t)kst->uid;
+    st->st_gid = (gid_t)kst->gid;
+    st->st_size = (off_t)kst->size;
+    st->st_mtime = (time_t)kst->modified;
+    st->st_atime = st->st_mtime;
+    st->st_ctime = st->st_mtime;
+    st->st_dev = (dev_t)kst->device;
+    st->st_ino = (ino_t)kst->inode;
+    st->st_nlink = 1;
+    st->st_blksize = 512;
+    st->st_blocks = (blkcnt_t)((kst->size + 511u) / 512u);
+    st->st_atim.tv_sec = st->st_atime;
+    st->st_mtim.tv_sec = st->st_mtime;
+    st->st_ctim.tv_sec = st->st_ctime;
+    st->st_type = kst->type;
 }
 
 long tnu_syscall(long n, long a0, long a1, long a2, long a3, long a4, long a5)
@@ -172,12 +205,30 @@ int unlink(const char *path)
 
 int stat(const char *path, struct stat *st)
 {
-    return (int)tnu_syscall(SYS_STAT, (long)path, (long)st, 0, 0, 0, 0);
+    struct kernel_vfs_stat kst;
+    if (!st) {
+        return -1;
+    }
+    int rc = (int)tnu_syscall(SYS_STAT, (long)path, (long)&kst, 0, 0, 0, 0);
+    if (rc < 0) {
+        return rc;
+    }
+    stat_from_kernel(st, &kst);
+    return 0;
 }
 
 int fstat(int fd, struct stat *st)
 {
-    return (int)tnu_syscall(SYS_FSTAT, fd, (long)st, 0, 0, 0, 0);
+    struct kernel_vfs_stat kst;
+    if (!st) {
+        return -1;
+    }
+    int rc = (int)tnu_syscall(SYS_FSTAT, fd, (long)&kst, 0, 0, 0, 0);
+    if (rc < 0) {
+        return rc;
+    }
+    stat_from_kernel(st, &kst);
+    return 0;
 }
 
 int chmod(const char *path, mode_t mode)
