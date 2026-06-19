@@ -30,5 +30,6 @@ struct interrupt_frame {
 
 void idt_init(void);
 void isr_dispatch(struct interrupt_frame *frame);
+void idt_set_gate(uint8_t vector, void (*handler)(void), uint8_t flags);
 
 #endif

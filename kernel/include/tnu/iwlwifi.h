@@ -154,6 +154,7 @@ int iwlwifi_start(struct net_iface *iface);
 int iwlwifi_scan(struct net_iface *iface);
 int iwlwifi_associate(struct net_iface *iface, const char *ssid, const char *passphrase);
 int iwlwifi_disconnect(struct net_iface *iface);
+int iwlwifi_poll_rx_notifications_all(void);
 const struct iwlwifi_state *iwlwifi_state_for(const struct net_iface *iface);
 void iwlwifi_exit(void);
 

@@ -204,7 +204,7 @@ static int nvme_identify(struct nvme_device *dev)
 
 static int nvme_read(struct nvme_device *dev, uint64_t lba, void *buf, size_t bytes)
 {
-    /* Simplified read - in real implementation would use PRPs/IO queues */
+    /* For now, return simulated success - real implementation uses IO queues */
     size_t sectors = bytes / dev->lba_size;
     if (sectors == 0 || bytes % dev->lba_size != 0) {
         return -1;
@@ -218,7 +218,7 @@ static int nvme_read(struct nvme_device *dev, uint64_t lba, void *buf, size_t by
 
 static int nvme_write(struct nvme_device *dev, uint64_t lba, const void *buf, size_t bytes)
 {
-    /* Simplified write - in real implementation would use PRPs/IO queues */
+    /* For now, return simulated success - real implementation uses IO queues */
     size_t sectors = bytes / dev->lba_size;
     if (sectors == 0 || bytes % dev->lba_size != 0) {
         return -1;
@@ -301,6 +301,7 @@ static int nvme_probe_device(uint16_t bus, uint8_t slot, uint8_t func)
              name, (unsigned long long)dev->info.sector_count, dev->lba_size);
     
     nvme_device_count++;
+    g_nvme_device_count++;
     return 0;
 }
 

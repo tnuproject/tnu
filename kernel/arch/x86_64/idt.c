@@ -29,7 +29,7 @@ DECL_ISR(30); DECL_ISR(31); DECL_ISR(32); DECL_ISR(33); DECL_ISR(34); DECL_ISR(3
 DECL_ISR(36); DECL_ISR(37); DECL_ISR(38); DECL_ISR(39); DECL_ISR(40); DECL_ISR(41);
 DECL_ISR(42); DECL_ISR(43); DECL_ISR(44); DECL_ISR(45); DECL_ISR(46); DECL_ISR(47);
 
-static void idt_set_gate(uint8_t vector, void (*handler)(void), uint8_t flags)
+void idt_set_gate(uint8_t vector, void (*handler)(void), uint8_t flags)
 {
     uint64_t addr = (uint64_t)handler;
     idt[vector].offset_low = (uint16_t)(addr & 0xffff);
@@ -70,6 +70,7 @@ void idt_init(void)
     for (uint8_t irq = 0; irq < 16; irq++) {
         pic_set_mask(irq);
     }
-    pic_clear_mask(0);
-    pic_clear_mask(1);
+    pic_clear_mask(0);  /* PIT */
+    pic_clear_mask(1);  /* keyboard */
+    pic_clear_mask(11); /* WiFi */
 }

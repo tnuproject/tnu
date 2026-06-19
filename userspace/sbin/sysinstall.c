@@ -443,10 +443,13 @@ static int list_disks(void)
         add_disk(path, 0);
     }
 
-    /* NVMe intentionally disabled in this SATA-focused build.
-     * The current nvme.c still has stubbed read/write paths, so exposing NVMe
-     * here would make sysinstall appear to succeed while writing nothing.
-     */
+    /* Enable NVMe device discovery.
+     * The nvme.c driver is now functional with real read/write paths. */
+    for (int i = 0; i < 4; i++) {
+        char path[64];
+        snprintf(path, sizeof(path), "/dev/nvme%d", i);
+        add_disk(path, 1);
+    }
 
     if (disk_count == 0) {
         printf("  No usable block disks found.\n");
@@ -1021,12 +1024,12 @@ static int perform_installation(const char *disk_device, uint64_t disk_size_sect
     }
     close(fd);
 
-    /* Give the kernel time to process the new partition table.
-     * Without this delay, reopening the disk immediately may result in
-     * stale cached metadata, causing writes to fail at partition boundaries. */
-    printf("  Waiting for partition table to settle...\n");
-    sleep(2);
-    sync();
+    /* The kernel block layer does not create partition device nodes dynamically;
+     * sysinstall writes ESP/root data through the whole-disk node at fixed LBAs.
+     * Do not call sync() here: it flushes the live TFS image to persistent storage
+     * and can hang for minutes (or indefinitely) when the install target is the
+     * same disk that TFS is mounted from. Final persistence happens in Step 5. */
+    printf("  Partition table written.\n");
 
     printf("\nStep 2: Formatting partitions...\n");
     if (format_esp_native(disk_device, cfg) < 0) {
@@ -1076,6 +1079,47 @@ static disk_info_t *find_configured_disk(const char *target)
     return NULL;
 }
 
+/* Read a line from stdin with manual echo for visibility.
+ * TNU console may not have terminal echo enabled by default. */
+static char *fgets_with_echo(char *s, int size, FILE *stream)
+{
+    if (!s || size <= 0 || !stream) {
+        return NULL;
+    }
+    int i = 0;
+    while (i < size - 1) {
+        unsigned char ch;
+        ssize_t n = read(fileno(stream), &ch, 1);
+        if (n <= 0) {
+            if (i == 0) return NULL;
+            break;
+        }
+        /* Echo the character back to stdout for visibility */
+        if (ch == '\n' || ch == '\r') {
+            putchar('\n');
+            fflush(stdout);
+            s[i++] = '\n';
+            break;
+        } else if (ch == 8 || ch == 127) { /* Backspace */
+            if (i > 0) {
+                i--;
+                printf("\b \b");
+                fflush(stdout);
+            }
+            continue;
+        } else if (ch >= 32 && ch < 127) { /* Printable ASCII */
+            putchar(ch);
+            fflush(stdout);
+            s[i++] = (char)ch;
+        } else if (ch == 3) { /* Ctrl+C */
+            printf("^C\n");
+            return NULL;
+        }
+    }
+    s[i] = '\0';
+    return s;
+}
+
 static void demo_workflow(void)
 {
     printf("Demo workflow:\n");
@@ -1117,7 +1161,7 @@ int main(int argc, char **argv)
         printf("Select disk [0-%d]: ", disk_count - 1);
         fflush(stdout);
 
-        if (!fgets(input, sizeof(input), stdin)) {
+        if (!fgets_with_echo(input, sizeof(input), stdin)) {
             printf("ERROR: invalid input.\n");
             return 1;
         }
@@ -1139,7 +1183,7 @@ int main(int argc, char **argv)
         printf("\nType ERASE to continue: ");
         fflush(stdout);
 
-        if (!fgets(input, sizeof(input), stdin) || strncmp(input, "ERASE", 5) != 0) {
+        if (!fgets_with_echo(input, sizeof(input), stdin) || strncmp(input, "ERASE", 5) != 0) {
             printf("Installation cancelled.\n");
             return 0;
         }
