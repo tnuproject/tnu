@@ -29,7 +29,7 @@
 
 #define NET_SOCKET_BASE 512
 #define NET_SOCKET_MAX 8
-#define TCP_RX_BUF_SIZE 4096
+#define TCP_RX_BUF_SIZE 32768
 #define TCP_MAX_PAYLOAD 1024
 #define TCP_FIN 0x01
 #define TCP_SYN 0x02
@@ -562,7 +562,9 @@ static int send_tcp4(struct net_tcp_socket *sock, uint8_t flags,
     put32(tcp + 8, sock->ack);
     tcp[12] = 5u << 4;
     tcp[13] = flags;
-    put16(tcp + 14, 4096);
+    size_t rx_room = TCP_RX_BUF_SIZE - sock->rx_len;
+    uint16_t window = rx_room > 65535 ? 65535 : (uint16_t)rx_room;
+    put16(tcp + 14, window);
     if (payload_len) {
         memcpy(tcp + 20, payload, payload_len);
     }
@@ -617,9 +619,11 @@ static void process_tcp(struct net_iface *iface, const uint8_t *payload, size_t 
         if (data_len) {
             size_t room = TCP_RX_BUF_SIZE - sock->rx_len;
             size_t take = data_len < room ? data_len : room;
-            memcpy(sock->rx + sock->rx_len, data, take);
-            sock->rx_len += take;
-            sock->ack = seq + (uint32_t)data_len;
+            if (take) {
+                memcpy(sock->rx + sock->rx_len, data, take);
+                sock->rx_len += take;
+            }
+            sock->ack = seq + (uint32_t)take;
             send_tcp4(sock, TCP_ACK, NULL, 0);
         }
         if (flags & TCP_FIN) {
@@ -1327,6 +1331,11 @@ int net_socket_create(int domain, int type, int protocol)
         }
     }
     return -1;
+}
+
+bool net_socket_is_open(int fd)
+{
+    return tcp_socket_by_fd(fd) != NULL;
 }
 
 int net_socket_close(int fd)

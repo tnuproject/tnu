@@ -85,6 +85,7 @@ const struct net_iface *net_iface_find(const char *name);
 const char *net_iface_type_name(enum net_iface_type type);
 int net_ping4(uint32_t ipv4, uint16_t sequence, uint32_t *latency_ms);
 int net_socket_create(int domain, int type, int protocol);
+bool net_socket_is_open(int fd);
 int net_socket_close(int fd);
 int net_socket_connect(int fd, uint32_t remote_ip, uint16_t remote_port);
 ssize_t net_socket_send(int fd, const void *buf, size_t len);

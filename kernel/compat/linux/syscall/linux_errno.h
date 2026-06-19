@@ -34,6 +34,8 @@
 #define LINUX_ERANGE        34
 #define LINUX_ENOSYS        38
 #define LINUX_ENOTEMPTY     39
+#define LINUX_EAFNOSUPPORT  97
+#define LINUX_ECONNREFUSED 111
 #define LINUX_ENOTSUP       95
 
 #endif

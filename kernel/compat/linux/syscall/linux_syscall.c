@@ -2,6 +2,7 @@
 
 #include <tnu/linux_compat.h>
 #include <tnu/memory.h>
+#include <tnu/net.h>
 #include <tnu/process.h>
 #include <tnu/printf.h>
 #include <tnu/scheduler.h>
@@ -798,12 +799,25 @@ long linux_syscall_dispatch(const struct linux_syscall_args *a)
 
     switch (a->nr) {
     case 0:
+        if (net_socket_is_open((int)a->a0)) {
+            ssize_t got = net_socket_recv((int)a->a0, (void *)(uintptr_t)a->a1,
+                                          (size_t)a->a2);
+            return got < 0 ? -LINUX_EIO : got;
+        }
         return dispatch_native_syscall(SYS_READ, a);
     case 1:
+        if (net_socket_is_open((int)a->a0)) {
+            ssize_t sent = net_socket_send((int)a->a0, (const void *)(uintptr_t)a->a1,
+                                           (size_t)a->a2);
+            return sent < 0 ? -LINUX_EIO : sent;
+        }
         return dispatch_native_syscall(SYS_WRITE, a);
     case 2:
         return linux_open_path((const char *)(uintptr_t)a->a0, (int)a->a1, (int)a->a2);
     case 3:
+        if (net_socket_is_open((int)a->a0)) {
+            return net_socket_close((int)a->a0) < 0 ? -LINUX_EBADF : 0;
+        }
         return dispatch_native_syscall(SYS_CLOSE, a);
     case 4:
     case 6:

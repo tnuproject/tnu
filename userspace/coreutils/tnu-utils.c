@@ -1,3 +1,61 @@
+#include <arpa/inet.h>
+#include <dirent.h>
+#include <fcntl.h>
+#include <libgen.h>
+#include <netinet/in.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <tnu/syscall.h>
+#include <tnu/tls.h>
+#include <unistd.h>
+
+struct help_topic {
+    const char *name;
+    const char *usage;
+    const char *help;
+};
+
+static void print(const char *s)
+{
+    if (s) {
+        write(1, s, strlen(s));
+    }
+}
+
+static void println(const char *s)
+{
+    print(s);
+    print("\n");
+}
+
+static void print_int(long value)
+{
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%ld", value);
+    print(buf);
+}
+
+static const char sysfetch_default_logo[] =
+    "TNU Tiramisu\n";
+
+static const struct help_topic help_topics[] = {
+    { "cat", "cat FILE...", "Print files to standard output." },
+    { "chmod", "chmod MODE FILE", "Change file permissions; supports octal and simple symbolic modes." },
+    { "clear", "clear", "Clear the terminal." },
+    { "cp", "cp SRC DST", "Copy a file." },
+    { "date", "date", "Show the current date." },
+    { "dns", "dns HOST", "Resolve a hostname through the native DNS client." },
+    { "echo", "echo [ARGS...]", "Print arguments." },
+    { "hostname", "hostname [NAME]", "Show or set the hostname." },
+    { "ifconfig", "ifconfig", "Show network interfaces." },
+    { "mkdir", "mkdir DIR...", "Create directories." },
+    { "mv", "mv SRC DST", "Move or rename a file." },
     { "net", "net trace", "Show native/TNAI/Linux netdev bridge path." },
     { "curl", "curl URL [-o FILE]", "Fetch file: and http:// URLs; HTTPS waits for TLS." },
     { "wget", "wget URL [-O FILE]", "Fetch file: and http:// URLs; HTTPS waits for TLS." },
@@ -926,6 +984,18 @@ static int strncaseeq_local(const char *a, const char *b, size_t n)
     return 1;
 }
 
+static int ascii_caseeq_local(const char *a, const char *b)
+{
+    while (*a && *b) {
+        if (ascii_tolower((unsigned char)*a) != ascii_tolower((unsigned char)*b)) {
+            return 0;
+        }
+        a++;
+        b++;
+    }
+    return *a == '\0' && *b == '\0';
+}
+
 static const char *http_header_value(const char *header, const char *name)
 {
     size_t name_len = strlen(name);
@@ -957,9 +1027,20 @@ static int http_parse_content_length(const char *header, size_t *out)
         return -1;
     }
     size_t n = 0;
+    int saw_digit = 0;
     while (*value >= '0' && *value <= '9') {
+        if (n > ((size_t)-1 - (size_t)(*value - '0')) / 10) {
+            return -1;
+        }
         n = n * 10 + (size_t)(*value - '0');
+        saw_digit = 1;
         value++;
+    }
+    while (*value == ' ' || *value == '\t') {
+        value++;
+    }
+    if (!saw_digit || (*value != '\r' && *value != '\n' && *value != '\0')) {
+        return -1;
     }
     *out = n;
     return 0;
@@ -972,10 +1053,17 @@ static int http_is_chunked(const char *header)
         return 0;
     }
     while (*value && *value != '\r' && *value != '\n') {
-        if (strncaseeq_local(value, "chunked", 7)) {
+        while (*value == ' ' || *value == '\t' || *value == ',') {
+            value++;
+        }
+        const char *token = value;
+        while (*value && *value != '\r' && *value != '\n' &&
+               *value != ',' && *value != ' ' && *value != '\t') {
+            value++;
+        }
+        if ((size_t)(value - token) == 7 && strncaseeq_local(token, "chunked", 7)) {
             return 1;
         }
-        value++;
     }
     return 0;
 }
@@ -988,47 +1076,157 @@ static int hex_digit_local(int c)
     return -1;
 }
 
-static int http_decode_chunked_to_fd(int out, const char *buf, size_t len)
+struct http_chunk_state {
+    size_t chunk_left;
+    size_t line_len;
+    char line[32];
+    int state;
+    int done;
+    int saw_cr;
+};
+
+static void http_chunk_state_init(struct http_chunk_state *st)
+{
+    memset(st, 0, sizeof(*st));
+}
+
+static int http_chunk_line_done(struct http_chunk_state *st)
+{
+    size_t chunk_len = 0;
+    int saw_digit = 0;
+    for (size_t i = 0; i < st->line_len; i++) {
+        if (st->line[i] == ';') {
+            break;
+        }
+        int hv = hex_digit_local((unsigned char)st->line[i]);
+        if (hv < 0) {
+            return -1;
+        }
+        if (chunk_len > ((size_t)-1 - (size_t)hv) / 16) {
+            return -1;
+        }
+        chunk_len = (chunk_len << 4) | (size_t)hv;
+        saw_digit = 1;
+    }
+    if (!saw_digit) {
+        return -1;
+    }
+    st->line_len = 0;
+    st->chunk_left = chunk_len;
+    if (chunk_len == 0) {
+        st->done = 1;
+        return 0;
+    }
+    st->state = 1;
+    return 0;
+}
+
+static int http_chunk_write(struct http_chunk_state *st, int out,
+                            const char *buf, size_t len)
 {
     size_t pos = 0;
-    while (pos < len) {
-        size_t chunk_len = 0;
-        int saw_digit = 0;
-        while (pos < len) {
-            int hv = hex_digit_local((unsigned char)buf[pos]);
-            if (hv < 0) {
-                break;
+    while (pos < len && !st->done) {
+        if (st->state == 0) {
+            char c = buf[pos++];
+            if (c == '\r') {
+                st->saw_cr = 1;
+                continue;
             }
-            chunk_len = (chunk_len << 4) | (size_t)hv;
-            saw_digit = 1;
-            pos++;
+            if (c == '\n') {
+                if (!st->saw_cr) {
+                    return -1;
+                }
+                st->saw_cr = 0;
+                if (http_chunk_line_done(st) < 0) {
+                    return -1;
+                }
+                continue;
+            }
+            if (st->saw_cr) {
+                return -1;
+            }
+            if (st->line_len + 1 >= sizeof(st->line)) {
+                return -1;
+            }
+            st->line[st->line_len++] = c;
+        } else if (st->state == 1) {
+            size_t take = len - pos;
+            if (take > st->chunk_left) {
+                take = st->chunk_left;
+            }
+            if (take && write_all_fd(out, buf + pos, take) < 0) {
+                return -1;
+            }
+            pos += take;
+            st->chunk_left -= take;
+            if (st->chunk_left == 0) {
+                st->state = 2;
+                st->saw_cr = 0;
+            }
+        } else {
+            char c = buf[pos++];
+            if (c == '\r') {
+                if (st->saw_cr) {
+                    return -1;
+                }
+                st->saw_cr = 1;
+            } else if (c == '\n') {
+                if (!st->saw_cr) {
+                    return -1;
+                }
+                st->saw_cr = 0;
+                st->state = 0;
+            } else {
+                return -1;
+            }
         }
-        if (!saw_digit) {
-            return -1;
-        }
-        while (pos + 1 < len && !(buf[pos] == '\r' && buf[pos + 1] == '\n')) {
-            pos++;
-        }
-        if (pos + 1 >= len) {
-            return -1;
-        }
-        pos += 2;
-        if (chunk_len == 0) {
-            return 0;
-        }
-        if (pos + chunk_len + 2 > len) {
-            return -1;
-        }
-        if (write_all_fd(out, buf + pos, chunk_len) < 0) {
-            return -1;
-        }
-        pos += chunk_len;
-        if (buf[pos] != '\r' || buf[pos + 1] != '\n') {
-            return -1;
-        }
-        pos += 2;
     }
     return 0;
+}
+
+static int http_copy_body_to_fd(int out, const char *buf, size_t len,
+                                int chunked, struct http_chunk_state *chunk,
+                                size_t *body_written, size_t content_length,
+                                int has_content_length)
+{
+    if (chunked) {
+        return http_chunk_write(chunk, out, buf, len);
+    }
+    if (has_content_length) {
+        if (*body_written >= content_length) {
+            return 0;
+        }
+        size_t left = content_length - *body_written;
+        if (len > left) {
+            len = left;
+        }
+    }
+    if (len && write_all_fd(out, buf, len) < 0) {
+        return -1;
+    }
+    *body_written += len;
+    return 0;
+}
+
+static int http_parse_status_code(const char *header)
+{
+    if (strncmp(header, "HTTP/1.", 7) != 0 ||
+        (header[7] != '0' && header[7] != '1') ||
+        header[8] != ' ') {
+        return -1;
+    }
+    if (header[9] < '0' || header[9] > '9' ||
+        header[10] < '0' || header[10] > '9' ||
+        header[11] < '0' || header[11] > '9') {
+        return -1;
+    }
+    return (header[9] - '0') * 100 + (header[10] - '0') * 10 + (header[11] - '0');
+}
+
+static int http_status_has_body(int status_code)
+{
+    return status_code != 204 && status_code != 304 &&
+           (status_code < 100 || status_code >= 200);
 }
 
 static uint32_t crc32_update(uint32_t crc, const uint8_t *buf, size_t len)
@@ -1479,6 +1677,19 @@ struct parsed_url {
     uint16_t port;
 };
 
+static int http_default_port(const char *scheme)
+{
+    return strcmp(scheme, "https") == 0 ? 443 : 80;
+}
+
+static int http_host_header(const struct parsed_url *url, char *out, size_t out_size)
+{
+    if (url->port == (uint16_t)http_default_port(url->scheme)) {
+        return snprintf(out, out_size, "%s", url->host) >= (int)out_size ? -1 : 0;
+    }
+    return snprintf(out, out_size, "%s:%u", url->host, (unsigned)url->port) >= (int)out_size ? -1 : 0;
+}
+
 static int parse_http_url(const char *url, struct parsed_url *out)
 {
     memset(out, 0, sizeof(*out));
@@ -1492,11 +1703,27 @@ static int parse_http_url(const char *url, struct parsed_url *out)
     }
     memcpy(out->scheme, url, scheme_len);
     out->scheme[scheme_len] = '\0';
-    out->port = strcmp(out->scheme, "https") == 0 ? 443 : 80;
+    if (!ascii_caseeq_local(out->scheme, "http") && !ascii_caseeq_local(out->scheme, "https")) {
+        return -1;
+    }
+    for (size_t i = 0; out->scheme[i]; i++) {
+        out->scheme[i] = (char)ascii_tolower((unsigned char)out->scheme[i]);
+    }
+    out->port = (uint16_t)http_default_port(out->scheme);
 
     const char *host = scheme_end + 3;
-    const char *path = strchr(host, '/');
-    const char *host_end = path ? path : host + strlen(host);
+    const char *slash = strchr(host, '/');
+    const char *query = strchr(host, '?');
+    const char *fragment = strchr(host, '#');
+    const char *path = slash;
+    if (!path || (query && query < path)) {
+        path = query;
+    }
+    const char *url_end = fragment ? fragment : host + strlen(host);
+    const char *host_end = path ? path : url_end;
+    if (host_end > url_end) {
+        host_end = url_end;
+    }
     const char *colon = NULL;
     for (const char *p = host; p < host_end; p++) {
         if (*p == ':') {
@@ -1511,29 +1738,186 @@ static int parse_http_url(const char *url, struct parsed_url *out)
     memcpy(out->host, host, host_len);
     out->host[host_len] = '\0';
     if (colon) {
-        int port = atoi(colon + 1);
+        int port = 0;
+        const char *p = colon + 1;
+        if (p >= host_end) {
+            return -1;
+        }
+        while (p < host_end) {
+            if (*p < '0' || *p > '9') {
+                return -1;
+            }
+            port = port * 10 + (*p - '0');
+            p++;
+        }
         if (port <= 0 || port > 65535) {
             return -1;
         }
         out->port = (uint16_t)port;
     }
-    if (path && path[0]) {
-        strncpy(out->path, path, sizeof(out->path) - 1);
+    if (path && path < url_end) {
+        if (*path == '?') {
+            if (snprintf(out->path, sizeof(out->path), "/%.*s",
+                         (int)(url_end - path), path) >= (int)sizeof(out->path)) {
+                return -1;
+            }
+        } else {
+            if ((size_t)(url_end - path) >= sizeof(out->path)) {
+                return -1;
+            }
+            memcpy(out->path, path, (size_t)(url_end - path));
+            out->path[url_end - path] = '\0';
+        }
     } else {
         strcpy(out->path, "/");
     }
     return 0;
 }
 
+static void http_authority_url(const struct parsed_url *url, char *out, size_t out_size)
+{
+    if (url->port == (uint16_t)http_default_port(url->scheme)) {
+        snprintf(out, out_size, "%s://%s", url->scheme, url->host);
+    } else {
+        snprintf(out, out_size, "%s://%s:%u", url->scheme, url->host, (unsigned)url->port);
+    }
+}
+
+static int http_normalize_path(const char *path, char *out, size_t out_size)
+{
+    char tmp[256];
+    size_t tmp_len = 0;
+    const char *query = strchr(path, '?');
+    size_t path_len = query ? (size_t)(query - path) : strlen(path);
+    if (path_len == 0 || path[0] != '/') {
+        return -1;
+    }
+    tmp[tmp_len++] = '/';
+    size_t pos = 1;
+    while (pos <= path_len) {
+        size_t start = pos;
+        while (pos < path_len && path[pos] != '/') {
+            pos++;
+        }
+        size_t seg_len = pos - start;
+        if (seg_len == 0 || (seg_len == 1 && path[start] == '.')) {
+        } else if (seg_len == 2 && path[start] == '.' && path[start + 1] == '.') {
+            if (tmp_len > 1) {
+                tmp_len--;
+                while (tmp_len > 1 && tmp[tmp_len - 1] != '/') {
+                    tmp_len--;
+                }
+            }
+        } else {
+            if (tmp_len > 1 && tmp[tmp_len - 1] != '/') {
+                if (tmp_len + 1 >= sizeof(tmp)) {
+                    return -1;
+                }
+                tmp[tmp_len++] = '/';
+            }
+            if (tmp_len + seg_len >= sizeof(tmp)) {
+                return -1;
+            }
+            memcpy(tmp + tmp_len, path + start, seg_len);
+            tmp_len += seg_len;
+        }
+        pos++;
+    }
+    if (tmp_len == 0) {
+        tmp[tmp_len++] = '/';
+    }
+    tmp[tmp_len] = '\0';
+    if (query) {
+        return snprintf(out, out_size, "%s%s", tmp, query) >= (int)out_size ? -1 : 0;
+    }
+    if (tmp_len >= out_size) {
+        return -1;
+    }
+    strcpy(out, tmp);
+    return 0;
+}
+
+static int http_make_redirect_url(const char *base_url, const char *location,
+                                  char *out, size_t out_size)
+{
+    if (strstr(location, "://")) {
+        if (strlen(location) >= out_size) {
+            return -1;
+        }
+        strcpy(out, location);
+        return 0;
+    }
+
+    struct parsed_url base;
+    if (parse_http_url(base_url, &base) < 0) {
+        return -1;
+    }
+    char authority[160];
+    http_authority_url(&base, authority, sizeof(authority));
+    if (location[0] == '?') {
+        char base_path[256];
+        strncpy(base_path, base.path, sizeof(base_path) - 1);
+        base_path[sizeof(base_path) - 1] = '\0';
+        char *query = strchr(base_path, '?');
+        if (query) {
+            *query = '\0';
+        }
+        return snprintf(out, out_size, "%s%s%s", authority, base_path, location) >=
+               (int)out_size ? -1 : 0;
+    }
+    if (location[0] == '#') {
+        return snprintf(out, out_size, "%s%s", authority, base.path) >=
+               (int)out_size ? -1 : 0;
+    }
+    if (location[0] == '/') {
+        char normalized[256];
+        if (http_normalize_path(location, normalized, sizeof(normalized)) < 0) {
+            return -1;
+        }
+        return snprintf(out, out_size, "%s%s", authority, normalized) >= (int)out_size ? -1 : 0;
+    }
+
+    char dir[256];
+    strncpy(dir, base.path, sizeof(dir) - 1);
+    dir[sizeof(dir) - 1] = '\0';
+    char *slash = strrchr(dir, '/');
+    if (slash) {
+        slash[1] = '\0';
+    } else {
+        strcpy(dir, "/");
+    }
+    char joined[256];
+    if (snprintf(joined, sizeof(joined), "%s%s", dir, location) >= (int)sizeof(joined)) {
+        return -1;
+    }
+    char normalized[256];
+    if (http_normalize_path(joined, normalized, sizeof(normalized)) < 0) {
+        return -1;
+    }
+    return snprintf(out, out_size, "%s%s", authority, normalized) >= (int)out_size ? -1 : 0;
+}
+
 static int http_get_to_fd(const char *url, int out)
 {
-    enum { HTTP_MAX_REDIRECTS = 4, HTTP_BODY_MAX = 131072 };
+    enum { HTTP_MAX_REDIRECTS = 4 };
     char current_url[512];
     strncpy(current_url, url, sizeof(current_url) - 1);
     current_url[sizeof(current_url) - 1] = '\0';
     for (int redirect = 0; redirect <= HTTP_MAX_REDIRECTS; redirect++) {
         struct parsed_url u;
-        if (parse_http_url(current_url, &u) < 0 || strcmp(u.scheme, "http") != 0) {
+        if (parse_http_url(current_url, &u) < 0) {
+            return -1;
+        }
+        if (strcmp(u.scheme, "https") == 0) {
+            int rc = tnu_https_get(current_url, write_fd_cb, &out);
+            if (rc < 0) {
+                print("https: ");
+                println(tnu_tls_strerror(rc));
+                return 1;
+            }
+            return 0;
+        }
+        if (strcmp(u.scheme, "http") != 0) {
             return -1;
         }
         uint32_t ip = 0;
@@ -1559,36 +1943,52 @@ static int http_get_to_fd(const char *url, int out)
             return 1;
         }
 
+        char host_header[160];
+        if (http_host_header(&u, host_header, sizeof(host_header)) < 0) {
+            close(fd);
+            return 1;
+        }
         char req[768];
-        snprintf(req, sizeof(req),
-                 "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: tiramisu/0.1\r\nAccept: */*\r\nConnection: close\r\n\r\n",
-                 u.path, u.host);
-        if (send(fd, req, strlen(req), 0) < 0) {
+        if (snprintf(req, sizeof(req),
+                     "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: tiramisu/0.1\r\nAccept: */*\r\nConnection: close\r\n\r\n",
+                     u.path, host_header) >= (int)sizeof(req)) {
+            println("http: request too large");
+            close(fd);
+            return 1;
+        }
+        size_t req_off = 0;
+        size_t req_len = strlen(req);
+        while (req_off < req_len) {
+            ssize_t sent = send(fd, req + req_off, req_len - req_off, 0);
+            if (sent <= 0) {
+                break;
+            }
+            req_off += (size_t)sent;
+        }
+        if (req_off < req_len) {
             println("http: send failed");
             close(fd);
             return 1;
         }
 
         char buf[512];
-        char response[HTTP_BODY_MAX];
         char header[2048];
         size_t header_len = 0;
-        size_t response_len = 0;
         int header_done = 0;
         int status_code = 0;
+        int chunked = 0;
+        int has_content_length = 0;
+        size_t content_length = 0;
+        size_t body_written = 0;
+        int recv_error = 0;
+        struct http_chunk_state chunk_state;
+        http_chunk_state_init(&chunk_state);
         ssize_t n;
         while ((n = recv(fd, buf, sizeof(buf), 0)) > 0) {
-            if (response_len + (size_t)n > sizeof(response)) {
-                println("http: response too large");
-                close(fd);
-                return 1;
-            }
-            memcpy(response + response_len, buf, (size_t)n);
-            response_len += (size_t)n;
             if (!header_done) {
-                while (header_len + 1 < response_len && header_len + 1 < sizeof(header)) {
-                    header[header_len] = response[header_len];
-                    header_len++;
+                size_t pos = 0;
+                while (pos < (size_t)n && header_len + 1 < sizeof(header)) {
+                    header[header_len++] = buf[pos++];
                     header[header_len] = '\0';
                     if (header_len >= 4 &&
                         header[header_len - 4] == '\r' && header[header_len - 3] == '\n' &&
@@ -1597,36 +1997,79 @@ static int http_get_to_fd(const char *url, int out)
                         break;
                     }
                 }
+                if (!header_done && header_len + 1 >= sizeof(header)) {
+                    println("http: response header too large");
+                    close(fd);
+                    return 1;
+                }
+                if (!header_done) {
+                    continue;
+                }
+                status_code = http_parse_status_code(header);
+                if (status_code < 0) {
+                    println("http: bad status line");
+                    close(fd);
+                    return 1;
+                }
+                if (status_code >= 300 && status_code < 400) {
+                    break;
+                }
+                if (status_code < 200 || status_code >= 400) {
+                    break;
+                }
+                if (!http_status_has_body(status_code)) {
+                    break;
+                }
+                chunked = http_is_chunked(header);
+                has_content_length = http_parse_content_length(header, &content_length) == 0;
+                if (pos < (size_t)n &&
+                    http_copy_body_to_fd(out, buf + pos, (size_t)n - pos, chunked,
+                                         &chunk_state, &body_written,
+                                         content_length, has_content_length) < 0) {
+                    println("http: bad response body");
+                    close(fd);
+                    return 1;
+                }
+            } else if (status_code >= 200 && status_code < 400) {
+                if (http_copy_body_to_fd(out, buf, (size_t)n, chunked,
+                                         &chunk_state, &body_written,
+                                         content_length, has_content_length) < 0) {
+                    println("http: bad response body");
+                    close(fd);
+                    return 1;
+                }
             }
-            if (!header_done && header_len + 1 >= sizeof(header)) {
-                println("http: response header too large");
-                close(fd);
-                return 1;
+            if ((chunked && chunk_state.done) ||
+                (has_content_length && body_written >= content_length)) {
+                break;
             }
+        }
+        if (n < 0) {
+            recv_error = 1;
         }
         close(fd);
         if (!header_done) {
             return 1;
         }
-        if (strncmp(header, "HTTP/", 5) == 0) {
-            const char *sp = strchr(header, ' ');
-            if (sp) {
-                status_code = atoi(sp + 1);
-            }
-        }
         if (status_code >= 300 && status_code < 400) {
             const char *location = http_header_value(header, "Location");
             if (location) {
+                char redirect_url[512];
                 size_t loc_len = 0;
                 while (location[loc_len] && location[loc_len] != '\r' && location[loc_len] != '\n') {
                     loc_len++;
                 }
-                if (loc_len >= sizeof(current_url)) {
+                if (loc_len >= sizeof(redirect_url)) {
                     println("http: redirect URL too long");
                     return 1;
                 }
-                memcpy(current_url, location, loc_len);
-                current_url[loc_len] = '\0';
+                memcpy(redirect_url, location, loc_len);
+                redirect_url[loc_len] = '\0';
+                if (http_make_redirect_url(current_url, redirect_url,
+                                           current_url, sizeof(current_url)) < 0) {
+                    println("http: bad redirect URL");
+                    return 1;
+                }
                 continue;
             }
         }
@@ -1636,27 +2079,19 @@ static int http_get_to_fd(const char *url, int out)
             print("\n");
             return 1;
         }
-        size_t body_off = 0;
-        while (body_off + 3 < response_len) {
-            if (response[body_off] == '\r' && response[body_off + 1] == '\n' &&
-                response[body_off + 2] == '\r' && response[body_off + 3] == '\n') {
-                body_off += 4;
-                break;
-            }
-            body_off++;
-        }
-        if (body_off > response_len) {
+        if (chunked && !chunk_state.done) {
+            println("http: incomplete chunked response");
             return 1;
         }
-        size_t body_len = response_len - body_off;
-        if (http_is_chunked(header)) {
-            return http_decode_chunked_to_fd(out, response + body_off, body_len) < 0 ? 1 : 0;
+        if (has_content_length && body_written < content_length) {
+            println("http: incomplete response");
+            return 1;
         }
-        size_t content_length = 0;
-        if (http_parse_content_length(header, &content_length) == 0 && content_length < body_len) {
-            body_len = content_length;
+        if (!has_content_length && !chunked && recv_error) {
+            println("http: receive timeout");
+            return 1;
         }
-        return write_all_fd(out, response + body_off, body_len) < 0 ? 1 : 0;
+        return 0;
     }
     println("http: too many redirects");
     return 1;
