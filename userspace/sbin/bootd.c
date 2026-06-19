@@ -14,6 +14,10 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 
+#ifndef WNOHANG
+#define WNOHANG 1
+#endif
+
 extern char *strtok(char *str, const char *delim);
 extern int usleep(unsigned long usec);
 extern void _exit(int status);
@@ -540,6 +544,8 @@ static int bootd_run_daemon(void)
         }
         usleep(100000);
     }
+
+    return 0;
 }
 
 static void bootd_usage(void)
