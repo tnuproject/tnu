@@ -43,7 +43,7 @@ long tnu_syscall(long n, long a0, long a1, long a2, long a3, long a4, long a5);
 #define ROOT_IMAGE_PATH "/boot/root.tfs"
 #define KERNEL_IMAGE_PATH "/boot/kernel.elf"
 #define BOOTX64_IMAGE_PATH "/EFI/BOOT/BOOTX64.EFI"
-#define GRUB_CFG_TEXT "set timeout=3\nmenuentry \"Tiramisu\" {\n    search --no-floppy --file --set=root /boot/kernel.elf\n    multiboot2 /boot/kernel.elf boot=disk root=tfs\n    boot\n}\n"
+#define GRUB_CFG_TEXT "set timeout=5\nset default=0\n\ninsmod all_video\ninsmod ext2\ninsmod part_gpt\n\nterminal_output console\n\nmenuentry \"Tiramisu 1.1.0 (Disk Boot)\" {\n    # Find the partition containing /boot/kernel.elf\n    search --no-floppy --file --set=root /boot/kernel.elf\n    \n    # Load kernel from the found partition\n    multiboot2 ($root)/boot/kernel.elf boot=disk root=tfs\n    \n    # Boot directly - kernel will find root.tfs on disk via GPT/partition scan\n    boot\n}\n\nmenuentry \"Tiramisu 1.1.0 (Recovery Mode)\" {\n    search --no-floppy --file --set=root /boot/kernel.elf\n    multiboot2 ($root)/boot/kernel.elf boot=disk root=tfs recovery\n    boot\n}\n"
 
 /* GPT type GUIDs, encoded in on-disk little-endian layout. */
 static const uint8_t GUID_EFI_SYSTEM[16] = {
@@ -1121,15 +1121,9 @@ static int perform_installation(const char *disk_device, uint64_t disk_size_sect
         return 1;
     }
     close(fd);
+    printf("  Partition table written.\n\n");
 
-    /* The kernel block layer does not create partition device nodes dynamically;
-     * sysinstall writes ESP/root data through the whole-disk node at fixed LBAs.
-     * Do not call sync() here: it flushes the live TFS image to persistent storage
-     * and can hang for minutes (or indefinitely) when the install target is the
-     * same disk that TFS is mounted from. Final persistence happens in Step 5. */
-    printf("  Partition table written.\n");
-
-    printf("\nStep 2: Formatting partitions...\n");
+    printf("Step 2: Formatting partitions...\n");
     if (format_esp_native(disk_device, cfg) < 0) {
         printf("ERROR: ESP format failed.\n");
         return 1;
@@ -1138,24 +1132,30 @@ static int perform_installation(const char *disk_device, uint64_t disk_size_sect
         printf("ERROR: root filesystem install failed.\n");
         return 1;
     }
+    printf("  Partitions formatted.\n\n");
 
-    printf("\nStep 3: Installing boot metadata...\n");
+    printf("Step 3: Installing boot files...\n");
     printf("  UEFI removable boot files are installed in the ESP.\n");
     printf("  BIOS Boot partition is reserved for future native GRUB core embedding.\n");
+    printf("  Boot files installed.\n\n");
 
-    printf("\nStep 4: Configuring system...\n");
+    printf("Step 4: Configuring system...\n");
     if (configure_system(cfg, root_part) < 0) {
         printf("ERROR: system configuration failed.\n");
         return 1;
     }
+    printf("  System configured.\n\n");
 
     /* Flush the in-memory TFS image to disk so any changes made during
      * installation (e.g. writing /etc/fstab) are stored persistently. */
-    printf("\nStep 5: Syncing filesystem...\n");
+    printf("Step 5: Syncing filesystem...\n");
     sync();
-    printf("  Filesystem synced.\n");
+    printf("  Filesystem synced.\n\n");
 
-    printf("\nInstallation complete. Reboot and select %s in firmware/boot menu.\n", disk_device);
+    printf("Installation complete!\n\n");
+    printf("  - Reboot and enter BIOS/UEFI setup\n");
+    printf("  - Set boot order to prioritize UEFI: %s\n", disk_device);
+    printf("  - Or select 'TNU BOOT' from UEFI boot menu\n\n");
     return 0;
 }
 

@@ -633,9 +633,10 @@ static int gpt_find_root_lba(const char *device, uint64_t *out_lba)
 
 int tfs_mount_installed_root(void)
 {
-    static const char *const candidates[] = { "sda", "sdb", "sdc", "sdd" };
-    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
-        const char *dev = candidates[i];
+    /* Try SATA disks first */
+    static const char *const sata_candidates[] = { "sda", "sdb", "sdc", "sdd" };
+    for (size_t i = 0; i < sizeof(sata_candidates) / sizeof(sata_candidates[0]); i++) {
+        const char *dev = sata_candidates[i];
         if (!block_device_find(dev)) {
             continue;
         }
@@ -644,9 +645,29 @@ int tfs_mount_installed_root(void)
             lba = TFS_DEFAULT_ROOT_LBA;
         }
         if (tfs_mount_disk(dev, lba) == 0) {
+            log_info("tfs", "mounted root from SATA disk %s", dev);
             return 0;
         }
     }
+    
+    /* Try NVMe devices */
+    static const char *const nvme_candidates[] = { "nvme0n1", "nvme1n1", "nvme2n1", "nvme3n1" };
+    for (size_t i = 0; i < sizeof(nvme_candidates) / sizeof(nvme_candidates[0]); i++) {
+        const char *dev = nvme_candidates[i];
+        if (!block_device_find(dev)) {
+            continue;
+        }
+        uint64_t lba = TFS_DEFAULT_ROOT_LBA;
+        if (gpt_find_root_lba(dev, &lba) < 0) {
+            lba = TFS_DEFAULT_ROOT_LBA;
+        }
+        if (tfs_mount_disk(dev, lba) == 0) {
+            log_info("tfs", "mounted root from NVMe disk %s", dev);
+            return 0;
+        }
+    }
+    
+    log_warn("tfs", "no installed root filesystem found on any disk");
     return -1;
 }
 
