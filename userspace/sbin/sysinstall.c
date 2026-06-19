@@ -632,6 +632,9 @@ static void partition_paths(const char *disk, char esp[64], char root[64])
     snprintf(root, 64, "%s3", disk);
 }
 
+/* Maximum FAT sectors we cache in memory (covers up to 128 KiB of FAT) */
+#define FAT_CACHE_SECTORS 256
+
 struct fat32_ctx {
     int fd;
     uint64_t base_lba;
@@ -641,6 +644,15 @@ struct fat32_ctx {
     uint32_t sectors_per_cluster;
     uint32_t first_data_sector;
     uint32_t next_cluster;
+    /* In-memory FAT sector cache — all FAT entries are written here first,
+     * then flushed as whole sectors (required by block devices). */
+    uint8_t fat_cache[FAT_CACHE_SECTORS * 512];
+    uint32_t fat_cache_dirty[FAT_CACHE_SECTORS]; /* 1 = needs flush */
+    uint32_t fat_cache_sectors; /* how many sectors are actually used */
+    /* Small cluster data cache: one cluster at a time for directory entries */
+    uint8_t dir_cache[4096]; /* enough for 8-sector cluster */
+    uint32_t dir_cache_cluster;
+    int dir_cache_valid;
 };
 
 static uint64_t fat_sector_offset(const struct fat32_ctx *ctx, uint32_t sector)
@@ -671,17 +683,40 @@ static uint32_t fat_alloc_cluster(struct fat32_ctx *ctx)
     return ctx->next_cluster++;
 }
 
+/* Write all dirty FAT cache sectors to both FAT copies on disk. */
+static int fat_flush_cache(struct fat32_ctx *ctx)
+{
+    for (uint32_t s = 0; s < ctx->fat_cache_sectors; s++) {
+        if (!ctx->fat_cache_dirty[s]) {
+            continue;
+        }
+        const uint8_t *buf = ctx->fat_cache + s * SECTOR_SIZE;
+        for (uint32_t fat = 0; fat < 2; fat++) {
+            uint64_t off = fat_sector_offset(ctx, ctx->reserved + fat * ctx->sectors_per_fat
+                                             + s);
+            if (write_all_at(ctx->fd, off, buf, SECTOR_SIZE) < 0) {
+                return -1;
+            }
+        }
+        ctx->fat_cache_dirty[s] = 0;
+    }
+    return 0;
+}
+
+/* Set a FAT32 entry in the in-memory cache (flushed later). */
 static int fat_set_entry(struct fat32_ctx *ctx, uint32_t cluster, uint32_t value)
 {
-    uint8_t entry[4];
-    put32(entry, value);
-    uint32_t fat_offset = cluster * 4u;
-    for (uint32_t fat = 0; fat < 2; fat++) {
-        uint64_t off = fat_sector_offset(ctx, ctx->reserved + fat * ctx->sectors_per_fat) + fat_offset;
-        if (write_all_at(ctx->fd, off, entry, sizeof(entry)) < 0) {
-            return -1;
-        }
+    uint32_t fat_offset = cluster * 4u;       /* byte offset within FAT */
+    uint32_t sec = fat_offset / SECTOR_SIZE;  /* which cache sector */
+    uint32_t off = fat_offset % SECTOR_SIZE;  /* byte within that sector */
+    if (sec >= FAT_CACHE_SECTORS) {
+        return -1;
     }
+    if (sec >= ctx->fat_cache_sectors) {
+        ctx->fat_cache_sectors = sec + 1;
+    }
+    put32(ctx->fat_cache + sec * SECTOR_SIZE + off, value);
+    ctx->fat_cache_dirty[sec] = 1;
     return 0;
 }
 
@@ -690,23 +725,71 @@ static int fat_init_cluster(struct fat32_ctx *ctx, uint32_t cluster)
     if (fat_set_entry(ctx, cluster, 0x0fffffffu) < 0) {
         return -1;
     }
+    if (fat_flush_cache(ctx) < 0) {
+        return -1;
+    }
     return write_zero_sectors(ctx->fd, fat_cluster_offset(ctx, cluster),
                               ctx->sectors_per_cluster);
+}
+
+/* Load a directory cluster into the dir cache (if not already loaded). */
+static int fat_load_dir_cluster(struct fat32_ctx *ctx, uint32_t cluster)
+{
+    if (ctx->dir_cache_valid && ctx->dir_cache_cluster == cluster) {
+        return 0;
+    }
+    size_t cluster_bytes = (size_t)ctx->sectors_per_cluster * SECTOR_SIZE;
+    if (cluster_bytes > sizeof(ctx->dir_cache)) {
+        cluster_bytes = sizeof(ctx->dir_cache);
+    }
+    memset(ctx->dir_cache, 0, cluster_bytes);
+    ctx->dir_cache_cluster = cluster;
+    ctx->dir_cache_valid = 1;
+    return 0;
+}
+
+/* Flush the dir cache cluster back to disk. */
+static int fat_flush_dir_cluster(struct fat32_ctx *ctx)
+{
+    if (!ctx->dir_cache_valid) {
+        return 0;
+    }
+    size_t cluster_bytes = (size_t)ctx->sectors_per_cluster * SECTOR_SIZE;
+    if (cluster_bytes > sizeof(ctx->dir_cache)) {
+        cluster_bytes = sizeof(ctx->dir_cache);
+    }
+    uint64_t off = fat_cluster_offset(ctx, ctx->dir_cache_cluster);
+    /* Write in sector-sized chunks */
+    for (size_t i = 0; i < cluster_bytes; i += SECTOR_SIZE) {
+        if (write_all_at(ctx->fd, off + i, ctx->dir_cache + i, SECTOR_SIZE) < 0) {
+            return -1;
+        }
+    }
+    ctx->dir_cache_valid = 0;
+    return 0;
 }
 
 static int fat_write_dirent(struct fat32_ctx *ctx, uint32_t dir_cluster, uint32_t slot,
                             const char name[11], uint8_t attr,
                             uint32_t first_cluster, uint32_t size)
 {
-    uint8_t e[32];
-    memset(e, 0, sizeof(e));
+    /* Flush any previously cached directory cluster if it differs. */
+    if (ctx->dir_cache_valid && ctx->dir_cache_cluster != dir_cluster) {
+        if (fat_flush_dir_cluster(ctx) < 0) {
+            return -1;
+        }
+    }
+    if (fat_load_dir_cluster(ctx, dir_cluster) < 0) {
+        return -1;
+    }
+    uint8_t *e = ctx->dir_cache + slot * 32u;
+    memset(e, 0, 32);
     memcpy(e, name, 11);
     e[11] = attr;
     put16(e + 20, (uint16_t)(first_cluster >> 16));
     put16(e + 26, (uint16_t)(first_cluster & 0xffff));
     put32(e + 28, size);
-    return write_all_at(ctx->fd, fat_cluster_offset(ctx, dir_cluster) + slot * 32u,
-                        e, sizeof(e));
+    return 0;
 }
 
 static int fat_write_text_file(struct fat32_ctx *ctx, uint32_t parent_cluster,
@@ -717,6 +800,10 @@ static int fat_write_text_file(struct fat32_ctx *ctx, uint32_t parent_cluster,
     if (fat_init_cluster(ctx, cluster) < 0 ||
         write_all_at(ctx->fd, fat_cluster_offset(ctx, cluster), text, len) < 0 ||
         fat_write_dirent(ctx, parent_cluster, slot, name, 0x20, cluster, (uint32_t)len) < 0) {
+        return -1;
+    }
+    /* Flush directory and FAT caches after writing file */
+    if (fat_flush_dir_cluster(ctx) < 0 || fat_flush_cache(ctx) < 0) {
         return -1;
     }
     return 0;
@@ -776,7 +863,14 @@ static int fat_write_file_from_path(struct fat32_ctx *ctx, uint32_t parent_clust
             return -1;
         }
     }
-    return fat_write_dirent(ctx, parent_cluster, slot, name, 0x20, first, total);
+    if (fat_write_dirent(ctx, parent_cluster, slot, name, 0x20, first, total) < 0) {
+        return -1;
+    }
+    /* Flush directory and FAT caches after writing file */
+    if (fat_flush_dir_cluster(ctx) < 0 || fat_flush_cache(ctx) < 0) {
+        return -1;
+    }
+    return 0;
 }
 
 static int format_esp_native(const char *disk_device, const install_config_t *cfg)
@@ -885,6 +979,10 @@ static int format_esp_native(const char *disk_device, const install_config_t *cf
         close(fd);
         return -1;
     }
+
+    /* Flush all caches before closing */
+    fat_flush_dir_cluster(&ctx);
+    fat_flush_cache(&ctx);
 
     close(fd);
     printf("  ESP formatted and UEFI boot files installed.\n");
@@ -1149,30 +1247,56 @@ int main(int argc, char **argv)
     printf("Selected root filesystem: %s\n", root_fs_name(cfg.root_fs));
     printf("Configuration: %s\n\n", SYSINSTALL_CONFIG_PATH);
 
-    if (list_disks() == 0) {
-        demo_workflow();
-        printf("\nNo disk was modified.\n");
-        return 0;
-    }
+    char input[32];  /* Used for disk selection and confirmation */
 
-    char input[32];
-    disk_info_t *disk = find_configured_disk(cfg.target);
-    if (!disk) {
-        printf("Select disk [0-%d]: ", disk_count - 1);
-        fflush(stdout);
-
-        if (!fgets_with_echo(input, sizeof(input), stdin)) {
-            printf("ERROR: invalid input.\n");
+    /* If target is explicitly provided, skip disk discovery and use it directly */
+    disk_info_t *disk = NULL;
+    if (cfg.target[0]) {
+        /* Validate the target device/file exists */
+        if (!path_is_block_or_regular(cfg.target)) {
+            printf("ERROR: target '%s' is not a valid block device or regular file.\n", cfg.target);
             return 1;
         }
-
-        int selected = atoi(input);
-        if (selected < 0 || selected >= disk_count) {
-            printf("ERROR: invalid disk selection.\n");
+        /* Create a disk_info entry for the target */
+        if (disk_count >= MAX_DISKS) {
+            printf("ERROR: too many disks.\n");
             return 1;
         }
-        disk = &disks[selected];
-        strncpy(cfg.target, disk->device, sizeof(cfg.target) - 1);
+        disk = &disks[disk_count];
+        memset(disk, 0, sizeof(*disk));
+        strncpy(disk->device, cfg.target, sizeof(disk->device) - 1);
+        disk->is_nvme = (strstr(cfg.target, "nvme") != NULL);
+        disk->size_sectors = get_device_size_sectors(cfg.target);
+        disk->size_bytes = disk->size_sectors * SECTOR_SIZE;
+        snprintf(disk->model, sizeof(disk->model), "Target %s (%llu MiB)",
+                 cfg.target,
+                 (unsigned long long)(disk->size_bytes / (1024ULL * 1024ULL)));
+        disk_count++;
+    } else {
+        if (list_disks() == 0) {
+            demo_workflow();
+            printf("\nNo disk was modified.\n");
+            return 0;
+        }
+
+        disk = find_configured_disk(cfg.target);
+        if (!disk) {
+            printf("Select disk [0-%d]: ", disk_count - 1);
+            fflush(stdout);
+
+            if (!fgets_with_echo(input, sizeof(input), stdin)) {
+                printf("ERROR: invalid input.\n");
+                return 1;
+            }
+
+            int selected = atoi(input);
+            if (selected < 0 || selected >= disk_count) {
+                printf("ERROR: invalid disk selection.\n");
+                return 1;
+            }
+            disk = &disks[selected];
+            strncpy(cfg.target, disk->device, sizeof(cfg.target) - 1);
+        }
     }
 
     printf("\nSelected disk: %s\n", disk->model);

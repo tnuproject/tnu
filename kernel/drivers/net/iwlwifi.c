@@ -2049,10 +2049,18 @@ static int iwl_alloc_firmware_dma(struct iwlwifi_state *st)
         return 0;
     }
 
-    /* Use kernel heap allocation instead of contiguous PMM frames.
-     * This avoids the risk of failing to find 128 contiguous pages. */
-    st->firmware_dma = kmalloc(IWL_FW_DMA_SIZE + PAGE_SIZE);
+    /* Use kernel heap allocation for firmware DMA buffer.
+     * Try with smaller size first (256 KiB), then fall back to 512 KiB. */
+    size_t size = IWL_FW_DMA_SIZE; /* 512 KiB */
+    
+    /* Try smaller buffer if 512 KiB fails */
+    if (size > 256 * 1024) {
+        size = 256 * 1024;
+    }
+    
+    st->firmware_dma = kmalloc(size + PAGE_SIZE);
     if (!st->firmware_dma) {
+        log_warn("iwlwifi", "firmware DMA buffer allocation failed (%zu bytes)", size);
         return -1;
     }
     
@@ -2060,9 +2068,11 @@ static int iwl_alloc_firmware_dma(struct iwlwifi_state *st)
     uintptr_t aligned = ((uintptr_t)st->firmware_dma + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
     st->firmware_dma = (void *)aligned;
     st->firmware_dma_phys = aligned;
-    st->firmware_dma_size = IWL_FW_DMA_SIZE;
-    memset(st->firmware_dma, 0, IWL_FW_DMA_SIZE);
+    st->firmware_dma_size = size;
+    memset(st->firmware_dma, 0, size);
     
+    log_info("iwlwifi", "firmware DMA buffer: %p phys=%p size=%zu KiB",
+             st->firmware_dma, (void *)st->firmware_dma_phys, size / 1024);
     return 0;
 }
 
@@ -2070,7 +2080,9 @@ static int iwl_stage_firmware_dma(struct iwlwifi_state *st,
                                   const struct iwlwifi_fw_part *part)
 {
     size_t total = (size_t)part->text_size + part->data_size;
-    if (!part_present(part) || total > IWL_FW_DMA_SIZE) {
+    if (!part_present(part) || total > st->firmware_dma_size) {
+        log_warn("iwlwifi", "firmware section too large (%zu bytes, buffer is %zu bytes)",
+                 total, st->firmware_dma_size);
         return -1;
     }
     if (iwl_alloc_firmware_dma(st) < 0) {
