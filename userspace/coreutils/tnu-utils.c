@@ -1,67 +1,81 @@
-#include <arpa/inet.h>
+#include <tnu/libc.h>
+#include <tnu/tls.h>
 #include <dirent.h>
-#include <fcntl.h>
-#include <libgen.h>
-#include <netinet/in.h>
-#include <stddef.h>
-#include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
-#include <sys/types.h>
-#include <tnu/syscall.h>
-#include <tnu/tls.h>
 #include <unistd.h>
+#include <fcntl.h>
 
-struct help_topic {
+static const char sysfetch_default_logo[] =
+    "___________           \n"
+    "\\__    ___/___  __ __ \n"
+    "  |    | /    \\|  |  \\\n"
+    "  |    ||   |  \\  |  /\n"
+    "  |____||___|  /____/ \n"
+    "             \\/       \n";
+
+static const char *basename(const char *path)
+{
+    const char *last = path;
+    for (const char *p = path; *p; p++) {
+        if (*p == '/') {
+            last = p + 1;
+        }
+    }
+    return last;
+}
+
+struct util_help {
     const char *name;
     const char *usage;
     const char *help;
 };
 
-static void print(const char *s)
-{
-    if (s) {
-        write(1, s, strlen(s));
-    }
-}
+/* Forward declarations */
+static int cmd_shutdown(int argc, char **argv);
+static int cmd_reboot(int argc, char **argv);
+static int cmd_sync(int argc, char **argv);
+static int cmd_tirux(int argc, char **argv);
+static int cmd_tar(int argc, char **argv);
+static int cmd_zip(int argc, char **argv);
+static int cmd_unzip(int argc, char **argv);
+static int cmd_dns(int argc, char **argv);
+static int cmd_curl(int argc, char **argv);
+static int cmd_wget(int argc, char **argv);
+static int cmd_tls(int argc, char **argv);
+static int cmd_driver(int argc, char **argv);
+static int cmd_linuxdrv(int argc, char **argv);
+static int cmd_net(int argc, char **argv);
 
-static void println(const char *s)
-{
-    print(s);
-    print("\n");
-}
-
-static void print_int(long value)
-{
-    char buf[32];
-    snprintf(buf, sizeof(buf), "%ld", value);
-    print(buf);
-}
-
-static const char sysfetch_default_logo[] =
-    "TNU Tiramisu\n";
-
-static const struct help_topic help_topics[] = {
+static const struct util_help help_topics[] = {
+    { "echo", "echo [-n] [ARG...]", "Print arguments separated by spaces." },
+    { "pwd", "pwd", "Print the current working directory." },
     { "cat", "cat FILE...", "Print files to standard output." },
-    { "chmod", "chmod MODE FILE", "Change file permissions; supports octal and simple symbolic modes." },
-    { "clear", "clear", "Clear the terminal." },
-    { "cp", "cp SRC DST", "Copy a file." },
-    { "date", "date", "Show the current date." },
-    { "dns", "dns HOST", "Resolve a hostname through the native DNS client." },
-    { "echo", "echo [ARGS...]", "Print arguments." },
-    { "hostname", "hostname [NAME]", "Show or set the hostname." },
-    { "ifconfig", "ifconfig", "Show network interfaces." },
+    { "touch", "touch FILE...", "Create files if they do not exist." },
     { "mkdir", "mkdir DIR...", "Create directories." },
-    { "mv", "mv SRC DST", "Move or rename a file." },
+    { "rm", "rm FILE...", "Remove files through the kernel unlink syscall." },
+    { "uname", "uname", "Print kernel version information." },
+    { "whoami", "whoami", "Print the current username." },
+    { "id", "id", "Print current uid and gid." },
+    { "sysfetch", "sysfetch", "Print OS identity and machine summary." },
+    { "hostname", "hostname [NAME]", "Show or set hostname; setting requires root." },
+    { "uptime", "uptime", "Print uptime from procfs." },
+    { "timezone", "timezone [ZONE]", "Show or set /etc/timezone; setting requires root." },
+    { "keymap", "keymap [LAYOUT]", "Show or set /etc/keymap; setting requires root." },
+    { "layout", "layout [LAYOUT]", "Alias for keymap." },
+    { "ping", "ping IPv4", "Send a minimal ICMP test when networking is available." },
+    { "dns", "dns HOST", "Resolve an IPv4 address through the kernel DNS resolver." },
+    { "nano", "nano FILE", "Edit a text file with the nano port." },
+    { "driver", "driver list|stats", "Inspect native and Linux driver providers." },
+    { "linuxdrv", "linuxdrv load MODULE|logs|modules|stats", "Inspect Linux Driver Runtime state." },
     { "net", "net trace", "Show native/TNAI/Linux netdev bridge path." },
     { "curl", "curl URL [-o FILE]", "Fetch file: and http:// URLs; HTTPS waits for TLS." },
     { "wget", "wget URL [-O FILE]", "Fetch file: and http:// URLs; HTTPS waits for TLS." },
     { "tls", "tls status", "Show HTTPS/TLS backend readiness." },
     { "wifi", "wifi scan|connect IFACE SSID [PASSPHRASE]|disconnect IFACE|status|debug", "Scan, connect, and show Wi-Fi status." },
-    { "chmod", "chmod MODE FILE", "Change file permissions; supports octal and simple symbolic modes." },
     { "stat", "stat FILE", "Print file metadata." },
     { "tirux", "tirux install|status|help", "Prepare and use the Tiramisu Linux compatibility root." },
     { "tar", "tar -c|-t|-x -f ARCHIVE [PATH...]", "Create, list, or extract uncompressed ustar archives." },
