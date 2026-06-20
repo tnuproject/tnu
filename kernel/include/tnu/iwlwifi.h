@@ -120,6 +120,8 @@ struct iwlwifi_state {
     bool tx_queue_ready;
     const char *family;
     const char *firmware_name;
+    bool     legacy_bcast_node_ready;
+    uint8_t  legacy_bcast_sta_id;
     uint8_t  cmd_queue_id;
     uint8_t  mgmt_queue_id;
     bool     mvm_init_alive_seen;
@@ -150,6 +152,7 @@ int iwlwifi_attach(struct net_iface *iface, const struct pci_device *dev);
 int iwlwifi_start(struct net_iface *iface);
 int iwlwifi_scan(struct net_iface *iface);
 int iwlwifi_associate(struct net_iface *iface, const char *ssid, const char *passphrase);
+int iwlwifi_disconnect(struct net_iface *iface);
 const struct iwlwifi_state *iwlwifi_state_for(const struct net_iface *iface);
 void iwlwifi_exit(void);
 

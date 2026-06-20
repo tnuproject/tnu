@@ -10,6 +10,7 @@
 #define WIFI_IOCTL_SCAN    _IOR('w', 0x01, struct wifi_ap[32])
 #define WIFI_IOCTL_CONNECT _IOW('w', 0x02, struct wifi_connect_req)
 #define WIFI_IOCTL_STATUS  _IOR('w', 0x03, struct wifi_status)
+#define WIFI_IOCTL_DISCONNECT _IOW('w', 0x04, char[NET_NAME_MAX + 1])
 
 struct wifi_ap {
     char ssid[33];
@@ -33,7 +34,14 @@ struct wifi_connect_req {
 
 struct wifi_status {
     bool connected;
-    char ssid[32];
+    char iface[NET_NAME_MAX + 1];
+    char ssid[33];
+    int8_t rssi;
+    uint16_t flags;
+    uint32_t ipv4;
+    uint32_t netmask;
+    uint32_t gateway;
+    uint32_t dns_server;
 };
 
 struct net_iface;
@@ -91,9 +99,11 @@ bool net_has_external_transport(void);
 int net_iface_configure_ipv4(const char *name, uint32_t ipv4, uint32_t netmask, uint32_t gateway);
 int net_iface_set_up(const char *name, bool up);
 int net_iface_dhcp(const char *name);
+int net_wifi_start(const char *iface);
 int net_wifi_scan(void);
 int net_wifi_connect(const char *iface, const char *ssid, const char *passphrase);
-int net_wifi_autoconnect(void);
+int net_wifi_disconnect(const char *iface);
+int net_wifi_autoconnect(const char *iface_filter);
 int net_wifi_scan_results(struct wifi_ap *out, size_t max_aps);
 int net_wifi_status(struct wifi_status *out);
 

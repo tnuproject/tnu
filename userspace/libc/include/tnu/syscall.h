@@ -67,11 +67,32 @@ enum syscall_number {
     SYS_CONNECT = 51,
     SYS_SEND = 52,
     SYS_RECV = 53,
+    SYS_WIFI_AUTOCONNECT = 54,
+    SYS_WIFI_DISCONNECT = 55,
+    SYS_WIFI_START = 56,
+};
+
+struct block_info {
+    char name[64];
+    char description[128];
+    uint8_t writable;
+    uint8_t removable;
+    uint8_t reserved[2];
+    uint64_t sector_count;
+    uint32_t sector_size;
+    char transport[32];
 };
 
 int wifi_scan(struct wifi_ap *out, size_t max_aps);
 int wifi_connect(const char *iface, const char *ssid, const char *passphrase);
+int wifi_disconnect(const char *iface);
+int wifi_autoconnect(const char *iface);
+int wifi_start(const char *iface);
 int wifi_status(struct wifi_status *out);
+long block_get_count(void);
+int block_get_info(long index, struct block_info *info);
+ssize_t block_read(long index, uint64_t lba, void *buf, size_t bytes);
+ssize_t block_write(long index, uint64_t lba, const void *buf, size_t bytes);
 int resolve4(const char *host, uint32_t *out_ipv4);
 
 #define TNU_IOCTL_FB_GETINFO 0x544e4601u

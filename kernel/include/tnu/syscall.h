@@ -65,6 +65,9 @@ enum syscall_number {
     SYS_CONNECT = 51,
     SYS_SEND = 52,
     SYS_RECV = 53,
+    SYS_WIFI_AUTOCONNECT = 54,
+    SYS_WIFI_DISCONNECT = 55,
+    SYS_WIFI_START = 56,
 };
 
 #define TNU_IOCTL_FB_GETINFO 0x544e4601u

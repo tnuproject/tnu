@@ -1958,6 +1958,10 @@ long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
         if (!uptr_ok(out, max_aps * sizeof(*out)) || max_aps > 64) {
             return -1;
         }
+        long rc = net_wifi_scan();
+        if (rc < 0) {
+            return rc;
+        }
         return net_wifi_scan_results(out, max_aps);
     }
     case SYS_WIFI_CONNECT: {
@@ -1987,6 +1991,44 @@ long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
             return -1;
         }
         return net_wifi_status(out);
+    }
+    case SYS_WIFI_AUTOCONNECT: {
+        if (!proc || !is_root(proc)) {
+            return -1;
+        }
+        char iface[NET_NAME_MAX + 1];
+        iface[0] = '\0';
+        if (a0) {
+            if (!uptr_ok((const void *)a0, 1) ||
+                copy_user_string_bounded((const char *)a0, iface, sizeof(iface)) < 0) {
+                return -1;
+            }
+        }
+        return net_wifi_autoconnect(iface[0] ? iface : NULL);
+    }
+    case SYS_WIFI_DISCONNECT: {
+        if (!proc || !is_root(proc) || !uptr_ok((const void *)a0, 1)) {
+            return -1;
+        }
+        char iface[NET_NAME_MAX + 1];
+        if (copy_user_string_bounded((const char *)a0, iface, sizeof(iface)) < 0) {
+            return -1;
+        }
+        return net_wifi_disconnect(iface);
+    }
+    case SYS_WIFI_START: {
+        if (!proc || !is_root(proc)) {
+            return -1;
+        }
+        char iface[NET_NAME_MAX + 1];
+        iface[0] = '\0';
+        if (a0) {
+            if (!uptr_ok((const void *)a0, 1) ||
+                copy_user_string_bounded((const char *)a0, iface, sizeof(iface)) < 0) {
+                return -1;
+            }
+        }
+        return net_wifi_start(iface[0] ? iface : NULL);
     }
     case SYS_SHUTDOWN:
         /* Only root can shutdown the system */

@@ -334,6 +334,10 @@ void arch_entry(uint32_t magic, uintptr_t mbi_addr)
     iwl_setup_firmware();
     boot_ok();
 
+    boot_begin("WiFi startup");
+    log_info("boot", "wifi startup deferred until userspace");
+    boot_ok();
+
     /* ------------------------------------------------------------------ */
     /* Phase 5: hand off to userspace                                      */
     /* ------------------------------------------------------------------ */

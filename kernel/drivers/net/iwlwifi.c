@@ -3,7 +3,7 @@
  *
  * This file contains the complete iwlwifi driver implementation for TNU.
  * It supports both DVM (old) and MVM (new) firmware transports for Intel
- * wireless devices (3160, 7260, 7265, 8260, 8265, 9000, 9260, 9560,
+ * wireless devices (6000, 3160, 7260, 7265, 8260, 8265, 9000, 9260, 9560,
  * AX200/AX201/AX210-class adapters, and newer firmware families present in
  * the Tiramisu firmware bundle).
  *
@@ -263,6 +263,7 @@
 #define IEEE80211_FC0_SUBTYPE_ASSOC_REQ  0x00
 #define IEEE80211_FC0_SUBTYPE_ASSOC_RESP 0x10
 #define IEEE80211_FC0_SUBTYPE_BEACON     0x80
+#define IEEE80211_FC0_SUBTYPE_DEAUTH     0xc0
 #define IEEE80211_CAPINFO_PRIVACY      0x0010
 #define IEEE80211_CAPINFO_ESS          0x0001
 #define IEEE80211_STATUS_SUCCESS       0
@@ -274,6 +275,7 @@
 #define IEEE80211_AUTH_ALG_OPEN        0
 #define IEEE80211_AUTH_TRANSACTION_REQ 1
 #define IEEE80211_AUTH_TRANSACTION_RESP 2
+#define IEEE80211_REASON_UNSPECIFIED   1
 
 #define ETH_TYPE_EAPOL                 0x888e
 #define EAPOL_VERSION_2                2
@@ -291,6 +293,7 @@
 
 #define IWL_NODE_UPDATE                (1u << 0)
 #define IWL_ID_BSS                     0
+#define IWL_ID_BCAST                   15
 #define IWL_FLAG_SET_KEY               (1u << 0)
 #define IWL_KFLAG_CCMP                 (1u << 1)
 #define IWL_KFLAG_MAP                  (1u << 3)
@@ -782,6 +785,10 @@ static size_t iwl_build_assoc_frame(uint8_t *out, size_t out_size,
                                     const struct net_iface *iface,
                                     const struct iwlwifi_ap *ap,
                                     const char *passphrase, uint16_t seq);
+static size_t iwl_build_deauth_frame(uint8_t *out, size_t out_size,
+                                     const struct net_iface *iface,
+                                     const uint8_t bssid[IEEE80211_ADDR_LEN],
+                                     uint16_t seq, uint16_t reason);
 static int iwl_wait_for_auth(struct iwlwifi_state *st);
 static int iwl_wait_for_assoc(struct iwlwifi_state *st);
 static int iwl_install_pairwise_ccmp_key(struct iwlwifi_state *st,
@@ -800,6 +807,9 @@ static const struct net_driver_ops iwlwifi_net_ops = {
  * using Linux firmware filenames (iwlwifi-XXXX-YY.ucode).
  */
 static const struct iwl_device_info iwl_devices[] = {
+    /* Intel Centrino Ultimate-N 6300 / 6000 series 3x3 AGN */
+    { 0x422b, "6000", "iwlwifi-6000-4.ucode" },
+    { 0x4238, "6000", "iwlwifi-6000-4.ucode" },
     /* Intel 3160 */
     { 0x08b3, "3160", "iwlwifi-3160-17.ucode" },
     { 0x08b4, "3160", "iwlwifi-3160-17.ucode" },
@@ -889,6 +899,7 @@ static const char *iwl_firmware_prefix_for_family(const char *family,
                                                   const char *requested)
 {
     if (!family) return requested;
+    if (strcmp(family, "6000") == 0) return "iwlwifi-6000-";
     if (strcmp(family, "3160") == 0) return "iwlwifi-3160-";
     if (strcmp(family, "3165") == 0) return "iwlwifi-7265D-";
     if (strcmp(family, "3168") == 0) return "iwlwifi-3168-";
@@ -984,9 +995,10 @@ static struct vfs_node *iwl_find_firmware_blob(struct iwlwifi_state *st)
 
 static bool iwl_device_uses_modern_transport(const struct iwl_device_info *info)
 {
-    /* All devices in our table use MVM transport */
-    (void)info;
-    return info != NULL;
+    if (!info || !info->family) {
+        return false;
+    }
+    return strcmp(info->family, "6000") != 0;
 }
 
 static bool iwl_family_needs_apmg(const char *family)
@@ -994,7 +1006,8 @@ static bool iwl_family_needs_apmg(const char *family)
     if (!family) {
         return false;
     }
-    return strcmp(family, "3160") == 0 ||
+    return strcmp(family, "6000") == 0 ||
+           strcmp(family, "3160") == 0 ||
            strcmp(family, "3165") == 0 ||
            strcmp(family, "3168") == 0 ||
            strcmp(family, "7260") == 0 ||
@@ -1076,6 +1089,10 @@ static int iwl_memcmp_fixed(const uint8_t *a, const uint8_t *b, size_t len)
     return 0;
 }
 
+static void iwl_poll_rx_notifications(struct iwlwifi_state *st);
+static int iwl_send_cmd(struct iwlwifi_state *st, uint8_t code,
+                        const void *payload, size_t payload_len, bool wait_resp);
+
 static uint16_t iwl_default_rxchain(void)
 {
     uint16_t chains = 0x7;
@@ -1085,6 +1102,86 @@ static uint16_t iwl_default_rxchain(void)
            IWL_RXCHAIN_FORCE_MIMO_SEL(chains) |
            IWL_RXCHAIN_IDLE_COUNT(1) |
            IWL_RXCHAIN_MIMO_COUNT(1);
+}
+
+static void iwl_legacy_settle(struct iwlwifi_state *st, uint64_t ticks)
+{
+    if (!st) {
+        return;
+    }
+    uint64_t start = pit_ticks();
+    while (pit_ticks() - start < ticks) {
+        iwl_poll_rx_notifications(st);
+        __asm__ volatile("pause");
+    }
+}
+
+static int iwl_prepare_legacy_broadcast_node(struct iwlwifi_state *st)
+{
+    if (!st || st->modern_transport) {
+        return -1;
+    }
+    if (st->legacy_bcast_node_ready) {
+        log_info("iwlwifi", "legacy broadcast station already ready id=%u",
+                 (uint32_t)st->legacy_bcast_sta_id);
+        return 0;
+    }
+
+    struct iwl_node_info node;
+    memset(&node, 0, sizeof(node));
+    iwl_mac_broadcast(node.macaddr);
+    node.control = 0;
+    node.id = st->legacy_bcast_sta_id ? st->legacy_bcast_sta_id : IWL_ID_BCAST;
+
+    log_info("iwlwifi", "legacy broadcast station add begin id=%u control=%u alive=%u running=%u",
+             (uint32_t)node.id, (uint32_t)node.control,
+             st->firmware_alive ? 1u : 0u, st->firmware_running ? 1u : 0u);
+
+    int rc = iwl_send_cmd(st, IWL_CMD_ADD_NODE, &node, sizeof(node), true);
+    if (rc < 0) {
+        log_warn("iwlwifi", "legacy broadcast station add failed (%d id=%u control=%u alive=%u running=%u)",
+                 rc, (uint32_t)node.id, (uint32_t)node.control,
+                 st->firmware_alive ? 1u : 0u, st->firmware_running ? 1u : 0u);
+        return rc;
+    }
+
+    st->legacy_bcast_sta_id = node.id;
+    st->legacy_bcast_node_ready = true;
+    log_info("iwlwifi", "legacy broadcast station prepared as id=%u",
+             (uint32_t)st->legacy_bcast_sta_id);
+    return 0;
+}
+
+static int iwl_commit_legacy_rxon(struct iwlwifi_state *st,
+                                  const struct iwl_rxon *rxon,
+                                  const char *context)
+{
+    if (!st || !rxon) {
+        return -1;
+    }
+
+    /*
+     * Legacy DVM RXON behaves like a state commit. Submit it and let the
+     * firmware settle instead of requiring a matching synchronous reply.
+     */
+    int rc = iwl_send_cmd(st, IWL_CMD_RXON, rxon, sizeof(*rxon), false);
+    if (rc < 0) {
+        log_warn("iwlwifi", "legacy %s RXON submit failed (%d)",
+                 context ? context : "runtime", rc);
+        return rc;
+    }
+
+    iwl_legacy_settle(st, 20);
+    log_info("iwlwifi", "legacy %s RXON settled alive=%u running=%u assoc=%u chan=%u filter=%08x",
+             context ? context : "runtime",
+             st->firmware_alive ? 1u : 0u, st->firmware_running ? 1u : 0u,
+             st->associated ? 1u : 0u, (uint32_t)rxon->chan, rxon->filter);
+    if (!st->firmware_alive || !st->firmware_running) {
+        log_warn("iwlwifi", "legacy %s RXON lost firmware-ready state",
+                 context ? context : "runtime");
+        return -3;
+    }
+    return 0;
 }
 
 static void iwl_cache_ap(struct iwlwifi_state *st, const char *ssid,
@@ -3350,7 +3447,7 @@ static int iwl_send_scan_rxon(struct iwlwifi_state *st, const struct net_iface *
     rxon.ht_dual_mask = 0xff;
     rxon.ht_triple_mask = 0xff;
 
-    int rc = iwl_send_cmd(st, IWL_CMD_RXON, &rxon, sizeof(rxon), true);
+    int rc = iwl_commit_legacy_rxon(st, &rxon, "scan");
     if (rc < 0) {
         log_warn("iwlwifi", "%s RXON scan config failed (%d)", iface->name, rc);
         return rc;
@@ -3401,13 +3498,22 @@ static int iwl_send_scan_command(struct iwlwifi_state *st, const struct net_ifac
     if (!st || !iface) {
         return -1;
     }
+    bool passive_only = false;
+    if (!st->modern_transport && !st->legacy_bcast_node_ready) {
+        int prep_rc = iwl_prepare_legacy_broadcast_node(st);
+        if (prep_rc < 0) {
+            log_warn("iwlwifi", "%s scan continuing without prepared legacy broadcast station (%d)",
+                     iface->name, prep_rc);
+            passive_only = true;
+        }
+    }
 
     uint8_t buf[IWL_CMD_DATA_SIZE];
     memset(buf, 0, sizeof(buf));
     struct iwl_scan_hdr *hdr = (struct iwl_scan_hdr *)buf;
     hdr->quiet_time = 10;
     hdr->quiet_threshold = 1;
-    hdr->crc_threshold = ssid && ssid[0] ? 1 : IWL_SCAN_CRC_NEVER;
+    hdr->crc_threshold = (!passive_only && ssid && ssid[0]) ? 1 : IWL_SCAN_CRC_NEVER;
     hdr->rxchain = iwl_default_rxchain();
     hdr->max_svc = 250 * 1024;
     hdr->pause_svc = (4u << 22) | (100u * 1024);
@@ -3417,11 +3523,11 @@ static int iwl_send_scan_command(struct iwlwifi_state *st, const struct net_ifac
     struct iwl_cmd_data *tx = (struct iwl_cmd_data *)(hdr + 1);
     tx->flags = IWL_TX_AUTO_SEQ;
     tx->rate = 10 | IWL_RFLAG_CCK | IWL_RFLAG_ANT(1);
-    tx->id = 15;
+    tx->id = st->legacy_bcast_node_ready ? st->legacy_bcast_sta_id : 0xff;
     tx->lifetime = IWL_LIFETIME_INFINITE;
 
     struct iwl_scan_essid *essid = (struct iwl_scan_essid *)(tx + 1);
-    if (ssid && ssid[0]) {
+    if (!passive_only && ssid && ssid[0]) {
         size_t raw_len = strlen(ssid);
         uint8_t ssid_len = raw_len > 32 ? 32 : (uint8_t)raw_len;
         essid[0].id = IEEE80211_ELEMID_SSID;
@@ -3430,11 +3536,14 @@ static int iwl_send_scan_command(struct iwlwifi_state *st, const struct net_ifac
     }
 
     uint8_t *probe = (uint8_t *)(essid + 20);
-    size_t probe_len = iwl_build_probe_request(probe,
-                                               sizeof(buf) - (size_t)(probe - buf),
-                                               iface->mac, ssid);
-    if (probe_len == 0) {
-        return -2;
+    size_t probe_len = 0;
+    if (!passive_only) {
+        probe_len = iwl_build_probe_request(probe,
+                                            sizeof(buf) - (size_t)(probe - buf),
+                                            iface->mac, ssid);
+        if (probe_len == 0) {
+            return -2;
+        }
     }
     tx->len = (uint16_t)probe_len;
 
@@ -3444,8 +3553,9 @@ static int iwl_send_scan_command(struct iwlwifi_state *st, const struct net_ifac
         return -3;
     }
     for (size_t i = 0; i < sizeof(channels) / sizeof(channels[0]); i++) {
-        chan[i].flags = (ssid && ssid[0]) ? (IWL_CHAN_ACTIVE | IWL_CHAN_NPBREQS(1))
-                                          : IWL_CHAN_PASSIVE;
+        chan[i].flags = (!passive_only && ssid && ssid[0]) ?
+                            (IWL_CHAN_ACTIVE | IWL_CHAN_NPBREQS(1)) :
+                            IWL_CHAN_PASSIVE;
         chan[i].chan = channels[i];
         chan[i].rf_gain = 0x28;
         chan[i].dsp_gain = 0x6e;
@@ -3458,12 +3568,15 @@ static int iwl_send_scan_command(struct iwlwifi_state *st, const struct net_ifac
     st->scanning = true;
     st->ap_count = 0;
     memset(st->aps, 0, sizeof(st->aps));
-    int rc = iwl_send_cmd(st, IWL_CMD_SCAN, buf, hdr->len, true);
+    int rc = iwl_send_cmd(st, IWL_CMD_SCAN, buf, hdr->len, false);
     if (rc < 0) {
         st->scanning = false;
         log_warn("iwlwifi", "%s scan command failed (%d)", iface->name, rc);
         return rc;
     }
+    log_info("iwlwifi", "%s scan submitted mode=%s sta_id=%u nchan=%u probe_len=%u",
+             iface->name, passive_only ? "passive" : "active",
+             (uint32_t)tx->id, (uint32_t)hdr->nchan, (uint32_t)tx->len);
     return 0;
 }
 
@@ -3534,7 +3647,7 @@ static int iwl_send_bss_rxon(struct iwlwifi_state *st, const struct net_iface *i
     rxon.ht_dual_mask = 0xff;
     rxon.ht_triple_mask = 0xff;
 
-    int rc = iwl_send_cmd(st, IWL_CMD_RXON, &rxon, sizeof(rxon), true);
+    int rc = iwl_commit_legacy_rxon(st, &rxon, "bss");
     if (rc < 0) {
         log_warn("iwlwifi", "%s RXON BSS config failed for %s (%d)",
                  iface->name, ap->ssid, rc);
@@ -3687,6 +3800,27 @@ static size_t iwl_build_assoc_frame(uint8_t *out, size_t out_size,
         p = iwl_append_wpa2_psk_ccmp_rsn(p);
     }
     return (size_t)(p - out);
+}
+
+static size_t iwl_build_deauth_frame(uint8_t *out, size_t out_size,
+                                     const struct net_iface *iface,
+                                     const uint8_t bssid[IEEE80211_ADDR_LEN],
+                                     uint16_t seq, uint16_t reason)
+{
+    if (!out || out_size < sizeof(struct ieee80211_hdr3) + 2 || !iface || !bssid) {
+        return 0;
+    }
+    struct ieee80211_hdr3 *hdr = (struct ieee80211_hdr3 *)out;
+    memset(hdr, 0, sizeof(*hdr));
+    hdr->fc[0] = IEEE80211_FC0_TYPE_MGT | IEEE80211_FC0_SUBTYPE_DEAUTH;
+    memcpy(hdr->addr1, bssid, IEEE80211_ADDR_LEN);
+    memcpy(hdr->addr2, iface->mac, IEEE80211_ADDR_LEN);
+    memcpy(hdr->addr3, bssid, IEEE80211_ADDR_LEN);
+    put_le16(hdr->seq, (uint16_t)(seq << 4));
+
+    uint8_t *body = out + sizeof(*hdr);
+    put_le16(body, reason);
+    return sizeof(*hdr) + 2;
 }
 
 static int iwl_wait_for_auth(struct iwlwifi_state *st)
@@ -4012,13 +4146,78 @@ static int iwl_execute_runtime_firmware(struct iwlwifi_state *st)
         return iwl_mvm_post_alive_init(st);
     }
 
-    /* DVM path — load sections then start */
-    {
+    /*
+     * Legacy DVM parts can ship sectioned firmware too, but unlike the modern
+     * MVM flow they still need a distinct INIT ucode pass before the runtime
+     * image is loaded.
+     */
+    if (modern_sections && st->init_section_count > 0) {
+        int rc2 = iwl_dma_load_sections(st, st->init_sections,
+                                        st->init_section_count, "init");
+        if (rc2 < 0) {
+            return rc2;
+        }
+
+        iwl_write32(st, CSR_INT, 0xffffffffu);
+        iwl_write32(st, CSR_FH_INT_STATUS, 0xffffffffu);
+        iwl_write32(st, CSR_RESET, 0);
+
+        uint32_t init_seen = 0;
+        if (!iwl_wait_int(st, IWL_INT_ALIVE, &init_seen, 100)) {
+            log_warn("iwlwifi", "init firmware did not signal alive (int=%08x)",
+                     init_seen);
+            return -10;
+        }
+
+        uint64_t init_start = pit_ticks();
+        while (!st->firmware_alive && pit_ticks() - init_start < 100) {
+            iwl_poll_rx_notifications(st);
+            __asm__ volatile("pause");
+        }
+        if (!st->firmware_alive) {
+            log_warn("iwlwifi", "init firmware raised ALIVE interrupt but no UC_READY notification was parsed");
+            return -11;
+        }
+        log_info("iwlwifi", "init firmware signaled alive");
+
+        st->firmware_alive = false;
+        st->firmware_running = false;
+
+        int nic_rc = iwl_apm_init(st);
+        if (nic_rc < 0) {
+            log_warn("iwlwifi", "legacy runtime APM re-init failed (%d)", nic_rc);
+            return -7;
+        }
+        st->cmd_queue_ready = false;
+        st->tx_queue_ready = false;
+        nic_rc = iwl_init_rx_ring(st);
+        if (nic_rc < 0) {
+            log_warn("iwlwifi", "legacy runtime RX ring re-init failed (%d)", nic_rc);
+            return -5;
+        }
+        nic_rc = iwl_init_cmd_queue(st);
+        if (nic_rc < 0) {
+            log_warn("iwlwifi", "legacy runtime command queue re-init failed (%d)", nic_rc);
+            return -8;
+        }
+        nic_rc = iwl_init_tx_queue(st);
+        if (nic_rc < 0) {
+            log_warn("iwlwifi", "legacy runtime TX queue re-init failed (%d)", nic_rc);
+            return -9;
+        }
+
+        iwl_write32(st, CSR_INT_MASK, IWL_INT_MASK_MIN);
+        iwl_write32(st, CSR_INT, 0xffffffffu);
+        iwl_write32(st, CSR_FH_INT_STATUS, 0xffffffffu);
+
+        rc2 = iwl_dma_load_sections(st, st->runtime_sections,
+                                    st->runtime_section_count, "runtime");
+        if (rc2 < 0) {
+            return rc2;
+        }
+    } else {
         int rc2;
         if (modern_sections) {
-            rc2 = iwl_dma_load_sections(st, st->init_sections,
-                                        st->init_section_count, "init");
-            if (rc2 < 0) return rc2;
             rc2 = iwl_dma_load_sections(st, st->runtime_sections,
                                         st->runtime_section_count, "runtime");
             if (rc2 < 0) return rc2;
@@ -4062,6 +4261,17 @@ static void iwl_probe_internal_bus(const struct iwlwifi_state *st, const char *i
     if (!st->firmware_staged) {
         return;
     }
+    /*
+     * Legacy 6000-series parts are attached long before the MAC is moved into
+     * the active state by iwl_apm_init(). Probing PRPH that early only creates
+     * a spurious "could not obtain MAC access lock" warning on boot.
+     */
+    uint32_t gp = iwl_read32(st, CSR_GP_CNTRL);
+    bool mac_awake = (gp & IWL_GP_CNTRL_MAC_CLOCK_READY) != 0 &&
+                     (gp & IWL_GP_CNTRL_SLEEP) == 0;
+    if (!st->firmware_alive && !mac_awake) {
+        return;
+    }
     if (iwl_nic_lock(st) < 0) {
         log_warn("iwlwifi", "%s could not obtain MAC access lock for firmware bring-up",
                  ifname);
@@ -4082,8 +4292,20 @@ int iwlwifi_start(struct net_iface *iface)
     if (!st || !st->attached) {
         return -1;
     }
+    log_info("iwlwifi", "%s start enter transport=%s alive=%u running=%u up=%u bcast_ready=%u",
+             iface->name, st->modern_transport ? "modern" : "legacy",
+             st->firmware_alive ? 1u : 0u, st->firmware_running ? 1u : 0u,
+             iface->up ? 1u : 0u, st->legacy_bcast_node_ready ? 1u : 0u);
     if (st->firmware_alive) {
         return 0;
+    }
+    if (!st->firmware_loaded || !st->firmware_parsed) {
+        int load_rc = iwl_load_firmware(st);
+        if (load_rc < 0) {
+            log_warn("iwlwifi", "%s start could not reload firmware (%d)",
+                     iface->name, load_rc);
+            return load_rc;
+        }
     }
     /* Reset MVM phase-tracking before every fresh start attempt */
     if (st->modern_transport) {
@@ -4095,8 +4317,14 @@ int iwlwifi_start(struct net_iface *iface)
         st->phy_db_calib_nch_size  = 0;
         st->phy_db_n_papd          = 0;
         st->phy_db_n_txp           = 0;
+    } else {
+        st->legacy_bcast_node_ready = false;
+        st->legacy_bcast_sta_id = IWL_ID_BCAST;
     }
     int rc = iwl_execute_runtime_firmware(st);
+    log_info("iwlwifi", "%s runtime firmware result rc=%d alive=%u running=%u",
+             iface->name, rc,
+             st->firmware_alive ? 1u : 0u, st->firmware_running ? 1u : 0u);
     if (rc == 0) {
         iface->up = true;
     }
@@ -4179,8 +4407,14 @@ int iwlwifi_scan(struct net_iface *iface)
     if (!st || !st->attached) {
         return -1;
     }
+    log_info("iwlwifi", "%s scan begin alive=%u running=%u up=%u bcast_ready=%u ap_count=%u",
+             iface->name,
+             st->firmware_alive ? 1u : 0u, st->firmware_running ? 1u : 0u,
+             iface->up ? 1u : 0u, st->legacy_bcast_node_ready ? 1u : 0u,
+             (uint32_t)st->ap_count);
     int rc = iwlwifi_start(iface);
     if (rc < 0) {
+        log_warn("iwlwifi", "%s scan abort because start failed (%d)", iface->name, rc);
         return rc;
     }
     if (st->modern_transport) {
@@ -4429,6 +4663,45 @@ const struct iwlwifi_state *iwlwifi_state_for(const struct net_iface *iface)
         return NULL;
     }
     return iface->driver_data;
+}
+
+int iwlwifi_disconnect(struct net_iface *iface)
+{
+    if (!iface || strcmp(iface->driver, "iwlwifi") != 0) {
+        return -1;
+    }
+
+    struct iwlwifi_state *st = iface->driver_data;
+    if (!st) {
+        return -1;
+    }
+
+    if (st->associated && st->link_ready) {
+        uint8_t frame[64];
+        size_t frame_len = iwl_build_deauth_frame(frame, sizeof(frame), iface,
+                                                  st->bssid, st->tx_sequence++,
+                                                  IEEE80211_REASON_UNSPECIFIED);
+        if (frame_len > 0) {
+            int rc = iwl_send_mgmt_frame(st, frame, frame_len, false);
+            if (rc < 0) {
+                log_warn("iwlwifi", "%s deauth transmit failed (%d)", iface->name, rc);
+            }
+        }
+    }
+
+    st->associated = false;
+    st->link_ready = false;
+    st->auth_done = false;
+    st->assoc_done = false;
+    st->wpa_key_msg1 = false;
+    st->wpa_key_msg3 = false;
+    st->wpa_ptk_ready = false;
+    st->wpa_replay_counter = 0;
+    st->ccmp_tx_pn = 0;
+    st->associated_ssid[0] = '\0';
+    memset(st->bssid, 0, sizeof(st->bssid));
+    iface->link = false;
+    return 0;
 }
 
 /* ---------------------------------------------------------------------
