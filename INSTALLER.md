@@ -1,37 +1,23 @@
 # Installer
 
-`sysinstall` in the kernel shell delegates to `/sbin/sysinstall`.
-The old live-image cloning path is intentionally hidden behind:
+`sysinstall` exists both as a userspace program source and as a kernel-shell
+command. In TNU 0.1 it is intentionally safe: it can configure the live system
+identity, root password, and a normal user, but it does not write partition
+tables or install a bootloader because persistent block-device writes are not
+implemented yet.
 
-```sh
-sysinstall --raw-image
-```
+Planned flow:
 
-Do not use raw-image mode for real hardware installs.
+1. Select a disk.
+2. Partition the disk.
+3. Format a TFS root filesystem.
+4. Install GRUB or Limine.
+5. Copy the base system.
+6. Set hostname.
+7. Set root password.
+8. Create a normal user.
 
-## Disk Layout
-
-The real installer creates and formats the disk itself:
-
-1. BIOS Boot Partition, LBAs 34-2047.
-2. EFI System Partition, 256 MiB FAT32.
-3. TFS root partition.
-
-TFS is the default and only root filesystem in the normal installer flow.
-
-## Native Formatting
-
-`/sbin/sysinstall` no longer requires `mkfs.vfat`, `mount`, `umount`, or
-`grub-install` to format the disk. It writes:
-
-- protective MBR
-- primary and backup GPT
-- BIOS Boot partition entry
-- FAT32 ESP
-- `/EFI/BOOT/BOOTX64.EFI`
-- `/boot/kernel.elf`
-- `/boot/grub/grub.cfg`
-- TFS root generated from the live root filesystem
-
-The BIOS Boot partition is reserved for native GRUB core embedding. UEFI
-removable boot files are installed directly into the ESP.
+The command is structured so disk operations can be connected once ATA/AHCI
+write support, a persistent TFS allocator, and a bootloader writer are ready.
+Until then, `/etc/passwd`, `/etc/shadow`, created users, files, and directories
+are live-session state only.

@@ -3,6 +3,7 @@
 #include <getopt.h>
 #include <glob.h>
 #include <langinfo.h>
+#include <locale.h>
 #include <libgen.h>
 #include <pwd.h>
 #include <regex.h>
@@ -100,6 +101,8 @@ int getopt_long(int argc, char *const argv[], const char *optstring,
 
 char *getenv(const char *name)
 {
+    const char *locale;
+
     if (!name) {
         return NULL;
     }
@@ -107,6 +110,10 @@ char *getenv(const char *name)
     if (strcmp(name, "HOME") == 0) return "/root";
     if (strcmp(name, "SHELL") == 0) return "/bin/tsh";
     if (strcmp(name, "TMPDIR") == 0) return "/tmp";
+    if (strcmp(name, "LANG") == 0 || strcmp(name, "LC_ALL") == 0) {
+        locale = setlocale(LC_ALL, "");
+        return (!locale || strcmp(locale, "C") == 0) ? "en_US" : (char *)locale;
+    }
     return NULL;
 }
 
@@ -148,12 +155,10 @@ uid_t geteuid(void)
 
 int kill(pid_t pid, int sig)
 {
-    int rc = (int)tnu_syscall(SYS_KILL, pid, sig, 0, 0, 0, 0);
-    if (rc < 0) {
-        errno = ESRCH;
-        return -1;
-    }
-    return 0;
+    (void)pid;
+    (void)sig;
+    errno = ENOSYS;
+    return -1;
 }
 
 pid_t fork(void)
@@ -386,8 +391,12 @@ int iswblank(wint_t wc)
 
 char *nl_langinfo(nl_item item)
 {
-    (void)item;
-    return "ASCII";
+    const char *locale = setlocale(LC_ALL, NULL);
+
+    if (item == CODESET) {
+        return (!locale || strcmp(locale, "C") == 0) ? "ASCII" : "CP437";
+    }
+    return "";
 }
 
 char *realpath(const char *path, char *resolved_path)
@@ -537,7 +546,7 @@ long long atoll(const char *s)
 static char env_buf[256][128];
 static size_t env_count;
 
-char *getenv(const char *name);  /* forward — defined in posix_stubs.c */
+char *getenv(const char *name);  /* forward — defined above */
 
 int setenv(const char *name, const char *value, int overwrite)
 {

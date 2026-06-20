@@ -61,6 +61,16 @@ uint64_t cpu_read_cr2(void)
     return value;
 }
 
+uint64_t cpu_get_fs_base(void)
+{
+    return rdmsr(0xc0000100);
+}
+
+void cpu_set_fs_base(uint64_t base)
+{
+    wrmsr(0xc0000100, base);
+}
+
 void cpu_init_fpu(void)
 {
     uint32_t a, b, c, d;
@@ -90,16 +100,6 @@ void cpu_init_fpu(void)
     }
 
     __asm__ volatile("fninit");
-}
-
-void cpu_set_fs_base(uint64_t base)
-{
-    wrmsr(0xc0000100, base);
-}
-
-uint64_t cpu_get_fs_base(void)
-{
-    return rdmsr(0xc0000100);
 }
 
 void syscall_init(void)

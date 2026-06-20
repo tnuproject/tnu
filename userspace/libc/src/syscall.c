@@ -345,12 +345,12 @@ int fdatasync(int fd)
 
 int shutdown(void)
 {
-    return (int)tnu_syscall(SYS_SHUTDOWN, 0, 0, 0, 0, 0, 0);
+    return (int)tnu_syscall(44, 0, 0, 0, 0, 0, 0);
 }
 
 int reboot(void)
 {
-    return (int)tnu_syscall(SYS_REBOOT, 0, 0, 0, 0, 0, 0);
+    return (int)tnu_syscall(45, 0, 0, 0, 0, 0, 0);
 }
 int wifi_scan(struct wifi_ap *out, size_t max_aps)
 {
@@ -361,11 +361,6 @@ int wifi_connect(const char *iface, const char *ssid, const char *passphrase)
 {
     return (int)tnu_syscall(SYS_WIFI_CONNECT, (long)iface, (long)ssid,
                             (long)passphrase, 0, 0, 0);
-}
-
-int wifi_disconnect(const char *iface)
-{
-    return (int)tnu_syscall(SYS_WIFI_DISCONNECT, (long)iface, 0, 0, 0, 0, 0);
 }
 
 int wifi_status(struct wifi_status *out)

@@ -84,12 +84,6 @@ const struct net_iface *net_iface_get(size_t index);
 const struct net_iface *net_iface_find(const char *name);
 const char *net_iface_type_name(enum net_iface_type type);
 int net_ping4(uint32_t ipv4, uint16_t sequence, uint32_t *latency_ms);
-int net_socket_create(int domain, int type, int protocol);
-bool net_socket_is_open(int fd);
-int net_socket_close(int fd);
-int net_socket_connect(int fd, uint32_t remote_ip, uint16_t remote_port);
-ssize_t net_socket_send(int fd, const void *buf, size_t len);
-ssize_t net_socket_recv(int fd, void *buf, size_t len);
 int net_resolve4(const char *host, uint32_t *out_ipv4);
 uint32_t net_parse_ipv4(const char *s);
 void net_format_ipv4(uint32_t ip, char *out, size_t out_size);
@@ -99,9 +93,16 @@ int net_iface_set_up(const char *name, bool up);
 int net_iface_dhcp(const char *name);
 int net_wifi_scan(void);
 int net_wifi_connect(const char *iface, const char *ssid, const char *passphrase);
-int net_wifi_disconnect(const char *iface);
 int net_wifi_autoconnect(void);
 int net_wifi_scan_results(struct wifi_ap *out, size_t max_aps);
 int net_wifi_status(struct wifi_status *out);
+
+/* Socket API (stub implementations for Linux compatibility) */
+int net_socket_create(int domain, int type, int protocol);
+bool net_socket_is_open(int sockfd);
+int net_socket_connect(int sockfd, uint32_t ip, uint16_t port);
+ssize_t net_socket_send(int sockfd, const void *buf, size_t len);
+ssize_t net_socket_recv(int sockfd, void *buf, size_t len);
+int net_socket_close(int sockfd);
 
 #endif

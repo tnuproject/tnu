@@ -59,19 +59,18 @@ enum syscall_number {
     SYS_SHUTDOWN = 44,
     SYS_REBOOT = 45,
     SYS_SET_PASSWORD = 46,
-    SYS_RESOLVE4 = 47,
-    SYS_SOCKET = 48,
-    SYS_CONNECT = 49,
-    SYS_SEND = 50,
-    SYS_RECV = 51,
-    SYS_WIFI_DISCONNECT = 52,
-    SYS_TFS_INSTALL_ROOT = 53,
-    SYS_KILL = 54,
+    SYS_ADD_USER = 47,
+    SYS_DEL_USER = 48,
+    /* Network syscalls */
+    SYS_RESOLVE4 = 49,
+    SYS_SOCKET = 50,
+    SYS_CONNECT = 51,
+    SYS_SEND = 52,
+    SYS_RECV = 53,
 };
 
 int wifi_scan(struct wifi_ap *out, size_t max_aps);
 int wifi_connect(const char *iface, const char *ssid, const char *passphrase);
-int wifi_disconnect(const char *iface);
 int wifi_status(struct wifi_status *out);
 int resolve4(const char *host, uint32_t *out_ipv4);
 

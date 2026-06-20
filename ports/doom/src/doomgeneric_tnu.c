@@ -20,6 +20,8 @@
 #include <time.h>
 #include <tnu/syscall.h>
 
+extern int nanosleep(const struct timespec *req, struct timespec *rem);
+
 /* ------------------------------------------------------------------ */
 /* TNU framebuffer                                                      */
 /* ------------------------------------------------------------------ */
@@ -134,15 +136,6 @@ void DG_Init(void)
     /* Open keyboard in NON-BLOCKING mode to prevent hangs in checkKeys() */
     kbd_fd = open("/dev/input/kbd", O_RDONLY | O_NONBLOCK);
 
-    /* Flush any stale keyboard events from the buffer to prevent phantom keypresses
-     * at startup. Read and discard all pending events. */
-    if (kbd_fd >= 0) {
-        uint16_t discard_buf[256];
-        while (read(kbd_fd, discard_buf, sizeof(discard_buf)) > 0) {
-            /* Keep reading until buffer is empty */
-        }
-    }
-
     if (fb_fd >= 0) {
         struct syscall_fb_info info;
         int ret = ioctl(fb_fd, TNU_IOCTL_FB_GETINFO, &info);
@@ -243,15 +236,11 @@ void DG_SleepMs(uint32_t ms)
     /* Use nanosleep syscall if available (preferred), otherwise fall back to
      * a bounded busy-wait with yield to prevent infinite loops on systems
      * where uptime_ms might be stuck at 0 or overflow. */
-    struct {
-        int64_t tv_sec;
-        int64_t tv_nsec;
-    } req;
-    req.tv_sec = (int64_t)(ms / 1000);
-    req.tv_nsec = (int64_t)((ms % 1000) * 1000000);
+    struct timespec req;
+    req.tv_sec = (time_t)(ms / 1000);
+    req.tv_nsec = (long)((ms % 1000) * 1000000);
     
-    /* Try nanosleep first (SYS_NANOSLEEP = 29) */
-    long ret = tnu_syscall(29, (long)&req, 0, 0, 0, 0, 0);
+    int ret = nanosleep(&req, NULL);
     
     /* Drain keyboard buffer during sleep to prevent event overflow.
      * This fixes the bug where doom stops receiving input after a few minutes
@@ -262,7 +251,7 @@ void DG_SleepMs(uint32_t ms)
 
     /* Fallback: bounded busy-wait with early exit if uptime doesn't advance.
      * This prevents infinite loops when uptime_ms is broken or stuck at 0. */
-    uint64_t start = (uint64_t)tnu_syscall(SYS_UPTIME_MS, 0, 0, 0, 0, 0, 0);
+    uint64_t start = uptime_ms();
     if (start == 0) {
         /* Timer not initialized yet — just yield once and return */
         __asm__ volatile("pause");
@@ -274,7 +263,7 @@ void DG_SleepMs(uint32_t ms)
     uint32_t iterations = 0;
     uint64_t last_time = start;
 
-    while ((uint64_t)tnu_syscall(SYS_UPTIME_MS, 0, 0, 0, 0, 0, 0) < end) {
+    while (uptime_ms() < end) {
         __asm__ volatile("pause");
         
         /* Drain keyboard periodically during busy-wait */
@@ -285,7 +274,7 @@ void DG_SleepMs(uint32_t ms)
         /* Safety: if we've iterated 100000 times without time advancing,
          * assume the timer is stuck and break out to prevent hang. */
         if (++iterations > 100000) {
-            uint64_t now = (uint64_t)tnu_syscall(SYS_UPTIME_MS, 0, 0, 0, 0, 0, 0);
+            uint64_t now = uptime_ms();
             if (now == last_time) {
                 /* Time is stuck — abort sleep to prevent infinite loop */
                 checkKeys();
@@ -302,7 +291,7 @@ void DG_SleepMs(uint32_t ms)
 
 uint32_t DG_GetTicksMs(void)
 {
-    return (uint32_t)tnu_syscall(SYS_UPTIME_MS, 0, 0, 0, 0, 0, 0);
+    return (uint32_t)uptime_ms();
 }
 
 int DG_GetKey(int *pressed, unsigned char *doomKey)
@@ -335,37 +324,6 @@ static const char *wad_for_version(int ver)
     }
 }
 
-static int readable_file(const char *path)
-{
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) {
-        return 0;
-    }
-    close(fd);
-    return 1;
-}
-
-static const char *default_wad_path(void)
-{
-    static const char *const candidates[] = {
-        "/usr/share/games/doom/Doom1.WAD",
-        "/usr/share/games/doom/doom1.wad",
-        "/usr/share/games/doom/DOOM1.WAD",
-        "/usr/share/games/doom/freedoom1.wad",
-        "/usr/share/games/doom/freedoom2.wad",
-        "/usr/linux/usr/share/games/doom/Doom1.WAD",
-        "/usr/linux/usr/share/games/doom/doom1.wad",
-        "/usr/linux/usr/share/games/doom/freedoom1.wad",
-        "/usr/linux/usr/share/games/doom/freedoom2.wad",
-    };
-    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
-        if (readable_file(candidates[i])) {
-            return candidates[i];
-        }
-    }
-    return "/usr/share/games/doom/Doom1.WAD";
-}
-
 static int has_iwad_argument(int argc, char **argv)
 {
     for (int i = 1; i < argc; i++) {
@@ -378,15 +336,12 @@ static int has_iwad_argument(int argc, char **argv)
 
 int main(int argc, char **argv)
 {
-    /* Scan argv for --version=N or a direct WAD path argument.
-     * Usage: doom [/path/to/file.WAD] [-iwad /path/to/file.WAD] [other args]
-     * If the first argument (argv[1]) ends with .WAD/.wad and is not preceded by -iwad,
-     * treat it as the IWAD path.  Otherwise use the default shareware WAD. */
-        const char *wad_path = has_iwad_argument(argc, argv) ? NULL : default_wad_path();
-    const char *direct_wad_path = NULL;
+    /* Scan argv for --version=N; strip it and inject -iwad <path>.  If the
+       user does not provide an IWAD, boot the preinstalled shareware WAD. */
+    const char *wad_path = has_iwad_argument(argc, argv) ? NULL
+                                                         : "/usr/share/games/doom/Doom1.WAD";
     static char *new_argv[64];
     int new_argc = 0;
-
 
     for (int i = 0; i < argc && new_argc < 62; i++) {
         if (strncmp(argv[i], "--version=", 10) == 0) {
@@ -396,45 +351,21 @@ int main(int argc, char **argv)
                 fprintf(stderr, "doom: unknown --version=%d (use 1, 2 or 3)\n", ver);
                 return 1;
             }
-        } else if (i == 1 && !has_iwad_argument(argc, argv)) {
-            /* First arg after program name — check if it's a WAD path */
-            size_t len = strlen(argv[i]);
-                        if (len > 4 && 
-                (strcmp(argv[i] + len - 4, ".WAD") == 0 || 
-                 strcmp(argv[i] + len - 4, ".wad") == 0)) {
-                /* User provided a WAD path directly: doom /path/to/file.WAD
-                 * Convert it to Doom's expected form: -iwad /path/to/file.WAD
-                 */
-                direct_wad_path = argv[i];
-                wad_path = NULL;
-                continue;
-            }
-
-            new_argv[new_argc++] = argv[i];
         } else {
             new_argv[new_argc++] = argv[i];
         }
     }
 
-    const char *selected_iwad = direct_wad_path ? direct_wad_path : wad_path;
-    if (selected_iwad) {
-        fprintf(stderr, "doom: checking WAD file: %s\n", selected_iwad);
-        if (!readable_file(selected_iwad)) {
-            fprintf(stderr, "doom: WAD not found: %s\n", selected_iwad);
-            fprintf(stderr, "doom: try doom -iwad /usr/share/games/doom/Doom1.WAD\n");
-            return 1;
+    if (wad_path) {
+        /* Inject -iwad <path> right after argv[0] */
+        if (new_argc + 2 <= 63) {
+            /* shift everything after argv[0] up by 2 */
+            for (int i = new_argc - 1; i >= 1; i--)
+                new_argv[i + 2] = new_argv[i];
+            new_argv[1] = (char *)"-iwad";
+            new_argv[2] = (char *)wad_path;
+            new_argc += 2;
         }
-        fprintf(stderr, "doom: WAD file found, loading...\n");
-        if (new_argc + 2 > 63) {
-            fprintf(stderr, "doom: too many arguments\n");
-            return 1;
-        }
-        for (int i = new_argc - 1; i >= 1; i--) {
-            new_argv[i + 2] = new_argv[i];
-        }
-        new_argv[1] = "-iwad";
-        new_argv[2] = (char *)selected_iwad;
-        new_argc += 2;
     }
 
     new_argv[new_argc] = NULL;

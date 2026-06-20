@@ -64,8 +64,6 @@ int mkdir(const char *path, mode_t mode);
 int rmdir(const char *path);
 /* timing */
 uint64_t uptime_ms(void);
-unsigned int sleep(unsigned int seconds);
-int usleep(unsigned long usec);
 
 /* memory */
 void *sbrk(intptr_t increment);

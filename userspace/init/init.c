@@ -5,14 +5,11 @@ int main(int argc, char **argv)
 {
     (void)argc;
     (void)argv;
-    println("init: starting login");
-    int pid = spawn("/bin/login");
-    if (pid < 0) {
-        pid = spawn("/sbin/login");
-    }
+    println("bootd: starting /bin/tsh");
+    int pid = spawn("/bin/tsh");
     if (pid >= 0) {
         wait(pid);
     }
-    println("init: login exited");
+    println("bootd: shell exited");
     return 0;
 }

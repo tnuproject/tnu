@@ -119,9 +119,6 @@ void usb_hid_keyboard_handle_report(const uint8_t report[8])
     const uint8_t modifiers = report[0];
     const uint8_t *keys = report + 2;
     hid_keyboard_seen = true;
-    for (size_t i = 0; i < controller_count; i++) {
-        controllers[i].hid_ready = true;
-    }
 
     if (keys[0] == 1 || keys[0] == 2 || keys[0] == 3) {
         log_warn("usb", "HID keyboard rollover/error report ignored");
@@ -239,8 +236,6 @@ void usb_init(void)
         info->prog_if = dev->prog_if;
         info->driver = driver_name(info->type);
         info->hid_ready = false;
-        info->host_ready = false;
-        info->inventory_only = true;
         log_info("usb", "%s controller %02x:%02x.%u vendor=%04x device=%04x driver=%s",
                  usb_controller_type_name(info->type), info->bus, info->slot,
                  info->function, info->vendor_id, info->device_id, info->driver);
@@ -248,8 +243,7 @@ void usb_init(void)
     if (!controller_count) {
         log_info("usb", "no USB controller detected");
     } else {
-        log_info("usb", "USB HID keyboard decoder is available");
-        log_warn("usb", "USB host-controller runtime is still inventory-only; polling/enumeration is not implemented yet");
+        log_info("usb", "USB HID keyboard decoder is available; host-controller polling is pending");
         log_info("usb", "PS/2 keyboard emulation remains available when firmware provides it");
     }
 }

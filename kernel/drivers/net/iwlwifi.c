@@ -2049,30 +2049,27 @@ static int iwl_alloc_firmware_dma(struct iwlwifi_state *st)
         return 0;
     }
 
-    /* Use kernel heap allocation for firmware DMA buffer.
-     * Try with smaller size first (256 KiB), then fall back to 512 KiB. */
-    size_t size = IWL_FW_DMA_SIZE; /* 512 KiB */
-    
-    /* Try smaller buffer if 512 KiB fails */
-    if (size > 256 * 1024) {
-        size = 256 * 1024;
+    size_t pages = (IWL_FW_DMA_SIZE + PAGE_SIZE - 1) / PAGE_SIZE;
+    uintptr_t first = 0;
+    uintptr_t prev = 0;
+    for (size_t i = 0; i < pages; i++) {
+        uintptr_t frame = pmm_alloc_frame();
+        if (!frame) {
+            return -1;
+        }
+        if (i == 0) {
+            first = frame;
+        } else if (frame != prev + PAGE_SIZE) {
+            return -1;
+        }
+        prev = frame;
     }
-    
-    st->firmware_dma = kmalloc(size + PAGE_SIZE);
-    if (!st->firmware_dma) {
-        log_warn("iwlwifi", "firmware DMA buffer allocation failed (%zu bytes)", size);
+    if (vmm_map_range_identity(first, pages * PAGE_SIZE, 0) < 0) {
         return -1;
     }
-    
-    /* Align to page boundary */
-    uintptr_t aligned = ((uintptr_t)st->firmware_dma + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
-    st->firmware_dma = (void *)aligned;
-    st->firmware_dma_phys = aligned;
-    st->firmware_dma_size = size;
-    memset(st->firmware_dma, 0, size);
-    
-    log_info("iwlwifi", "firmware DMA buffer: %p phys=%p size=%zu KiB",
-             st->firmware_dma, (void *)st->firmware_dma_phys, size / 1024);
+    st->firmware_dma = (void *)first;
+    st->firmware_dma_phys = first;
+    st->firmware_dma_size = pages * PAGE_SIZE;
     return 0;
 }
 
@@ -2080,9 +2077,7 @@ static int iwl_stage_firmware_dma(struct iwlwifi_state *st,
                                   const struct iwlwifi_fw_part *part)
 {
     size_t total = (size_t)part->text_size + part->data_size;
-    if (!part_present(part) || total > st->firmware_dma_size) {
-        log_warn("iwlwifi", "firmware section too large (%zu bytes, buffer is %zu bytes)",
-                 total, st->firmware_dma_size);
+    if (!part_present(part) || total > IWL_FW_DMA_SIZE) {
         return -1;
     }
     if (iwl_alloc_firmware_dma(st) < 0) {
@@ -2158,13 +2153,6 @@ static int iwl_init_rx_ring(struct iwlwifi_state *st)
 {
     if (iwl_alloc_rx_dma(st) < 0) {
         return -1;
-    }
-    st->rx_index = 0;
-    memset(st->rx_status, 0, PAGE_SIZE);
-    memset(st->rx_buffers, 0, IWL_RX_RING_COUNT * IWL_RX_BUF_SIZE);
-    for (size_t i = 0; i < IWL_RX_RING_COUNT; i++) {
-        st->rx_desc[i] = (uint32_t)((st->rx_buffers_phys +
-                                     i * IWL_RX_BUF_SIZE) >> 8);
     }
     iwl_write32(st, FH_RX_CONFIG, 0);
     iwl_write32(st, FH_RX_WPTR, 0);
@@ -3186,7 +3174,7 @@ static int iwl_mvm_scan(struct iwlwifi_state *st, const struct net_iface *iface,
     iwl_mvm_mac_ctx_cmd(st, iface, NULL, MVM_CTXT_ACTION_REMOVE, false, 0, 0);
 
     log_info("iwlwifi", "%s MVM scan done, %u AP(s) found", iface->name, (uint32_t)st->ap_count);
-    return 0;
+    return st->ap_count > 0 ? 0 : -10;
 }
 
 /*
@@ -3837,30 +3825,6 @@ static bool iwl_uses_legacy_4965_path(const struct iwlwifi_state *st)
     return false; /* no 4965 in our device table */
 }
 
-static int iwl_mark_firmware_start_failed(struct iwlwifi_state *st, int rc,
-                                          const char *reason)
-{
-    if (!st) {
-        return rc;
-    }
-    st->firmware_running = false;
-    st->firmware_alive = false;
-    st->mvm_alive = false;
-    st->mvm_fw_ready = false;
-    st->firmware_start_blocked = true;
-    st->firmware_block_reported = false;
-    st->last_start_error = rc;
-    if (st->iface) {
-        st->iface->up = false;
-        st->iface->link = false;
-    }
-    iwl_write32(st, CSR_INT_MASK, 0);
-    iwl_write32(st, CSR_INT, 0xffffffffu);
-    iwl_write32(st, CSR_FH_INT_STATUS, 0xffffffffu);
-    log_warn("iwlwifi", "firmware start failed: %s", reason);
-    return rc;
-}
-
 static int iwl_execute_runtime_firmware(struct iwlwifi_state *st)
 {
     bool modern_sections = st->runtime_section_count > 0;
@@ -3932,7 +3896,7 @@ static int iwl_execute_runtime_firmware(struct iwlwifi_state *st)
         }
 
         iwl_write32(st, CSR_INT, 0xffffffffu);
-        iwl_write32(st, CSR_RESET, IWL_RESET_LINK_PWR_MGMT_DIS);
+        iwl_write32(st, CSR_RESET, 0);
 
         /* For MVM, INIT alive is sent via RX ring as UC_READY message, not interrupt.
          * Just poll for it. */
@@ -3943,7 +3907,7 @@ static int iwl_execute_runtime_firmware(struct iwlwifi_state *st)
         }
         if (!st->mvm_init_alive_seen) {
             log_warn("iwlwifi", "MVM INIT alive timed out - firmware not responding");
-            return iwl_mark_firmware_start_failed(st, -4, "MVM INIT alive timeout");
+            return -4;
         }
         log_info("iwlwifi", "MVM INIT alive OK");
 
@@ -3965,17 +3929,6 @@ static int iwl_execute_runtime_firmware(struct iwlwifi_state *st)
 
         /* Reset state flags so the RT alive parse works cleanly */
         st->mvm_rt_alive_seen = false;
-
-        /*
-         * Stop INIT firmware before rebuilding phase-2 NIC state.  CSR_RESET
-         * clears FH/RX/TX programming, so it must run before queue setup rather
-         * than after it; otherwise the runtime firmware DMA load can time out.
-         */
-        iwl_setbits(st, CSR_RESET, IWL_RESET_SW | IWL_RESET_LINK_PWR_MGMT_DIS);
-        iwl_short_delay();
-        iwl_write32(st, CSR_INT_MASK, 0);
-        iwl_write32(st, CSR_INT, 0xffffffffu);
-        iwl_write32(st, CSR_FH_INT_STATUS, 0xffffffffu);
 
         /*
          * Phase 1→2 transition: re-initialize the NIC hardware before loading
@@ -4039,17 +3992,17 @@ static int iwl_execute_runtime_firmware(struct iwlwifi_state *st)
         }
 
         iwl_write32(st, CSR_INT, 0xffffffffu);
-        iwl_write32(st, CSR_RESET, IWL_RESET_LINK_PWR_MGMT_DIS);
+        iwl_write32(st, CSR_RESET, 0);
 
         /* For MVM, RT alive is sent via RX ring as UC_READY message, not interrupt. */
         t = pit_ticks();
-        while (!st->mvm_rt_alive_seen && pit_ticks() - t < 2000) {
+        while (!st->mvm_rt_alive_seen && pit_ticks() - t < 800) {
             iwl_poll_rx_notifications(st);
             __asm__ volatile("pause");
         }
         if (!st->mvm_rt_alive_seen) {
             log_warn("iwlwifi", "MVM RT alive timed out - firmware not responding");
-            return iwl_mark_firmware_start_failed(st, -4, "MVM RT alive timeout");
+            return -4;
         }
         st->mvm_alive          = true;
         st->firmware_alive     = true;
@@ -4082,7 +4035,7 @@ static int iwl_execute_runtime_firmware(struct iwlwifi_state *st)
     }
 
     iwl_write32(st, CSR_INT, 0xffffffffu);
-    iwl_write32(st, CSR_RESET, IWL_RESET_LINK_PWR_MGMT_DIS);
+    iwl_write32(st, CSR_RESET, 0);
 
     uint32_t seen = 0;
     if (!iwl_wait_int(st, IWL_INT_ALIVE, &seen, 100)) {
@@ -4132,15 +4085,6 @@ int iwlwifi_start(struct net_iface *iface)
     if (st->firmware_alive) {
         return 0;
     }
-    if (st->firmware_start_blocked) {
-        if (!st->firmware_block_reported) {
-            log_warn("iwlwifi", "%s retrying firmware start after previous failure (%d)",
-                     iface->name, st->last_start_error);
-            st->firmware_block_reported = true;
-        }
-        st->firmware_start_blocked = false;
-        st->last_start_error = 0;
-    }
     /* Reset MVM phase-tracking before every fresh start attempt */
     if (st->modern_transport) {
         st->mvm_init_alive_seen = false;
@@ -4155,8 +4099,6 @@ int iwlwifi_start(struct net_iface *iface)
     int rc = iwl_execute_runtime_firmware(st);
     if (rc == 0) {
         iface->up = true;
-    } else if (!st->firmware_start_blocked) {
-        iwl_mark_firmware_start_failed(st, rc, "firmware bring-up failed");
     }
     return rc;
 }
@@ -4265,9 +4207,9 @@ int iwlwifi_scan(struct net_iface *iface)
     st->scanning = false;
 
     if (st->ap_count == 0) {
-        log_info("iwlwifi", "%s scan completed with no AP beacons/probe responses parsed",
+        log_warn("iwlwifi", "%s scan completed but no AP beacons/probe responses were parsed",
                  iface->name);
-        return 0;
+        return -10;
     }
 
     log_info("iwlwifi", "%s scan found %u AP(s)", iface->name, (uint32_t)st->ap_count);
@@ -4395,31 +4337,6 @@ int iwlwifi_associate(struct net_iface *iface, const char *ssid, const char *pas
     return 0;
 }
 
-int iwlwifi_disconnect(struct net_iface *iface)
-{
-    if (!iface || strcmp(iface->driver, "iwlwifi") != 0) {
-        return -1;
-    }
-    struct iwlwifi_state *st = iface->driver_data;
-    if (!st || !st->attached) {
-        return -1;
-    }
-    st->associated = false;
-    st->link_ready = false;
-    st->auth_done = false;
-    st->assoc_done = false;
-    st->wpa_key_msg1 = false;
-    st->wpa_key_msg3 = false;
-    st->wpa_ptk_ready = false;
-    st->associated_ssid[0] = '\0';
-    memset(st->bssid, 0, sizeof(st->bssid));
-    iface->link = false;
-    iface->up = false;
-    iface->ssid = NULL;
-    log_info("iwlwifi", "%s disconnected", iface->name);
-    return 0;
-}
-
 bool iwlwifi_is_supported(const struct pci_device *dev)
 {
     return dev && dev->vendor_id == 0x8086 && dev->class_code == 0x02 &&
@@ -4487,7 +4404,7 @@ int iwlwifi_attach(struct net_iface *iface, const struct pci_device *dev)
     iface->driver = "iwlwifi";
     iface->driver_data = st;
     iface->ops = &iwlwifi_net_ops;
-    iface->configurable = true;
+    iface->configurable = false;
     iface->up = false;
     iface->link = false;
 
@@ -4512,15 +4429,6 @@ const struct iwlwifi_state *iwlwifi_state_for(const struct net_iface *iface)
         return NULL;
     }
     return iface->driver_data;
-}
-
-/* Public interrupt handler - calls iwl_poll_rx_notifications for all attached devices */
-int iwlwifi_poll_rx_notifications_all(void)
-{
-    for (size_t i = 0; i < state_count; i++) {
-        iwl_poll_rx_notifications(&states[i]);
-    }
-    return 0;
 }
 
 /* ---------------------------------------------------------------------

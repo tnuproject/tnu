@@ -14,10 +14,7 @@ struct fs_probe_result {
 };
 
 int ext2_probe(const void *image, size_t size, struct fs_probe_result *out);
-int ext2_mkfs(void *image, size_t size, const char *label);
 int ext4_probe(const void *image, size_t size, struct fs_probe_result *out);
-int ext4_can_mount_rw(const void *image, size_t size);
-int ext4_needs_journal_replay(const void *image, size_t size);
 int fat32_probe(const void *image, size_t size, struct fs_probe_result *out);
 
 #endif

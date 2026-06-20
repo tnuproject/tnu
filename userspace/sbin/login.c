@@ -21,23 +21,6 @@ static int login_session(const char *user, const char *password)
     return (int)tnu_syscall(SYS_LOGIN, (long)user, (long)password, 0, 0, 0, 0);
 }
 
-static void start_bootd_after_login(void)
-{
-    int pid = spawn("/sbin/bootd");
-    if (pid >= 0) {
-        printf("login: bootd started\n");
-        return;
-    }
-
-    pid = spawn("/bin/bootd");
-    if (pid >= 0) {
-        printf("login: bootd started\n");
-        return;
-    }
-
-    printf("login: warning: bootd unavailable\n");
-}
-
 int main(int argc, char **argv)
 {
     char user[64];
@@ -66,8 +49,6 @@ int main(int argc, char **argv)
         printf("login: authentication failed\n");
         return 1;
     }
-
-    start_bootd_after_login();
 
     char *sh_argv[] = { "tsh", NULL };
     execv("/bin/tsh", sh_argv);

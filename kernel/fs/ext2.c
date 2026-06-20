@@ -10,8 +10,6 @@
 #define EXT2_FT_UNKNOWN 0
 #define EXT2_FT_REG_FILE 1
 #define EXT2_FT_DIR 2
-#define EXT2_FEATURE_COMPAT_HAS_JOURNAL 0x0004u
-#define EXT2_FEATURE_INCOMPAT_FILETYPE 0x0002u
 
 struct ext2_superblock {
     uint32_t inodes_count, blocks_count, reserved_blocks_count, free_blocks_count;
@@ -84,8 +82,6 @@ int ext2_probe(const void *image, size_t size, struct fs_probe_result *out)
     const struct ext2_superblock *sb = (const struct ext2_superblock *)((const uint8_t *)image + 1024);
     if (sb->magic != EXT2_SUPER_MAGIC) return -1;
     if (sb->log_block_size > 6 || sb->blocks_count == 0 || sb->inodes_count == 0) return -1;
-    if (sb->feature_compat & EXT2_FEATURE_COMPAT_HAS_JOURNAL) return -1;
-    if (sb->feature_incompat & ~EXT2_FEATURE_INCOMPAT_FILETYPE) return -1;
 
     uint64_t block_size = 1024ull << sb->log_block_size;
     uint64_t total_bytes = block_size * (uint64_t)sb->blocks_count;
@@ -112,10 +108,7 @@ int ext2_mkfs(void *image, size_t size, const char *label)
     memset(image, 0, size);
 
     const uint32_t block_size = 1024;
-    uint32_t blocks = (uint32_t)(size / block_size);
-    if (blocks > block_size * 8) {
-        blocks = block_size * 8;
-    }
+    const uint32_t blocks = (uint32_t)(size / block_size);
     const uint32_t inodes = 1024;
     const uint32_t inode_table_blocks = div_round_up_u32(inodes * EXT2_GOOD_OLD_INODE_SIZE, block_size);
     const uint32_t first_data_block __attribute__((unused)) = 1;
@@ -148,7 +141,6 @@ int ext2_mkfs(void *image, size_t size, const char *label)
     sb->rev_level = 1;
     sb->first_ino = EXT2_GOOD_OLD_FIRST_INO;
     sb->inode_size = EXT2_GOOD_OLD_INODE_SIZE;
-    sb->feature_incompat = EXT2_FEATURE_INCOMPAT_FILETYPE;
     write_label(sb->volume_name, label ? label : "TIRAMISU");
 
     struct ext2_group_desc *gd = (struct ext2_group_desc *)((uint8_t *)image + gd_block * block_size);

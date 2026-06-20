@@ -1,12 +1,10 @@
-# Tiramisù/tnu
+# TNU/Tiramisù ☕
 
 [![GitHub stars](https://img.shields.io/github/stars/tnuproject/tnu?style=for-the-badge)](https://github.com/tnuproject/tnu/stargazers)
-
 [![GitHub forks](https://img.shields.io/github/forks/tnuproject/tnu?style=for-the-badge)](https://github.com/tnuproject/tnu/network)
-
 [![GitHub issues](https://img.shields.io/github/issues/tnuproject/tnu?style=for-the-badge)](https://github.com/tnuproject/tnu/issues)
-
 [![GitHub license](https://img.shields.io/github/license/tnuproject/tnu?style=for-the-badge)](LICENSE)
+[![](https://dcbadge.limes.pink/api/server/TpKK29ACyr)](https://discord.gg/TpKK29ACyr)
 
 ![Image](https://raw.githubusercontent.com/tnuproject/tnu/refs/heads/main/assets/screenshot.png)
 
@@ -33,11 +31,13 @@ Also, we are NOT affiliated with Linux. Our kernel is developed independently an
 Install the required tools on Linux or WSL:
 
 - "gcc" or "x86_64-elf-gcc"
-- "grub-pc-bin"
+- "grub-mkrescue"
+- "grub-mkstandalone"
+- "grub-file"
 - "xorriso"
-- "genisoimage"
-- "mtools"
-- "qemu-system"
+- "isoinfo"
+- "mtools" / "mformat"
+- "qemu-system-x86_64"
 - "python3"
 
 **Build**

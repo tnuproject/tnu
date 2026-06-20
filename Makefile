@@ -124,16 +124,14 @@ kernel: $(KERNEL)
 userspace: $(USER_LIB) $(BUILD)/user/init $(BUILD)/user/tsh \
 	$(BUILD)/user/tnu-utils $(BUILD)/user/login $(BUILD)/user/passwd \
 	$(BUILD)/user/useradd $(BUILD)/user/userdel $(BUILD)/user/sysinstall \
-	$(BUILD)/user/bootd
-
-nano: $(BUILD)/user/nano
-
+        $(BUILD)/user/bootd \
+        $(BUILD)/user/pkg
 doom: $(BUILD)/user/doom
 
 iso: $(ISO)
 
 run: $(ISO)
-	$(QEMU) -m 1G -cdrom $(ISO) -vga std -serial file:/tmp/qemu_serial.log
+	$(QEMU) -m 1G -cdrom $(ISO) -vga std
 
 clean:
 	rm -rf $(BUILD)
@@ -235,6 +233,10 @@ $(BUILD)/user/bootd: $(BUILD)/obj/userspace/sbin/bootd.o $(USER_LIB) $(USER_CRT)
 	@mkdir -p $(dir $@)
 	$(CC) $(USER_CFLAGS) $(USER_LDFLAGS) -o $@ $(USER_CRT) $< $(USER_LIB) -lgcc
 
+$(BUILD)/user/pkg: $(BUILD)/obj/userspace/pkg/pkg.o $(USER_LIB) $(USER_CRT) userspace/linker.ld
+	@mkdir -p $(dir $@)
+	$(CC) $(USER_CFLAGS) $(USER_LDFLAGS) -o $@ $(USER_CRT) $< $(USER_LIB) -lgcc
+
 $(BUILD)/user/dhclient: $(BUILD)/obj/userspace/sbin/dhclient.o $(USER_LIB) $(USER_CRT) userspace/linker.ld
 	@mkdir -p $(dir $@)
 	$(CC) $(USER_CFLAGS) $(USER_LDFLAGS) -o $@ $(USER_CRT) $< $(USER_LIB) -lgcc
@@ -251,7 +253,7 @@ $(BUILD)/user/doom: $(USER_LIB) $(USER_CRT) userspace/linker.ld \
 		USER_CRT="$(abspath $(USER_CRT))" \
 		USER_LIB="$(abspath $(USER_LIB))"
 
-rootfs: userspace version-files firmware-iwlwifi $(KERNEL) $(EFI_BOOT)
+rootfs: userspace version-files firmware-iwlwifi nano doom $(KERNEL) $(EFI_BOOT)
 	rm -rf $(BUILD)/rootfs
 	mkdir -p $(BUILD)/rootfs
 	cp -a rootfs/. $(BUILD)/rootfs/
@@ -261,6 +263,8 @@ rootfs: userspace version-files firmware-iwlwifi $(KERNEL) $(EFI_BOOT)
 		$(BUILD)/rootfs/boot $(BUILD)/rootfs/EFI/BOOT \
 		$(BUILD)/rootfs/lib/modules \
 		$(BUILD)/rootfs/lib/firmware/iwlwifi \
+		$(BUILD)/rootfs/usr/games/doom \
+		$(BUILD)/rootfs/usr/share/games/doom \
 		$(BUILD)/rootfs/usr/linux
 	cp $(KERNEL) $(BUILD)/rootfs/boot/kernel.elf
 	cp $(EFI_BOOT) $(BUILD)/rootfs/EFI/BOOT/BOOTX64.EFI
@@ -274,8 +278,24 @@ rootfs: userspace version-files firmware-iwlwifi $(KERNEL) $(EFI_BOOT)
 	cp $(BUILD)/user/userdel $(BUILD)/rootfs/sbin/userdel
 	cp $(BUILD)/user/sysinstall $(BUILD)/rootfs/sbin/sysinstall
 	cp $(BUILD)/user/bootd $(BUILD)/rootfs/sbin/bootd
-	for name in $(COREUTIL_NAMES); do cp $(BUILD)/user/tnu-utils $(BUILD)/rootfs/bin/$$name; done
+	cp $(BUILD)/user/pkg $(BUILD)/rootfs/bin/pkg
+	# Create real binaries for builtins (TFS doesn't support hardlinks)
+	$(foreach cmd,$(COREUTIL_NAMES),cp $(BUILD)/user/tnu-utils $(BUILD)/rootfs/bin/$(cmd);)
+	@if [ -f $(BUILD)/user/nano ]; then cp $(BUILD)/user/nano $(BUILD)/rootfs/bin/nano; fi
+	@if [ -f $(BUILD)/user/doom ]; then cp $(BUILD)/user/doom $(BUILD)/rootfs/usr/games/doom; fi
+	@if [ -d ports/doom/freedoom ] && [ -d ports/doom/freedoom/wads ]; then \
+		cp -a ports/doom/freedoom/wads/. $(BUILD)/rootfs/usr/share/games/doom/ 2>/dev/null || true; \
+	fi
 	cp -a $(BUILD)/firmware/iwlwifi/. $(BUILD)/rootfs/lib/firmware/iwlwifi/
+	# Remove Linux binaries from PATH directories to prevent accidental execution
+	rm -f $(BUILD)/rootfs/bin/busybox
+	rm -f $(BUILD)/rootfs/usr/bin/busybox
+	rm -f $(BUILD)/rootfs/usr/linux/bin/busybox
+	rm -f $(BUILD)/rootfs/usr/linux/sbin/*
+	rm -f $(BUILD)/rootfs/usr/linux/bin/*
+	mkdir -p $(BUILD)/rootfs/usr/linux/bin $(BUILD)/rootfs/usr/linux/sbin
+	# Symlink to tnu-utils for basic utilities if needed (for consistency)
+	@echo "linux-chroot: disabled in live system. Use 'chroot /usr/linux /bin/sh' for Linux binaries." > $(BUILD)/rootfs/usr/linux/README.TNU
 	@if [ "$(WITH_LINUX_CHROOT)" = "1" ] && [ -d "$(LINUX_CHROOT_DIR)" ]; then \
 		echo "rootfs: copying Linux chroot into rootfs/usr/linux"; \
 		rm -rf $(BUILD)/rootfs/usr/linux; \
@@ -292,6 +312,8 @@ rootfs: userspace version-files firmware-iwlwifi $(KERNEL) $(EFI_BOOT)
 	fi
 
 $(ROOTFS): rootfs tools/mktfs.py
+	@echo "rootfs: normalizing ownership to root:root..."
+	chown -R root:root $(BUILD)/rootfs
 	$(HOSTPY) tools/mktfs.py $(BUILD)/rootfs $@
 
 $(EFI_BOOT): $(GENERATED_GRUB)

@@ -19,11 +19,9 @@ void devfs_init(void)
     make_dev("/dev/tty", 0600);
     make_dev("/dev/null", 0666);
     make_dev("/dev/zero", 0666);
-    make_dev("/dev/random", 0666);
-    make_dev("/dev/urandom", 0666);
     make_dev("/dev/fb0", 0600);
     vfs_mkdir("/dev/input", "/", VFS_S_IFDIR | 0755, 0, 0);
     make_dev("/dev/input/kbd", 0600);
     make_dev("/dev/sda", 0600);
-    log_info("devfs", "created console, tty, null, zero, random, urandom, fb0, input/kbd, and sda nodes");
+    log_info("devfs", "created console, tty, null, zero, fb0, input/kbd, and sda nodes");
 }

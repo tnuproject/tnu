@@ -36,11 +36,6 @@ struct gpt_entry_min {
     uint16_t name[36];
 } __attribute__((packed));
 
-static const uint8_t GPT_TIRAMISU_FS_GUID[16] = {
-    0x54, 0x4e, 0x55, 0x00, 0x13, 0x37, 0x42, 0x42,
-    0x80, 0x86, 0x54, 0x49, 0x52, 0x41, 0x4d, 0x49
-};
-
 struct collect_ctx {
     struct tfs_entry *entries;
     uint32_t count;
@@ -103,16 +98,14 @@ static int copy_file_data(struct collect_ctx *ctx, struct vfs_node *node,
         return 0;
     }
     uint64_t end = ctx->data_cursor + node->size;
-    if (!node->data || (ctx->image && end > ctx->image_size)) {
+    if (end > ctx->image_size || !node->data) {
         ctx->failed = 1;
         return -1;
     }
     entry->offset = ctx->data_cursor;
     entry->size = node->size;
-    if (ctx->image) {
-        memcpy(ctx->image + ctx->data_cursor, node->data, (size_t)node->size);
-    }
-    ctx->data_cursor = align_up64(end, TFS_SECTOR_SIZE);
+    memcpy(ctx->image + ctx->data_cursor, node->data, (size_t)node->size);
+    ctx->data_cursor = align_up64(end, 16);
     return 0;
 }
 
@@ -131,14 +124,7 @@ static void collect_node(struct vfs_node *node, void *opaque)
         return;
     }
     if (strcmp(path, "/dev") == 0 || strncmp(path, "/dev/", 5) == 0 ||
-        strcmp(path, "/proc") == 0 || strncmp(path, "/proc/", 6) == 0 ||
-        strcmp(path, "/sys") == 0 || strncmp(path, "/sys/", 5) == 0 ||
-        strcmp(path, "/run") == 0 || strncmp(path, "/run/", 5) == 0 ||
-        strcmp(path, "/usr/linux/dev") == 0 || strncmp(path, "/usr/linux/dev/", 15) == 0 ||
-        strcmp(path, "/usr/linux/proc") == 0 || strncmp(path, "/usr/linux/proc/", 16) == 0 ||
-        strcmp(path, "/usr/linux/sys") == 0 || strncmp(path, "/usr/linux/sys/", 15) == 0 ||
-        strcmp(path, "/usr/linux/run") == 0 || strncmp(path, "/usr/linux/run/", 15) == 0 ||
-        strcmp(path, "/usr/linux/tmp") == 0 || strncmp(path, "/usr/linux/tmp/", 15) == 0) {
+        strcmp(path, "/proc") == 0 || strncmp(path, "/proc/", 6) == 0) {
         if (node->type == VFS_NODE_DIR) {
             vfs_list(node, collect_node, ctx);
         }
@@ -277,7 +263,6 @@ int tfs_sync(void)
      * Offsets are relative to the start of the TFS image, so we translate them
      * to absolute LBA values.
      */
-    int data_error = 0;
     for (uint32_t i = 0; i < ctx.count; i++) {
         const struct tfs_entry *e = &ctx.entries[i];
         if (e->type != TFS_ENTRY_FILE || e->size == 0) {
@@ -292,39 +277,27 @@ int tfs_sync(void)
         size_t remaining = (size_t)e->size;
         const uint8_t *ptr = node->data;
         while (remaining > 0) {
-            size_t sector_offset = (size_t)(file_offset % TFS_SECTOR_SIZE);
-            size_t chunk = TFS_SECTOR_SIZE - sector_offset;
-            if (chunk > remaining) {
-                chunk = remaining;
-            }
-
-            uint64_t abs_lba = persistent_start_lba + (file_offset / TFS_SECTOR_SIZE);
+            size_t chunk = remaining > TFS_SECTOR_SIZE ? TFS_SECTOR_SIZE : remaining;
+            // Compute absolute LBA for this chunk.
+            uint64_t abs_lba = persistent_start_lba + ((file_offset) / TFS_SECTOR_SIZE);
+            // Write the chunk (rounded up to a sector).
             uint8_t sector_buf[TFS_SECTOR_SIZE];
             memset(sector_buf, 0, TFS_SECTOR_SIZE);
-            memcpy(sector_buf + sector_offset, ptr, chunk);
+            memcpy(sector_buf, ptr, chunk);
             if (block_write_lba28(persistent_device, (uint32_t)abs_lba, sector_buf, TFS_SECTOR_SIZE) < 0) {
                 // On failure, abort but keep persistence enabled.
                 log_warn("tfs", "sync data write failed for %s@LBA%llu",
                          persistent_device, (unsigned long long)abs_lba);
-                data_error = -1;
                 break;
             }
             ptr += chunk;
             file_offset += chunk;
             remaining -= chunk;
         }
-        if (data_error) {
-            break;
-        }
     }
 
     // Ensure any remaining sectors after the last file are zeroed.
     block_sync(persistent_device);
-    if (data_error) {
-        sync_in_progress = false;
-        kfree(header_buf);
-        return data_error;
-    }
     last_image_size = final_size;
 
     sync_in_progress = false;
@@ -339,43 +312,6 @@ int tfs_sync(void)
 bool tfs_is_persistent(void)
 {
     return persistent_enabled;
-}
-
-int tfs_install_current_root(const char *device, uint64_t start_lba)
-{
-    if (!device || !block_device_find(device)) {
-        return -1;
-    }
-
-    char old_device[sizeof(persistent_device)];
-    strncpy(old_device, persistent_device, sizeof(old_device) - 1);
-    old_device[sizeof(old_device) - 1] = '\0';
-    uint64_t old_lba = persistent_start_lba;
-    size_t old_size = last_image_size;
-    bool old_persistent = persistent_enabled;
-    bool old_auto_sync = auto_sync_enabled;
-
-    strncpy(persistent_device, device, sizeof(persistent_device) - 1);
-    persistent_device[sizeof(persistent_device) - 1] = '\0';
-    persistent_start_lba = start_lba;
-    persistent_enabled = true;
-    auto_sync_enabled = false;
-
-    int rc = tfs_sync();
-    if (rc == 0) {
-        auto_sync_enabled = true;
-        log_info("tfs", "installed current root to %s@LBA%llu",
-                 persistent_device, (unsigned long long)persistent_start_lba);
-        return 0;
-    }
-
-    strncpy(persistent_device, old_device, sizeof(persistent_device) - 1);
-    persistent_device[sizeof(persistent_device) - 1] = '\0';
-    persistent_start_lba = old_lba;
-    last_image_size = old_size;
-    persistent_enabled = old_persistent;
-    auto_sync_enabled = old_auto_sync;
-    return rc;
 }
 
 void tfs_set_auto_sync(bool enabled)
@@ -496,7 +432,6 @@ int tfs_mount_disk(const char *device, uint64_t start_lba)
     }
     if (entries_bytes && block_read(device, start_lba + hdr->entries_offset / TFS_SECTOR_SIZE,
                                     entries_buf, entries_bytes) < 0) {
-        kfree(entries_buf);
         return -1;
     }
 
@@ -515,19 +450,15 @@ int tfs_mount_disk(const char *device, uint64_t start_lba)
         image_size = (size_t)hdr->data_offset;
     }
     if (image_size > TFS_SYNC_BUFFER_MAX) {
-        kfree(entries_buf);
         return -1;
     }
 
     uint8_t *image = kmalloc(image_size);
     if (!image) {
-        kfree(entries_buf);
         return -1;
     }
     memset(image, 0, image_size);
     if (block_read(device, start_lba, image, image_size) < 0) {
-        kfree(entries_buf);
-        kfree(image);
         return -1;
     }
 
@@ -535,13 +466,8 @@ int tfs_mount_disk(const char *device, uint64_t start_lba)
     persistent_enabled = false;
     auto_sync_enabled = false;
     if (mount_entries_from_memory(image, image_size, false) < 0) {
-        kfree(entries_buf);
-        kfree(image);
         return -1;
     }
-
-    kfree(entries_buf);
-    kfree(image);
 
     strncpy(persistent_device, device, sizeof(persistent_device) - 1);
     persistent_device[sizeof(persistent_device) - 1] = '\0';
@@ -568,7 +494,7 @@ static int gpt_find_root_lba(const char *device, uint64_t *out_lba)
         return -1;
     }
     if (gpt->partition_entry_size < sizeof(struct gpt_entry_min) ||
-        gpt->num_partition_entries < 1) {
+        gpt->num_partition_entries < 2) {
         log_warn("tfs", "gpt: invalid entry size %u or count %u on %s",
                  gpt->partition_entry_size, gpt->num_partition_entries, device);
         return -1;
@@ -578,65 +504,56 @@ static int gpt_find_root_lba(const char *device, uint64_t *out_lba)
              (unsigned long long)gpt->partition_entry_lba,
              gpt->partition_entry_size, gpt->num_partition_entries);
 
+    /* GPT partition entries start at partition_entry_lba.  Each entry is
+     * partition_entry_size bytes (typically 128).  We want partition #2
+     * (index 1 in 0-based array), which is at byte offset:
+     *   partition_entry_size * 1
+     * from the start of the entries array.  Since entries may span multiple
+     * sectors, we calculate the sector offset and byte offset within that
+     * sector, then read the correct sector and extract the entry. */
     uint32_t entry_size = gpt->partition_entry_size;
     if (entry_size == 0 || entry_size > TFS_SECTOR_SIZE) {
         return -1;
     }
 
+    /* Partition #2 is at array index 1 */
+    uint64_t entry_offset_bytes = (uint64_t)entry_size * 1;
+    uint64_t entry_sector_lba = gpt->partition_entry_lba + entry_offset_bytes / TFS_SECTOR_SIZE;
+    size_t entry_offset_in_sector = (size_t)(entry_offset_bytes % TFS_SECTOR_SIZE);
+
+    log_info("tfs", "gpt: reading entry #1 at sector %llu offset %zu",
+             (unsigned long long)entry_sector_lba, entry_offset_in_sector);
+
     uint8_t entries_sector[TFS_SECTOR_SIZE];
-    uint64_t fallback_lba = 0;
-    uint32_t max_entries = gpt->num_partition_entries;
-    if (max_entries > 128) {
-        max_entries = 128;
+    if (block_read(device, entry_sector_lba, entries_sector, sizeof(entries_sector)) < 0) {
+        log_warn("tfs", "gpt: failed to read entry sector %llu", (unsigned long long)entry_sector_lba);
+        return -1;
     }
 
-    for (uint32_t i = 0; i < max_entries; i++) {
-        uint64_t entry_offset_bytes = (uint64_t)entry_size * i;
-        uint64_t entry_sector_lba = gpt->partition_entry_lba + entry_offset_bytes / TFS_SECTOR_SIZE;
-        size_t entry_offset_in_sector = (size_t)(entry_offset_bytes % TFS_SECTOR_SIZE);
-        if (entry_offset_in_sector + entry_size > TFS_SECTOR_SIZE) {
-            continue;
-        }
-        if (block_read(device, entry_sector_lba, entries_sector, sizeof(entries_sector)) < 0) {
-            log_warn("tfs", "gpt: failed to read entry sector %llu",
-                     (unsigned long long)entry_sector_lba);
-            return -1;
-        }
-
-        const struct gpt_entry_min *entry =
-            (const struct gpt_entry_min *)(entries_sector + entry_offset_in_sector);
-        if (entry->first_lba == 0) {
-            continue;
-        }
-
-        if (i == 1) {
-            fallback_lba = entry->first_lba;
-        }
-        if (memcmp(entry->type_guid, GPT_TIRAMISU_FS_GUID, sizeof(GPT_TIRAMISU_FS_GUID)) == 0) {
-            log_info("tfs", "gpt: Tiramisu root partition #%u first_lba=%llu last_lba=%llu",
-                     i + 1, (unsigned long long)entry->first_lba,
-                     (unsigned long long)entry->last_lba);
-            *out_lba = entry->first_lba;
-            return 0;
-        }
+    /* Ensure the entry fits within the sector we just read */
+    if (entry_offset_in_sector + entry_size > TFS_SECTOR_SIZE) {
+        return -1;
     }
 
-    if (fallback_lba) {
-        log_warn("tfs", "gpt: no Tiramisu GUID found; falling back to partition #2 at LBA%llu",
-                 (unsigned long long)fallback_lba);
-        *out_lba = fallback_lba;
-        return 0;
+    const struct gpt_entry_min *entry =
+        (const struct gpt_entry_min *)(entries_sector + entry_offset_in_sector);
+    if (entry->first_lba == 0) {
+        log_warn("tfs", "gpt: partition #1 has first_lba=0");
+        return -1;
     }
-    log_warn("tfs", "gpt: no usable root partition found on %s", device);
-    return -1;
+
+    log_info("tfs", "gpt: partition #1 first_lba=%llu last_lba=%llu",
+             (unsigned long long)entry->first_lba, (unsigned long long)entry->last_lba);
+
+    *out_lba = entry->first_lba;
+    return 0;
 }
 
 int tfs_mount_installed_root(void)
 {
-    /* Try SATA disks first */
-    static const char *const sata_candidates[] = { "sda", "sdb", "sdc", "sdd" };
-    for (size_t i = 0; i < sizeof(sata_candidates) / sizeof(sata_candidates[0]); i++) {
-        const char *dev = sata_candidates[i];
+    static const char *const candidates[] = { "sda", "sdb", "sdc", "sdd" };
+    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
+        const char *dev = candidates[i];
         if (!block_device_find(dev)) {
             continue;
         }
@@ -645,29 +562,9 @@ int tfs_mount_installed_root(void)
             lba = TFS_DEFAULT_ROOT_LBA;
         }
         if (tfs_mount_disk(dev, lba) == 0) {
-            log_info("tfs", "mounted root from SATA disk %s", dev);
             return 0;
         }
     }
-    
-    /* Try NVMe devices */
-    static const char *const nvme_candidates[] = { "nvme0n1", "nvme1n1", "nvme2n1", "nvme3n1" };
-    for (size_t i = 0; i < sizeof(nvme_candidates) / sizeof(nvme_candidates[0]); i++) {
-        const char *dev = nvme_candidates[i];
-        if (!block_device_find(dev)) {
-            continue;
-        }
-        uint64_t lba = TFS_DEFAULT_ROOT_LBA;
-        if (gpt_find_root_lba(dev, &lba) < 0) {
-            lba = TFS_DEFAULT_ROOT_LBA;
-        }
-        if (tfs_mount_disk(dev, lba) == 0) {
-            log_info("tfs", "mounted root from NVMe disk %s", dev);
-            return 0;
-        }
-    }
-    
-    log_warn("tfs", "no installed root filesystem found on any disk");
     return -1;
 }
 
@@ -681,9 +578,8 @@ int tfs_mount_installed_root(void)
  * This function scans the same disk candidates as tfs_mount_installed_root.
  * For each candidate it reads the GPT to locate the root partition and checks
  * whether that partition already holds a valid TFS image.  If it does, it
- * re-enables persistence pointing at that partition and defers the first full
- * sync to the next real VFS mutation or shutdown so boot is not blocked by
- * rewriting the whole root image.
+ * re-enables persistence pointing at that partition and immediately syncs the
+ * current in-memory VFS back to disk so the two are in sync.
  *
  * If the partition holds something other than TFS (e.g. it was freshly
  * formatted by sysinstall but never written yet), the function still attaches
@@ -732,7 +628,6 @@ int tfs_attach_persistent_disk(void)
          * disable persistence – the system will continue operating and will
          * sync later when possible (e.g., on shutdown). */
         auto_sync_enabled = true;
-        /* Attach itself does not call tfs_sync(); first full sync is deferred. */
 
         if (has_tfs) {
             log_info("tfs", "attach: existing TFS on %s@LBA%llu — persistence enabled",
@@ -742,7 +637,13 @@ int tfs_attach_persistent_disk(void)
                      dev, (unsigned long long)lba);
         }
 
-        /* Initial full-image sync is deferred; later writes and shutdown sync. */
+        /* Attempt to sync the current in‑memory VFS to the newly attached
+         * partition. If this fails, log a warning but keep persistence
+         * enabled; future writes will trigger syncs via auto‑sync. */
+        if (tfs_sync() != 0) {
+            log_warn("tfs", "attach: initial sync failed for %s@LBA%llu — will retry on next write",
+                     dev, (unsigned long long)lba);
+        }
         return 0;
     }
 

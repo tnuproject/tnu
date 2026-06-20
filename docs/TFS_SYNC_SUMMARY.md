@@ -178,7 +178,7 @@ Output (in kernel log):
 ```
 [power] System shutdown requested
 [power] Syncing filesystem...
-[tfs] synced 42 entries to sda@LBA526336 (1234 KiB)
+[tfs] synced 42 entries to sda@LBA2048 (1234 KiB)
 [power] Goodbye!
 ```
 
@@ -190,7 +190,7 @@ Output (in kernel log):
 ```
 [power] System reboot requested
 [power] Syncing filesystem...
-[tfs] synced 42 entries to sda@LBA526336 (1234 KiB)
+[tfs] synced 42 entries to sda@LBA2048 (1234 KiB)
 [power] Rebooting...
 ```
 
