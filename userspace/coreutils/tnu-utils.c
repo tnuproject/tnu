@@ -1,5 +1,6 @@
 #include <tnu/libc.h>
 #include <sys/stat.h>
+#include <stdio.h>
 #include <unistd.h>
 #include <fcntl.h>
 
@@ -64,7 +65,7 @@ static const struct util_help help_topics[] = {
     { "netstat", "netstat", "Print /proc/net/sockstat in the userspace fallback build." },
     { "usb", "usb", "Print /proc/usb in the userspace fallback build." },
     { "ping", "ping IPv4", "Send a minimal ICMP test when networking is available." },
-    { "wifi", "wifi scan|connect IFACE SSID [PASSPHRASE]|status", "Scan, connect, and show Wi-Fi status." },
+    { "wifi", "wifi scan|connect IFACE SSID [PASSPHRASE]|disconnect IFACE|autoconnect [IFACE]|profile ...|status", "Manage Wi-Fi scan, connect, profiles, and status." },
     { "xedit", "xedit FILE", "Userspace fallback stub; full editing support is handled by the shell applet." },
     { "clear", "clear", "Clear the terminal using ANSI escape sequences." },
     { "date", "date", "Stub in the userspace fallback build; full date support is provided by the shell applet." },
@@ -631,7 +632,7 @@ static int cmd_chmod(int argc, char **argv)
     return 0;
 }
 
-static void print_octal_mode(mode_t mode)
+static void __attribute__((unused)) print_octal_mode(mode_t mode)
 {
     char buf[8];
     for (int i = 6; i >= 0; i--) {
@@ -692,11 +693,240 @@ static void print_bssid(const uint8_t bssid[6])
            bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
 }
 
+static void print_ipv4_value(uint32_t ip)
+{
+    printf("%u.%u.%u.%u",
+           (unsigned)((ip >> 24) & 0xff),
+           (unsigned)((ip >> 16) & 0xff),
+           (unsigned)((ip >> 8) & 0xff),
+           (unsigned)(ip & 0xff));
+}
+
+static int require_root_for_wifi_action(const char *action)
+{
+    if (getuid() == 0) {
+        return 0;
+    }
+    print("wifi: ");
+    print(action);
+    println(" requires root");
+    return 1;
+}
+
+static const char *wifi_security_label(uint16_t flags)
+{
+    if (flags & WIFI_AP_WPA3) return "wpa3";
+    if (flags & WIFI_AP_WPA2) return "wpa2";
+    if (flags & WIFI_AP_WPA) return "wpa";
+    if (flags & WIFI_AP_WEP) return "wep";
+    return "open";
+}
+
+static int wifi_iface_name_valid(const char *iface)
+{
+    size_t len = 0;
+    if (!iface || !iface[0]) {
+        return 0;
+    }
+    for (const char *p = iface; *p; p++) {
+        char c = *p;
+        int ok = (c >= 'a' && c <= 'z') ||
+                 (c >= 'A' && c <= 'Z') ||
+                 (c >= '0' && c <= '9') ||
+                 c == '_' || c == '-' || c == '.';
+        if (!ok) {
+            return 0;
+        }
+        len++;
+    }
+    return len <= 15;
+}
+
+static int wifi_value_safe(const char *value)
+{
+    if (!value) {
+        return 0;
+    }
+    for (const char *p = value; *p; p++) {
+        if (*p == '\r' || *p == '\n') {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int ensure_directory_exists(const char *path)
+{
+    if (access(path, F_OK) == 0) {
+        return 0;
+    }
+    return mkdir(path, 0755);
+}
+
+static int write_text_file(const char *path, const char *text)
+{
+    int fd = open(path, O_CREAT | O_RDWR | O_TRUNC, 0644);
+    if (fd < 0) {
+        return -1;
+    }
+    if (text && write(fd, text, strlen(text)) < 0) {
+        close(fd);
+        return -1;
+    }
+    close(fd);
+    return 0;
+}
+
+static int wifi_profile_path_for_iface(const char *iface, char *out, size_t out_size)
+{
+    if (!wifi_iface_name_valid(iface) || !out || out_size == 0) {
+        return -1;
+    }
+    int n = snprintf(out, out_size, "/etc/wifi/%s.conf", iface);
+    if (n < 0 || (size_t)n >= out_size) {
+        return -1;
+    }
+    return 0;
+}
+
+static void wifi_sort_aps(struct wifi_ap *aps, int count)
+{
+    for (int i = 0; i < count; i++) {
+        for (int j = i + 1; j < count; j++) {
+            if (aps[j].rssi > aps[i].rssi) {
+                struct wifi_ap tmp = aps[i];
+                aps[i] = aps[j];
+                aps[j] = tmp;
+            }
+        }
+    }
+}
+
+static void wifi_print_error(const char *action, int rc)
+{
+    print("wifi: ");
+    print(action);
+    print(" failed");
+    if (rc == -1) {
+        print(" (invalid interface or arguments)");
+    } else if (rc == -2) {
+        print(" (unsupported wifi device or driver)");
+    } else if (rc == -3) {
+        print(" (driver or firmware not ready)");
+    } else if (rc == -4) {
+        print(" (associated but DHCP failed)");
+    } else if (rc == -5) {
+        print(" (passphrase must be 8 to 63 characters)");
+    } else if (rc == -6) {
+        print(" (no matching autoconnect profile)");
+    } else if (rc == -10) {
+        print(" (network not found)");
+    } else {
+        print(" (error ");
+        print_int(rc);
+        print(")");
+    }
+    print("\n");
+}
+
+static int cmd_wifi_profile(int argc, char **argv)
+{
+    if (argc < 3) {
+        println("usage: wifi profile set IFACE SSID [PASSPHRASE]");
+        println("       wifi profile show IFACE");
+        println("       wifi profile clear IFACE");
+        return 1;
+    }
+    if (strcmp(argv[2], "set") == 0) {
+        if (argc < 5) {
+            println("usage: wifi profile set IFACE SSID [PASSPHRASE]");
+            return 1;
+        }
+        if (require_root_for_wifi_action("profile set") != 0) {
+            return 1;
+        }
+        if (!wifi_iface_name_valid(argv[3]) || !wifi_value_safe(argv[4]) ||
+            (argc > 5 && !wifi_value_safe(argv[5]))) {
+            println("wifi: invalid profile values");
+            return 1;
+        }
+        if (ensure_directory_exists("/etc/wifi") < 0) {
+            println("wifi: failed to create /etc/wifi");
+            return 1;
+        }
+        char path[64];
+        if (wifi_profile_path_for_iface(argv[3], path, sizeof(path)) < 0) {
+            println("wifi: invalid interface name");
+            return 1;
+        }
+        char content[256];
+        int n = snprintf(content, sizeof(content),
+                         "iface=%s\nssid=%s\npassphrase=%s\nautoconnect=true\n",
+                         argv[3], argv[4], argc > 5 ? argv[5] : "");
+        if (n < 0 || (size_t)n >= sizeof(content) || write_text_file(path, content) < 0) {
+            println("wifi: failed to write profile");
+            return 1;
+        }
+        print("wifi: saved profile ");
+        println(path);
+        return 0;
+    }
+    if (strcmp(argv[2], "show") == 0) {
+        if (argc != 4) {
+            println("usage: wifi profile show IFACE");
+            return 1;
+        }
+        char path[64];
+        char buf[256];
+        if (wifi_profile_path_for_iface(argv[3], path, sizeof(path)) < 0) {
+            println("wifi: invalid interface name");
+            return 1;
+        }
+        if (read_file(path, buf, sizeof(buf)) < 0) {
+            println("wifi: profile not found");
+            return 1;
+        }
+        print(buf);
+        if (buf[0] && buf[strlen(buf) - 1] != '\n') {
+            print("\n");
+        }
+        return 0;
+    }
+    if (strcmp(argv[2], "clear") == 0) {
+        if (argc != 4) {
+            println("usage: wifi profile clear IFACE");
+            return 1;
+        }
+        if (require_root_for_wifi_action("profile clear") != 0) {
+            return 1;
+        }
+        char path[64];
+        if (wifi_profile_path_for_iface(argv[3], path, sizeof(path)) < 0) {
+            println("wifi: invalid interface name");
+            return 1;
+        }
+        if (unlink(path) < 0) {
+            println("wifi: profile not found");
+            return 1;
+        }
+        println("wifi: profile removed");
+        return 0;
+    }
+    println("wifi: unknown profile command");
+    return 1;
+}
+
 static int cmd_wifi(int argc, char **argv)
 {
     if (argc < 2 || strcmp(argv[1], "help") == 0 || strcmp(argv[1], "--help") == 0) {
         println("usage: wifi scan");
         println("       wifi connect IFACE SSID [PASSPHRASE]");
+        println("       wifi disconnect IFACE");
+        println("       wifi autoconnect [IFACE]");
+        println("       wifi start [IFACE]");
+        println("       wifi profile set IFACE SSID [PASSPHRASE]");
+        println("       wifi profile show IFACE");
+        println("       wifi profile clear IFACE");
         println("       wifi status");
         return argc < 2 ? 1 : 0;
     }
@@ -704,21 +934,29 @@ static int cmd_wifi(int argc, char **argv)
         struct wifi_ap aps[32];
         int count = wifi_scan(aps, sizeof(aps) / sizeof(aps[0]));
         if (count < 0) {
-            println("wifi: scan failed");
+            if (count == -10) {
+                println("wifi: no networks found");
+                return 0;
+            }
+            wifi_print_error("scan", count);
             return 1;
         }
         if (count == 0) {
             println("wifi: no networks found");
             return 0;
         }
+        wifi_sort_aps(aps, count);
         for (int i = 0; i < count; i++) {
             print(aps[i].ssid);
+            if (aps[i].flags & WIFI_AP_HIDDEN) {
+                print(" [hidden]");
+            }
             print("  ");
             print_bssid(aps[i].bssid);
             print("  rssi=");
             print_int(aps[i].rssi);
             print("  ");
-            println((aps[i].flags & 1u) ? "wpa" : "open");
+            println(wifi_security_label(aps[i].flags));
         }
         return 0;
     }
@@ -727,14 +965,70 @@ static int cmd_wifi(int argc, char **argv)
             println("usage: wifi connect IFACE SSID [PASSPHRASE]");
             return 1;
         }
+        if (require_root_for_wifi_action("connect") != 0) {
+            return 1;
+        }
         const char *passphrase = argc > 4 ? argv[4] : NULL;
         int rc = wifi_connect(argv[2], argv[3], passphrase);
         if (rc < 0) {
-            println("wifi: connect failed");
+            wifi_print_error("connect", rc);
             return 1;
         }
         println("wifi: connected");
         return 0;
+    }
+    if (strcmp(argv[1], "disconnect") == 0) {
+        if (argc != 3) {
+            println("usage: wifi disconnect IFACE");
+            return 1;
+        }
+        if (require_root_for_wifi_action("disconnect") != 0) {
+            return 1;
+        }
+        int rc = wifi_disconnect(argv[2]);
+        if (rc < 0) {
+            wifi_print_error("disconnect", rc);
+            return 1;
+        }
+        println("wifi: disconnected");
+        return 0;
+    }
+    if (strcmp(argv[1], "start") == 0) {
+        if (argc > 3) {
+            println("usage: wifi start [IFACE]");
+            return 1;
+        }
+        if (require_root_for_wifi_action("start") != 0) {
+            return 1;
+        }
+        const char *iface = argc == 3 ? argv[2] : NULL;
+        int rc = wifi_start(iface);
+        if (rc < 0) {
+            wifi_print_error("start", rc);
+            return 1;
+        }
+        println("wifi: start complete");
+        return 0;
+    }
+    if (strcmp(argv[1], "autoconnect") == 0) {
+        if (argc > 3) {
+            println("usage: wifi autoconnect [IFACE]");
+            return 1;
+        }
+        if (require_root_for_wifi_action("autoconnect") != 0) {
+            return 1;
+        }
+        const char *iface = argc == 3 ? argv[2] : NULL;
+        int rc = wifi_autoconnect(iface);
+        if (rc < 0) {
+            wifi_print_error("autoconnect", rc);
+            return 1;
+        }
+        println("wifi: autoconnect complete");
+        return 0;
+    }
+    if (strcmp(argv[1], "profile") == 0) {
+        return cmd_wifi_profile(argc, argv);
     }
     if (strcmp(argv[1], "status") == 0) {
         struct wifi_status st;
@@ -745,8 +1039,36 @@ static int cmd_wifi(int argc, char **argv)
         if (st.connected) {
             print("connected: ");
             println(st.ssid[0] ? st.ssid : "<unknown>");
+            if (st.iface[0]) {
+                print("iface: ");
+                println(st.iface);
+            }
+            print("security: ");
+            println(wifi_security_label(st.flags));
+            print("rssi: ");
+            print_int(st.rssi);
+            print("\n");
+            if (st.ipv4) {
+                print("ipv4: ");
+                print_ipv4_value(st.ipv4);
+                print("\n");
+            }
+            if (st.gateway) {
+                print("gateway: ");
+                print_ipv4_value(st.gateway);
+                print("\n");
+            }
+            if (st.dns_server) {
+                print("dns: ");
+                print_ipv4_value(st.dns_server);
+                print("\n");
+            }
         } else {
             println("disconnected");
+            if (st.iface[0]) {
+                print("iface: ");
+                println(st.iface);
+            }
         }
         return 0;
     }

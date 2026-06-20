@@ -1276,6 +1276,48 @@ bool net_has_external_transport(void)
     return route_for(ipv4_make(1, 1, 1, 1)) != NULL;
 }
 
+int net_wifi_start(const char *iface_name)
+{
+    int last_rc = -1;
+    bool saw_wifi = false;
+    bool started = false;
+    log_info("iwlwifi", "net_wifi_start begin iface_filter=%s count=%u",
+             (iface_name && iface_name[0]) ? iface_name : "<all>",
+             (uint32_t)iface_count);
+
+    for (size_t i = 0; i < iface_count; i++) {
+        if (ifaces[i].type != NET_IFACE_WIFI || strcmp(ifaces[i].driver, "iwlwifi") != 0) {
+            continue;
+        }
+        if (iface_name && iface_name[0] && strcmp(ifaces[i].name, iface_name) != 0) {
+            continue;
+        }
+
+        saw_wifi = true;
+        log_info("iwlwifi", "net_wifi_start trying %s driver=%s",
+                 ifaces[i].name, ifaces[i].driver);
+        last_rc = iwlwifi_start(&ifaces[i]);
+        if (last_rc == 0) {
+            started = true;
+            log_info("iwlwifi", "net_wifi_start %s ok", ifaces[i].name);
+        } else {
+            log_warn("iwlwifi", "%s deferred startup failed (%d)",
+                     ifaces[i].name, last_rc);
+        }
+    }
+
+    if (started) {
+        log_info("iwlwifi", "net_wifi_start complete rc=0");
+        return 0;
+    }
+    if (saw_wifi) {
+        log_warn("iwlwifi", "net_wifi_start complete rc=%d", last_rc);
+        return last_rc;
+    }
+    log_warn("iwlwifi", "net_wifi_start found no matching wifi interfaces");
+    return -1;
+}
+
 int net_wifi_scan(void)
 {
     bool saw_iwlwifi = false;
@@ -1312,6 +1354,15 @@ int net_wifi_connect(const char *iface_name, const char *ssid, const char *passp
     if (!iface || iface->type != NET_IFACE_WIFI) {
         return -1;
     }
+    if (!ssid || !ssid[0]) {
+        return -1;
+    }
+    if (passphrase && passphrase[0]) {
+        size_t psk_len = strlen(passphrase);
+        if (psk_len < 8 || psk_len > 63) {
+            return -5;
+        }
+    }
     if (strcmp(iface->driver, "iwlwifi") == 0) {
         const struct iwlwifi_state *st = iwlwifi_state_for(iface);
         int rc = iwlwifi_associate(iface, ssid, passphrase);
@@ -1336,6 +1387,29 @@ int net_wifi_connect(const char *iface_name, const char *ssid, const char *passp
     }
     log_warn("wifi", "%s cannot associate with '%s': firmware/MAC/WPA layer unavailable",
              iface_name, ssid ? ssid : "");
+    return -2;
+}
+
+int net_wifi_disconnect(const char *iface_name)
+{
+    struct net_iface *iface = net_iface_find_mut(iface_name);
+    if (!iface || iface->type != NET_IFACE_WIFI) {
+        return -1;
+    }
+    if (strcmp(iface->driver, "iwlwifi") == 0) {
+        int rc = iwlwifi_disconnect(iface);
+        if (rc < 0) {
+            return rc;
+        }
+        iface->up = false;
+        iface->link = false;
+        iface->ipv4 = 0;
+        iface->netmask = 0;
+        iface->gateway = 0;
+        iface->dns_server = 0;
+        iface->arp_valid = false;
+        return 0;
+    }
     return -2;
 }
 
@@ -1364,6 +1438,11 @@ static void profile_value(const char *text, const char *key, char *out, size_t o
             }
             memcpy(out, line + key_len + 1, value_len);
             out[value_len] = '\0';
+            while (value_len > 0 &&
+                   (out[value_len - 1] == '\r' || out[value_len - 1] == ' ' ||
+                    out[value_len - 1] == '\t')) {
+                out[--value_len] = '\0';
+            }
             return;
         }
         if (!end) {
@@ -1405,18 +1484,30 @@ static int parse_wifi_profile(const struct vfs_node *node, struct wifi_profile *
 struct wifi_autoconnect_ctx {
     int attempted;
     int connected;
+    const char *iface_filter;
 };
+
+static bool wifi_profile_node_matches(const struct vfs_node *node)
+{
+    if (!node || node->type != VFS_NODE_FILE) {
+        return false;
+    }
+    return strcmp(node->name, "profile") == 0 || name_ends_with(node->name, ".conf");
+}
 
 static void wifi_autoconnect_emit(struct vfs_node *node, void *ctx)
 {
     struct wifi_autoconnect_ctx *state = ctx;
-    if (!node || node->type != VFS_NODE_FILE || !state ||
-        !name_ends_with(node->name, ".conf")) {
+    if (!state || !wifi_profile_node_matches(node)) {
         return;
     }
 
     struct wifi_profile profile;
     if (parse_wifi_profile(node, &profile) < 0 || !profile.autoconnect) {
+        return;
+    }
+    if (state->iface_filter && state->iface_filter[0] &&
+        strcmp(profile.iface, state->iface_filter) != 0) {
         return;
     }
     state->attempted++;
@@ -1430,15 +1521,22 @@ static void wifi_autoconnect_emit(struct vfs_node *node, void *ctx)
     }
 }
 
-int net_wifi_autoconnect(void)
+int net_wifi_autoconnect(const char *iface_filter)
 {
     struct vfs_node *dir = vfs_lookup("/etc/wifi", "/");
     if (!dir || dir->type != VFS_NODE_DIR) {
+        return -6;
+    }
+    struct wifi_autoconnect_ctx ctx = {
+        .attempted = 0,
+        .connected = 0,
+        .iface_filter = iface_filter,
+    };
+    vfs_list(dir, wifi_autoconnect_emit, &ctx);
+    if (ctx.connected > 0) {
         return 0;
     }
-    struct wifi_autoconnect_ctx ctx = {0};
-    vfs_list(dir, wifi_autoconnect_emit, &ctx);
-    return ctx.connected > 0 ? 0 : (ctx.attempted > 0 ? -1 : 0);
+    return ctx.attempted > 0 ? -1 : -6;
 }
 
 int net_wifi_scan_results(struct wifi_ap *out, size_t max_aps)
@@ -1487,9 +1585,23 @@ int net_wifi_status(struct wifi_status *out)
         if (!st) {
             continue;
         }
+        strncpy(out->iface, ifaces[i].name, sizeof(out->iface) - 1);
         if (st->associated && st->link_ready) {
             out->connected = true;
             strncpy(out->ssid, st->associated_ssid, sizeof(out->ssid) - 1);
+            out->ipv4 = ifaces[i].ipv4;
+            out->netmask = ifaces[i].netmask;
+            out->gateway = ifaces[i].gateway;
+            out->dns_server = ifaces[i].dns_server;
+            for (size_t j = 0; j < st->ap_count; j++) {
+                const struct iwlwifi_ap *ap = &st->aps[j];
+                if (!ap->valid || strcmp(ap->ssid, st->associated_ssid) != 0) {
+                    continue;
+                }
+                out->rssi = ap->rssi;
+                out->flags = ap->security_flags;
+                break;
+            }
             return 0;
         }
     }
