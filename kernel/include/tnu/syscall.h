@@ -59,6 +59,12 @@ enum syscall_number {
     SYS_SET_PASSWORD = 46,
     SYS_ADD_USER = 47,
     SYS_DEL_USER = 48,
+    /* Network syscalls */
+    SYS_RESOLVE4 = 49,
+    SYS_SOCKET = 50,
+    SYS_CONNECT = 51,
+    SYS_SEND = 52,
+    SYS_RECV = 53,
 };
 
 #define TNU_IOCTL_FB_GETINFO 0x544e4601u

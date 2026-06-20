@@ -7,6 +7,7 @@
 #include <tnu/block.h>
 #include <tnu/console.h>
 #include <tnu/elf.h>
+#include <tnu/linux_compat.h>
 #include <tnu/log.h>
 #include <tnu/memory.h>
 #include <tnu/multiboot2.h>
@@ -100,6 +101,8 @@ static const struct shell_builtin_doc shell_builtin_docs[] = {
       "Authenticate as root and run COMMAND with uid/gid 0, preserving argv." },
     { "sysinstall", "sysinstall",
       "Run the text installer. Requires root and a loaded install image." },
+    { "linuxsh", "linuxsh",
+      "Enter an interactive Linux shell (uses /usr/linux as root). Type 'exit' to return." },
 };
 
 static void read_file_text(const char *path, char *out, size_t out_size, const char *fallback)
@@ -1216,6 +1219,94 @@ static int cmd_exec(int argc, char **argv)
     return (int)rc;
 }
 
+static int cmd_linuxsh(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+
+    /* Find the Linux shell */
+    const char *linux_shells[] = {
+        "/usr/linux/bin/bash",
+        "/usr/linux/bin/sh",
+        "/usr/linux/bin/ash",
+        "/usr/linux/bin/busybox",
+        NULL
+    };
+
+    const char *shell_path = NULL;
+    for (size_t i = 0; linux_shells[i]; i++) {
+        struct vfs_node *node = vfs_lookup(linux_shells[i], "/");
+        if (node && node->type == VFS_NODE_FILE) {
+            shell_path = linux_shells[i];
+            break;
+        }
+    }
+
+    if (!shell_path) {
+        kprintf("linuxsh: no Linux shell found in /usr/linux/bin\n");
+        return 1;
+    }
+
+    /* Check if busybox and use 'sh' applet */
+    const char *shell_name = shell_path;
+    if (strstr(shell_path, "busybox")) {
+        shell_name = "sh";
+    } else {
+        /* Extract basename */
+        const char *last_slash = strrchr(shell_path, '/');
+        if (last_slash) {
+            shell_name = last_slash + 1;
+        }
+    }
+
+    /* Get current user info for PS1 */
+    struct process *proc = process_current();
+    const struct user_record *user = user_current();
+    const char *username = user ? user->name : "unknown";
+    uint32_t uid = proc ? proc->uid : 1000;
+
+    /* Prepare environment with custom PS1 */
+    char ps1_var[256];
+    if (uid == 0) {
+        /* Red for root: \[\033[01;31m\](linux) root@hostname:\w# \[\033[00m\] */
+        ksnprintf(ps1_var, sizeof(ps1_var),
+                  "PS1=\\[\\033[01;31m\\](linux) %s@tiramisu:\\w# \\[\\033[00m\\]",
+                  username);
+    } else {
+        /* Green for normal users: \[\033[01;32m\](linux) user@hostname:\w$ \[\033[00m\] */
+        ksnprintf(ps1_var, sizeof(ps1_var),
+                  "PS1=\\[\\033[01;32m\\](linux) %s@tiramisu:\\w$ \\[\\033[00m\\]",
+                  username);
+    }
+
+    /* Build arguments: sh -c "export PS1='...'; cd /; exec sh" */
+    char init_cmd[512];
+    ksnprintf(init_cmd, sizeof(init_cmd),
+              "export %s; cd /; exec %s",
+              ps1_var, shell_name);
+
+    char *linux_argv[4];
+    linux_argv[0] = (char *)shell_name;
+    linux_argv[1] = "-c";
+    linux_argv[2] = init_cmd;
+    linux_argv[3] = NULL;
+
+    kprintf("Entering Linux shell (type 'exit' to return to Tiramisu)...\n");
+    long rc = linux_run_binary(shell_path, 3, linux_argv);
+    
+    if (rc == -2) {
+        kprintf("linuxsh: Linux shell not found: %s\n", shell_path);
+        return 127;
+    }
+    if (rc < 0) {
+        kprintf("linuxsh: failed to start shell (%ld)\n", rc);
+        return 1;
+    }
+    
+    kprintf("Returned to Tiramisu shell.\n");
+    return (int)rc;
+}
+
 static int cmd_history(int argc, char **argv)
 {
     (void)argc;
@@ -1687,7 +1778,7 @@ static const struct command commands[] = {
     { "help", cmd_help },       { "cd", cmd_cd },             { "login", cmd_login },
     { "exec", cmd_exec },       { "history", cmd_history },   { "env", cmd_env },
     { "set", cmd_set },         { "sh", cmd_sh },             { "sudo", cmd_sudo },
-    { "sysinstall", cmd_sysinstall },
+    { "sysinstall", cmd_sysinstall }, { "linuxsh", cmd_linuxsh },
 };
 
 static int read_node_text(const char *path, char *buf, size_t size)

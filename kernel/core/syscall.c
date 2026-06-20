@@ -168,9 +168,25 @@ static bool can_create_in_parent(const struct process *proc, const char *normal)
            has_perm(proc, parent, 2) && has_perm(proc, parent, 1);
 }
 
-static uintptr_t user_brk_floor_current = 0x5000000;
-static uintptr_t user_brk_current = 0x5000000;
-static uintptr_t user_heap_limit_current = 0x7000000;
+static uint16_t sys_ntohs(uint16_t v)
+{
+    return (uint16_t)((v << 8) | (v >> 8));
+}
+
+static uint32_t sys_ntohl(uint32_t v)
+{
+    return ((v & 0x000000ffu) << 24) |
+           ((v & 0x0000ff00u) << 8) |
+           ((v & 0x00ff0000u) >> 8) |
+           ((v & 0xff000000u) >> 24);
+}
+
+struct syscall_sockaddr_in {
+    uint16_t sin_family;
+    uint16_t sin_port;
+    uint32_t sin_addr;
+    uint8_t sin_zero[8];
+};
 
 static uintptr_t page_align_up(uintptr_t value)
 {
@@ -948,10 +964,10 @@ static long sys_exec_image(const char *path, int argc, char **argv)
         /* Original base addresses matching userspace linker script */
         USER_BASE = 0x4000000,
         USER_HEAP_BASE = 0x8000000,
-        USER_STACK_BOTTOM_SMALL = 0x30000000,  /* 768MB - leave room for boot modules */
-        USER_STACK_TOP_SMALL = 0x30400000,    /* 4MB stack */
-        USER_STACK_BOTTOM_LARGE = 0x40000000,  /* 1GB */
-        USER_STACK_TOP_LARGE = 0x40400000,
+        USER_STACK_BOTTOM_SMALL = 0x50000000,  /* 1.25GB - increased to leave room for heap after boot modules */
+        USER_STACK_TOP_SMALL = 0x50400000,    /* 4MB stack */
+        USER_STACK_BOTTOM_LARGE = 0x60000000,  /* 1.5GB */
+        USER_STACK_TOP_LARGE = 0x60400000,
         MAX_ARGS = 16,
         MAX_ARG_LEN = 127,
     };
@@ -1072,9 +1088,15 @@ static long sys_exec_image(const char *path, int argc, char **argv)
     if (elf_end < user_heap_base) {
         elf_end = user_heap_base;
     }
-    user_brk_floor_current = elf_end;
-    user_brk_current = elf_end;
-    user_heap_limit_current = user_heap_limit;
+    struct process *exec_proc = process_current();
+    if (exec_proc) {
+        exec_proc->brk_floor = elf_end;
+        exec_proc->brk_current = elf_end;
+        exec_proc->heap_limit = user_heap_limit;
+        log_info("exec", "initialized native heap: floor=%p current=%p limit=%p",
+                 (void *)exec_proc->brk_floor, (void *)exec_proc->brk_current,
+                 (void *)exec_proc->heap_limit);
+    }
     if (elf64_load(node->data, (size_t)node->size) < 0) {
         return -1;
     }
@@ -1158,30 +1180,43 @@ static long sys_sigaction(int sig, const struct user_sigaction_abi *act,
 
 static long sys_brk(uintptr_t next)
 {
-    if (next == 0) {
-        return (long)user_brk_current;
+    struct process *proc = process_current();
+    if (!proc) {
+        log_warn("syscall", "brk: no current process");
+        return -1;
     }
-    if (next < user_brk_floor_current) {
-        return (long)user_brk_current;
+    /* Initialize heap on first use if not already set */
+    if (proc->brk_floor == 0) {
+        proc->brk_floor = 0x5000000;
+        proc->brk_current = 0x5000000;
+        proc->heap_limit = 0x7000000;
+        log_info("syscall", "brk: initialized heap for pid=%d floor=%p limit=%p",
+                 proc->pid, (void *)proc->brk_floor, (void *)proc->heap_limit);
+    }
+    if (next == 0) {
+        return (long)proc->brk_current;
+    }
+    if (next < proc->brk_floor) {
+        return (long)proc->brk_current;
     }
     /* Allow any value in [initial_brk, heap_limit]; shrink is always ok */
-    if (next > user_heap_limit_current) {
+    if (next > proc->heap_limit) {
         log_warn("syscall", "brk out of range next=%p limit=%p",
-                 (void *)next, (void *)user_heap_limit_current);
-        return (long)user_brk_current;
+                 (void *)next, (void *)proc->heap_limit);
+        return (long)proc->brk_current;
     }
-    if (next > user_brk_current) {
+    if (next > proc->brk_current) {
         /* vmm_map_range_identity is idempotent for already-mapped pages */
-        if (vmm_map_range_identity(user_brk_current, next - user_brk_current,
+        if (vmm_map_range_identity(proc->brk_current, next - proc->brk_current,
                                    VMM_FLAG_WRITABLE | VMM_FLAG_USER) < 0) {
             log_warn("syscall", "brk map failed start=%p len=%llu",
-                     (void *)user_brk_current,
-                     (uint64_t)(next - user_brk_current));
-            return (long)user_brk_current;
+                     (void *)proc->brk_current,
+                     (uint64_t)(next - proc->brk_current));
+            return (long)proc->brk_current;
         }
     }
-    user_brk_current = next;
-    return (long)user_brk_current;
+    proc->brk_current = next;
+    return (long)proc->brk_current;
 }
 
 /* Kernel-side timespec (matches user ABI: two 64-bit values) */
@@ -1983,6 +2018,42 @@ long syscall_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
         return sys_add_user((const char *)a0);
     case SYS_DEL_USER:
         return sys_del_user((const char *)a0);
+    case SYS_RESOLVE4: {
+        if (!uptr_ok((const void *)a0, 1) || !uptr_ok((void *)a1, sizeof(uint32_t))) {
+            return -1;
+        }
+        char host[256];
+        uint32_t ipv4 = 0;
+        if (copy_user_string_bounded((const char *)a0, host, sizeof(host)) < 0) {
+            return -1;
+        }
+        if (net_resolve4(host, &ipv4) < 0 || !ipv4) {
+            return -1;
+        }
+        *(uint32_t *)a1 = ipv4;
+        return 0;
+    }
+    case SYS_SOCKET:
+        return net_socket_create((int)a0, (int)a1, (int)a2);
+    case SYS_CONNECT: {
+        const struct syscall_sockaddr_in *addr = (const struct syscall_sockaddr_in *)a1;
+        if (!uptr_ok(addr, sizeof(*addr)) || (size_t)a2 < sizeof(*addr) ||
+            addr->sin_family != 2) {
+            return -1;
+        }
+        return net_socket_connect((int)a0, sys_ntohl(addr->sin_addr),
+                                  sys_ntohs(addr->sin_port));
+    }
+    case SYS_SEND:
+        if (!uptr_ok((const void *)a1, (size_t)a2)) {
+            return -1;
+        }
+        return net_socket_send((int)a0, (const void *)a1, (size_t)a2);
+    case SYS_RECV:
+        if (!uptr_ok((void *)a1, (size_t)a2)) {
+            return -1;
+        }
+        return net_socket_recv((int)a0, (void *)a1, (size_t)a2);
     case SYS_EXIT:
         /* Flush the persistent TFS before the process exits so that any
          * changes made during this session are not lost if the user shuts

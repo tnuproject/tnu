@@ -38,12 +38,6 @@
 #define LINUX_DT_DIR 4
 #define LINUX_DT_REG 8
 
-static uintptr_t linux_brk_floor;
-static uintptr_t linux_brk_current;
-static uintptr_t linux_brk_limit;
-static uintptr_t linux_mmap_next;
-static uintptr_t linux_mmap_limit;
-
 struct linux_timespec {
     int64_t tv_sec;
     int64_t tv_nsec;
@@ -127,11 +121,15 @@ static uintptr_t linux_page_up(uintptr_t value)
 
 void linux_mm_reset(uintptr_t brk_floor, uintptr_t mmap_base, uintptr_t mmap_limit)
 {
-    linux_brk_floor = linux_page_up(brk_floor);
-    linux_brk_current = linux_brk_floor;
-    linux_brk_limit = mmap_base;
-    linux_mmap_next = linux_page_up(mmap_base);
-    linux_mmap_limit = mmap_limit;
+    struct process *proc = process_current();
+    if (!proc) {
+        return;
+    }
+    proc->linux_brk_floor = linux_page_up(brk_floor);
+    proc->linux_brk_current = proc->linux_brk_floor;
+    proc->linux_brk_limit = mmap_base;
+    proc->linux_mmap_next = linux_page_up(mmap_base);
+    proc->linux_mmap_limit = mmap_limit;
 }
 
 static long native_dispatch(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
@@ -677,33 +675,41 @@ static long linux_getrandom(void *buf, size_t len, unsigned int flags)
 
 static long linux_brk(uintptr_t addr)
 {
-    if (!linux_brk_floor) {
+    struct process *proc = process_current();
+    if (!proc) {
+        return -LINUX_ESRCH;
+    }
+    if (!proc->linux_brk_floor) {
         linux_mm_reset(0x10000000ULL, 0x20000000ULL, 0x40000000ULL);
     }
     if (addr == 0) {
-        return (long)linux_brk_current;
+        return (long)proc->linux_brk_current;
     }
     uintptr_t next = linux_page_up(addr);
-    if (next < linux_brk_floor || next >= linux_brk_limit) {
-        return (long)linux_brk_current;
+    if (next < proc->linux_brk_floor || next >= proc->linux_brk_limit) {
+        return (long)proc->linux_brk_current;
     }
-    if (next > linux_brk_current &&
-        vmm_map_range_identity(linux_brk_current, next - linux_brk_current,
+    if (next > proc->linux_brk_current &&
+        vmm_map_range_identity(proc->linux_brk_current, next - proc->linux_brk_current,
                                VMM_FLAG_WRITABLE | VMM_FLAG_USER) < 0) {
-        return (long)linux_brk_current;
+        return (long)proc->linux_brk_current;
     }
-    linux_brk_current = next;
-    return (long)linux_brk_current;
+    proc->linux_brk_current = next;
+    return (long)proc->linux_brk_current;
 }
 
 static long linux_mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
 {
     (void)prot;
 
+    struct process *proc = process_current();
+    if (!proc) {
+        return -LINUX_ESRCH;
+    }
     if (length == 0) {
         return -LINUX_EINVAL;
     }
-    if (!linux_mmap_next) {
+    if (!proc->linux_mmap_next) {
         linux_mm_reset(0x10000000ULL, 0x20000000ULL, 0x40000000ULL);
     }
 
@@ -712,10 +718,10 @@ static long linux_mmap(void *addr, size_t length, int prot, int flags, int fd, o
     if ((flags & LINUX_MAP_FIXED) && addr) {
         base = (uintptr_t)addr;
     } else {
-        base = linux_mmap_next;
-        linux_mmap_next += size;
+        base = proc->linux_mmap_next;
+        proc->linux_mmap_next += size;
     }
-    if (base + size <= base || base + size > linux_mmap_limit) {
+    if (base + size <= base || base + size > proc->linux_mmap_limit) {
         return -LINUX_ENOMEM;
     }
     if (!(flags & (LINUX_MAP_ANON | LINUX_MAP_PRIVATE | LINUX_MAP_SHARED)) && fd < 0) {
@@ -727,7 +733,6 @@ static long linux_mmap(void *addr, size_t length, int prot, int flags, int fd, o
     if (flags & LINUX_MAP_ANON) {
         memset((void *)base, 0, size);
     } else if (fd >= 0) {
-        struct process *proc = process_current();
         struct file_descriptor *file = process_get_fd(proc, fd);
         if (!file || !file->node || offset < 0) {
             return -LINUX_EBADF;
