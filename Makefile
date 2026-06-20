@@ -131,7 +131,7 @@ doom: $(BUILD)/user/doom
 iso: $(ISO)
 
 run: $(ISO)
-	$(QEMU) -m 1G -cdrom $(ISO) -vga std -serial file:/tmp/qemu_serial.log
+	$(QEMU) -m 1G -cdrom $(ISO) -vga std
 
 clean:
 	rm -rf $(BUILD)
