@@ -287,6 +287,8 @@ rootfs: userspace version-files firmware-iwlwifi nano doom $(KERNEL) $(EFI_BOOT)
 		cp -a ports/doom/freedoom/wads/. $(BUILD)/rootfs/usr/share/games/doom/ 2>/dev/null || true; \
 	fi
 	cp -a $(BUILD)/firmware/iwlwifi/. $(BUILD)/rootfs/lib/firmware/iwlwifi/
+	mkdir -p $(BUILD)/rootfs/universe-main
+	@if [ -d universe-main ]; then cp -a universe-main/. $(BUILD)/rootfs/universe-main/ 2>/dev/null || true; fi
 	# Remove Linux binaries from PATH directories to prevent accidental execution
 	rm -f $(BUILD)/rootfs/bin/busybox
 	rm -f $(BUILD)/rootfs/usr/bin/busybox

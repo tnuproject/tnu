@@ -21,11 +21,14 @@ struct usb_controller_info {
     uint16_t vendor_id;
     uint16_t device_id;
     uint8_t prog_if;
+    uintptr_t bar0;
+    uint16_t io_base;
     const char *driver;
     bool hid_ready;
 };
 
 void usb_init(void);
+void usb_poll(void);
 size_t usb_controller_count(void);
 const struct usb_controller_info *usb_controller_get(size_t index);
 const char *usb_controller_type_name(enum usb_controller_type type);

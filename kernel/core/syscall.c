@@ -720,6 +720,15 @@ static long sys_read(int fd, void *buf, size_t count)
             }
             return (long)n;
         }
+        if (strncmp(file->node->name, "sd", 2) == 0 || strncmp(file->node->name, "nvme", 4) == 0) {
+            uint64_t lba = file->offset / 512ULL;
+            int r = block_read(file->node->name, lba, buf, count);
+            if (r >= 0) {
+                file->offset += (uint64_t)count;
+                return (long)count;
+            }
+            return -1;
+        }
         return -1;
     }
     ssize_t ret = vfs_read_node(file->node, file->offset, buf, count);
@@ -767,6 +776,15 @@ static long sys_write(int fd, const void *buf, size_t count)
             framebuffer_blit(0, 0, fb->width, (uint32_t)(pixels / fb->width),
                              (const uint32_t *)buf, fb->width);
             return (long)(pixels * sizeof(uint32_t));
+        }
+        if (strncmp(file->node->name, "sd", 2) == 0 || strncmp(file->node->name, "nvme", 4) == 0) {
+            uint64_t lba = file->offset / 512ULL;
+            int w = block_write_lba28(file->node->name, (uint32_t)lba, buf, count);
+            if (w >= 0) {
+                file->offset += (uint64_t)count;
+                return (long)count;
+            }
+            return -1;
         }
         return -1;
     }

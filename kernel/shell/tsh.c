@@ -103,6 +103,8 @@ static const struct shell_builtin_doc shell_builtin_docs[] = {
       "Run the text installer. Requires root and a loaded install image." },
     { "linuxsh", "linuxsh",
       "Enter an interactive Linux shell (uses /usr/linux as root). Type 'exit' to return." },
+    { "linux", "linux PROGRAM [ARG...]",
+      "Execute an ELF Linux binary directly via the Linux compatibility subsystem." },
 };
 
 static void read_file_text(const char *path, char *out, size_t out_size, const char *fallback)
@@ -1307,6 +1309,20 @@ static int cmd_linuxsh(int argc, char **argv)
     return (int)rc;
 }
 
+static int cmd_linux(int argc, char **argv)
+{
+    if (argc < 2) {
+        kprintf("usage: linux <program> [args...]\n");
+        return 1;
+    }
+    long rc = linux_run_binary(argv[1], argc - 1, argv + 1);
+    if (rc < 0) {
+        kprintf("linux: failed to execute '%s' (err %ld)\n", argv[1], rc);
+        return 127;
+    }
+    return (int)rc;
+}
+
 static int cmd_history(int argc, char **argv)
 {
     (void)argc;
@@ -1778,7 +1794,7 @@ static const struct command commands[] = {
     { "help", cmd_help },       { "cd", cmd_cd },             { "login", cmd_login },
     { "exec", cmd_exec },       { "history", cmd_history },   { "env", cmd_env },
     { "set", cmd_set },         { "sh", cmd_sh },             { "sudo", cmd_sudo },
-    { "sysinstall", cmd_sysinstall }, { "linuxsh", cmd_linuxsh },
+    { "sysinstall", cmd_sysinstall }, { "linuxsh", cmd_linuxsh }, { "linux", cmd_linux },
 };
 
 static int read_node_text(const char *path, char *buf, size_t size)

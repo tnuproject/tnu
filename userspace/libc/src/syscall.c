@@ -203,6 +203,11 @@ int unlink(const char *path)
     return (int)tnu_syscall(SYS_UNLINK, (long)path, 0, 0, 0, 0, 0);
 }
 
+int rmdir(const char *path)
+{
+    return (int)tnu_syscall(SYS_UNLINK, (long)path, 0, 0, 0, 0, 0);
+}
+
 int stat(const char *path, struct stat *st)
 {
     struct kernel_vfs_stat kst;

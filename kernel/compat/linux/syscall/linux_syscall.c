@@ -864,7 +864,9 @@ long linux_syscall_dispatch(const struct linux_syscall_args *a)
     case 23:
         return dispatch_native_syscall(SYS_SELECT, a);
     case 24:
+    case 28:
     case 95:
+    case 221:
     case 273:
         return 0;
     case 72:
@@ -994,6 +996,11 @@ long linux_syscall_dispatch(const struct linux_syscall_args *a)
         return linux_execveat((int)a->a0, (const char *)(uintptr_t)a->a1,
                               (char *const *)(uintptr_t)a->a2,
                               (char *const *)(uintptr_t)a->a3, (int)a->a4);
+    case 332:
+        return linux_stat_path((const char *)(uintptr_t)a->a1,
+                               (struct linux_stat *)(uintptr_t)a->a4);
+    case 334:
+        return -LINUX_ENOSYS;
 
     /* Socket syscalls (41-55) */
     case 41:

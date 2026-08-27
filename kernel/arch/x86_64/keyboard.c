@@ -4,6 +4,7 @@
 #include <arch/pit.h>
 #include <tnu/string.h>
 #include <tnu/types.h>
+#include <tnu/usb.h>
 
 /*
  * TNU i8042/PS2 keyboard driver.
@@ -950,6 +951,7 @@ static void process_scancode(uint8_t scancode)
 void keyboard_poll(void)
 {
     poll_count++;
+    usb_poll();
     for (size_t i = 0; i < 64; i++) {
         uint8_t status = inb(I8042_STATUS);
 

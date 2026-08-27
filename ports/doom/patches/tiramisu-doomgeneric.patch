@@ -1,0 +1,26 @@
+From: Tiramisu OS <dev@tiramisu.org>
+Subject: [PATCH] Add Tiramisu OS backend to doomgeneric
+
+Integrate /dev/fb0 framebuffer rendering, /dev/input/kbd keyboard
+event queue, monotonic timer, and freedoom1.wad support for Tiramisu OS.
+
+---
+ Makefile               | 12 +++++++++++-
+ src/doomgeneric_tnu.c  | 80 ++++++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 91 insertions(+), 1 deletion(-)
+
+diff --git a/Makefile b/Makefile
+index 0000000..1111111 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1,5 +1,15 @@
+-CC ?= gcc
+-CFLAGS ?= -O2
++CC := x86_64-elf-gcc
++CFLAGS := -O2 -Wall -I../../userspace/libc/include -Isrc -DDOOMGENERIC_TNU
++LDFLAGS := -L../../build/userspace -lc
++
++all: doom
++
++doom: src/doomgeneric.o src/doomgeneric_tnu.o $(DOOM_OBJS)
++	$(CC) -o $@ $^ $(LDFLAGS)

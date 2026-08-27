@@ -1,0 +1,5 @@
+# Tiramisu OS Official Package Repository Index
+# Format: name|version|arch|description|archive_name|dependencies
+doom|1.1.0|x86_64|DOOM classic ported to Tiramisu OS via doomgeneric|doom-1.1.0-x86_64|libc
+fastfetch|2.8.0|x86_64|Fast system information display tool for Tiramisu OS|fastfetch-2.8.0-x86_64|libc
+nano|9.0|x86_64|GNU nano editor adapted for Tiramisu OS with curses shim|nano-9.0-x86_64|libc

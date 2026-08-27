@@ -1,0 +1,62 @@
+name: Build Tiramisu Package Repository
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - 'ports/**'
+      - 'tools/pkg-repo-builder.py'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  build-packages:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential patch git tar xz-utils
+
+      - name: Build Package Repository
+        run: |
+          python3 tools/pkg-repo-builder.py --output universe-main
+
+      - name: Upload Package Repository Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tiramisu-universe-repo
+          path: universe-main/
+
+      - name: Deploy to GitHub Pages
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: universe-main/
+
+  deploy-pages:
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    needs: build-packages
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

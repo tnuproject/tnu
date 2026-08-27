@@ -214,18 +214,22 @@ static int add_disk(const char *path, int is_nvme)
 static int list_disks(void)
 {
     disk_count = 0;
-    printf("Available disks:\n\n");
-
+    /* Scan SATA / AHCI disks */
     for (int i = 0; i < 16; i++) {
         char path[64];
         snprintf(path, sizeof(path), "/dev/sd%c", 'a' + i);
         add_disk(path, 0);
     }
 
-    /* NVMe intentionally disabled in this SATA-focused build.
-     * The current nvme.c still has stubbed read/write paths, so exposing NVMe
-     * here would make sysinstall appear to succeed while writing nothing.
-     */
+    /* Scan NVMe SSDs */
+    for (int i = 0; i < 8; i++) {
+        char path[64];
+        snprintf(path, sizeof(path), "/dev/nvme%dn1", i);
+        if (add_disk(path, 1) < 0) {
+            snprintf(path, sizeof(path), "/dev/nvme%d", i);
+            add_disk(path, 1);
+        }
+    }
 
     if (disk_count == 0) {
         printf("  No usable block disks found.\n");
@@ -402,9 +406,13 @@ static int create_gpt_partitions(int fd, uint64_t disk_size_sectors, root_fs_t r
 
 static void partition_paths(const char *disk, char esp[64], char root[64])
 {
-    /* SATA/ATA naming: /dev/sda -> /dev/sda1 and /dev/sda2. */
-    snprintf(esp, 64, "%s1", disk);
-    snprintf(root, 64, "%s2", disk);
+    if (strstr(disk, "nvme")) {
+        snprintf(esp, 64, "%sp1", disk);
+        snprintf(root, 64, "%sp2", disk);
+    } else {
+        snprintf(esp, 64, "%s1", disk);
+        snprintf(root, 64, "%s2", disk);
+    }
 }
 
 static int run_command(const char *cmd)

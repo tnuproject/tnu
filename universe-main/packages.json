@@ -1,0 +1,62 @@
+{
+  "repository": "universe-main",
+  "arch": "x86_64",
+  "packages": [
+    {
+      "name": "doom",
+      "version": "1.1.0",
+      "arch": "x86_64",
+      "description": "DOOM classic ported to Tiramisu OS via doomgeneric",
+      "archive": "doom-1.1.0-x86_64",
+      "dependencies": [
+        "libc"
+      ],
+      "upstream": {
+        "name": "doomgeneric",
+        "url": "https://github.com/ozkl/doomgeneric.git",
+        "commit": "master",
+        "type": "git"
+      },
+      "patches": [
+        "patches/tiramisu-doomgeneric.patch"
+      ]
+    },
+    {
+      "name": "fastfetch",
+      "version": "2.8.0",
+      "arch": "x86_64",
+      "description": "Fast system information display tool for Tiramisu OS",
+      "archive": "fastfetch-2.8.0-x86_64",
+      "dependencies": [
+        "libc"
+      ],
+      "upstream": {
+        "name": "fastfetch",
+        "url": "https://github.com/fastfetch-cli/fastfetch.git",
+        "type": "git"
+      },
+      "patches": [
+        "patches/tiramisu-branding.patch"
+      ]
+    },
+    {
+      "name": "nano",
+      "version": "9.0",
+      "arch": "x86_64",
+      "description": "GNU nano editor adapted for Tiramisu OS with curses shim",
+      "archive": "nano-9.0-x86_64",
+      "dependencies": [
+        "libc"
+      ],
+      "upstream": {
+        "name": "GNU nano",
+        "url": "https://www.nano-editor.org/dist/v9/nano-9.0.tar.xz",
+        "version": "9.0",
+        "type": "tarball"
+      },
+      "patches": [
+        "patches/tnu-input-fix.patch"
+      ]
+    }
+  ]
+}

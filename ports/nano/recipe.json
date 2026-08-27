@@ -1,0 +1,18 @@
+{
+  "name": "nano",
+  "version": "9.0",
+  "arch": "x86_64",
+  "description": "GNU nano editor adapted for Tiramisu OS with curses shim",
+  "upstream": {
+    "name": "GNU nano",
+    "url": "https://www.nano-editor.org/dist/v9/nano-9.0.tar.xz",
+    "version": "9.0",
+    "type": "tarball"
+  },
+  "patches": [
+    "patches/tnu-input-fix.patch"
+  ],
+  "target_binary": "/bin/nano",
+  "dependencies": ["libc"],
+  "license": "GPL-3.0-or-later"
+}

@@ -1,0 +1,10 @@
+{
+  "name": "nano",
+  "version": "9.0",
+  "arch": "x86_64",
+  "description": "GNU nano editor adapted for Tiramisu OS with curses shim",
+  "dependencies": [
+    "libc"
+  ],
+  "license": "GPL-3.0-or-later"
+}

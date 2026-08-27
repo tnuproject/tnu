@@ -1,16 +1,15 @@
 /**
  * @file gfx.c
- * @brief Graphics API - Hardware-independent 2D graphics primitives
+ * @brief Graphics API - Hardware-independent 2D graphics primitives with
+ *        Double Buffering and Dirty Rectangle Tracking for maximum fluidity.
  */
 
 #include <tnu/gfx.h>
 #include <tnu/video.h>
 #include <tnu/string.h>
 #include <tnu/log.h>
+#include <tnu/memory.h>
 #include <arch/cpu.h>
-
-/* Kernel memory allocator */
-extern void *vmm_alloc_pages(size_t pages);
 
 /* GFX state */
 static const struct video_info *vid;
@@ -53,7 +52,7 @@ static inline uint8_t *get_pixel_addr(int32_t x, int32_t y)
 
 static inline uint8_t *get_back_pixel_addr(int32_t x, int32_t y)
 {
-    if (!back_buffer) return NULL;
+    if (!back_buffer) return get_pixel_addr(x, y);
     return back_buffer + (size_t)y * vid->pitch + 
            (size_t)x * vid->bytes_per_pixel;
 }
@@ -68,15 +67,27 @@ int gfx_init(void)
         return -1;
     }
     
-    /* Allocate back buffer for double buffering */
+    /* Allocate back buffer for tearing-free double buffering */
     if (vid->mode_type != VIDEO_MODE_VGA_TEXT && vid->framebuffer_size > 0) {
         back_buffer_size = vid->framebuffer_size;
-        back_buffer = NULL;
-        log_warn("gfx", "Double buffering disabled - no kernel page allocator available");
+        back_buffer = (uint8_t *)kmalloc(back_buffer_size);
+        if (back_buffer) {
+            memset(back_buffer, 0, back_buffer_size);
+            log_info("gfx", "Double buffering enabled (%zu KiB back-buffer)",
+                     back_buffer_size / 1024);
+        } else {
+            log_warn("gfx", "Back-buffer allocation failed; using direct framebuffer");
+        }
     }
     
+    dirty_rect.x = 0;
+    dirty_rect.y = 0;
+    dirty_rect.w = 0;
+    dirty_rect.h = 0;
+    has_dirty = false;
+
     gfx_initialized = true;
-    log_info("gfx", "Graphics API initialized");
+    log_info("gfx", "Graphics 2D API initialized");
     return 0;
 }
 
@@ -94,24 +105,17 @@ void gfx_draw_pixel(int32_t x, int32_t y, uint32_t color)
         return;
     }
     
-    uint8_t *dst = get_pixel_addr(x, y);
-    uint8_t *back = get_back_pixel_addr(x, y);
+    uint8_t *target = get_back_pixel_addr(x, y);
     
     switch (vid->bits_per_pixel) {
         case 32:
-            *(uint32_t *)dst = color;
-            if (back) *(uint32_t *)back = color;
+            *(uint32_t *)target = color;
             break;
             
         case 24:
-            dst[0] = (uint8_t)(color & 0xff);
-            dst[1] = (uint8_t)((color >> 8) & 0xff);
-            dst[2] = (uint8_t)((color >> 16) & 0xff);
-            if (back) {
-                back[0] = dst[0];
-                back[1] = dst[1];
-                back[2] = dst[2];
-            }
+            target[0] = (uint8_t)(color & 0xff);
+            target[1] = (uint8_t)((color >> 8) & 0xff);
+            target[2] = (uint8_t)((color >> 16) & 0xff);
             break;
             
         case 16: {
@@ -120,17 +124,18 @@ void gfx_draw_pixel(int32_t x, int32_t y, uint32_t color)
             uint16_t g = (uint16_t)((color >> 10) & 0x3f);
             uint16_t b = (uint16_t)((color >> 3) & 0x1f);
             uint16_t pixel = (uint16_t)((r << 11) | (g << 5) | b);
-            *(uint16_t *)dst = pixel;
-            if (back) *(uint16_t *)back = pixel;
+            *(uint16_t *)target = pixel;
             break;
         }
     }
     
-    gfx_mark_dirty(x, y, 1, 1);
+    if (back_buffer) {
+        gfx_mark_dirty(x, y, 1, 1);
+    }
 }
 
 /**
- * gfx_get_pixel - Read pixel from framebuffer
+ * gfx_get_pixel - Read pixel from framebuffer / back-buffer
  */
 uint32_t gfx_get_pixel(int32_t x, int32_t y)
 {
@@ -138,7 +143,7 @@ uint32_t gfx_get_pixel(int32_t x, int32_t y)
         return GFX_COLOR_BLACK;
     }
     
-    uint8_t *src = get_pixel_addr(x, y);
+    uint8_t *src = get_back_pixel_addr(x, y);
     
     switch (vid->bits_per_pixel) {
         case 32:
@@ -173,7 +178,6 @@ void gfx_draw_line(int32_t x1, int32_t y1, int32_t x2, int32_t y2, uint32_t colo
     }
     
     if (iabs32(dx) >= iabs32(dy)) {
-        /* Horizontal-ish */
         if (x1 > x2) {
             int32_t tmp = x1; x1 = x2; x2 = tmp;
             tmp = y1; y1 = y2; y2 = tmp;
@@ -194,7 +198,6 @@ void gfx_draw_line(int32_t x1, int32_t y1, int32_t x2, int32_t y2, uint32_t colo
             d += 2 * dy;
         }
     } else {
-        /* Vertical-ish */
         if (y1 > y2) {
             int32_t tmp = x1; x1 = x2; x2 = tmp;
             tmp = y1; y1 = y2; y2 = tmp;
@@ -231,7 +234,7 @@ void gfx_draw_rect(int32_t x, int32_t y, int32_t w, int32_t h, uint32_t color)
 }
 
 /**
- * gfx_fill_rect - Fill rectangle with solid color
+ * gfx_fill_rect - Fill rectangle with solid color (optimized)
  */
 void gfx_fill_rect(int32_t x, int32_t y, int32_t w, int32_t h, uint32_t color)
 {
@@ -247,21 +250,16 @@ void gfx_fill_rect(int32_t x, int32_t y, int32_t w, int32_t h, uint32_t color)
     h = y2 - y1;
     if (w <= 0 || h <= 0) return;
     
-    /* Fast path for 32-bit */
+    /* 32-bit fast path */
     if (vid->bits_per_pixel == 32) {
-        uint32_t *dst = (uint32_t *)get_pixel_addr(x1, y1);
-        uint32_t *back = back_buffer ? (uint32_t *)get_back_pixel_addr(x1, y1) : NULL;
+        uint32_t *target = (uint32_t *)get_back_pixel_addr(x1, y1);
+        uint32_t pixel = color & 0x00ffffffu;
         
         for (int32_t row = 0; row < h; row++) {
-            for (int32_t col = 0; col < w; col++) {
-                dst[col] = color;
-                if (back) back[col] = color;
-            }
-            dst = (uint32_t *)((uint8_t *)dst + vid->pitch);
-            if (back) back = (uint32_t *)((uint8_t *)back + vid->pitch);
+            memset32(target, pixel, (size_t)w);
+            target = (uint32_t *)((uint8_t *)target + vid->pitch);
         }
     } else {
-        /* Slow path */
         for (int32_t yy = y1; yy < y2; yy++) {
             for (int32_t xx = x1; xx < x2; xx++) {
                 gfx_draw_pixel(xx, yy, color);
@@ -269,7 +267,9 @@ void gfx_fill_rect(int32_t x, int32_t y, int32_t w, int32_t h, uint32_t color)
         }
     }
     
-    gfx_mark_dirty(x1, y1, w, h);
+    if (back_buffer) {
+        gfx_mark_dirty(x1, y1, w, h);
+    }
 }
 
 /**
@@ -323,8 +323,7 @@ void gfx_fill_circle(int32_t cx, int32_t cy, int32_t radius, uint32_t color)
  */
 void gfx_draw_ellipse(int32_t cx, int32_t cy, int32_t rx, int32_t ry, uint32_t color)
 {
-    if (rx <= 0 || ry <= 0)
-        return;
+    if (rx <= 0 || ry <= 0) return;
 
     int32_t x = 0;
     int32_t y = ry;
@@ -334,12 +333,9 @@ void gfx_draw_ellipse(int32_t cx, int32_t cy, int32_t rx, int32_t ry, uint32_t c
 
     int64_t dx = 0;
     int64_t dy = 2 * rx2 * y;
-
     int64_t err = ry2 - rx2 * ry + rx2 / 4;
 
-
     while (dx < dy) {
-
         gfx_draw_pixel(cx + x, cy + y, color);
         gfx_draw_pixel(cx - x, cy + y, color);
         gfx_draw_pixel(cx + x, cy - y, color);
@@ -357,15 +353,9 @@ void gfx_draw_ellipse(int32_t cx, int32_t cy, int32_t rx, int32_t ry, uint32_t c
         }
     }
 
-
-    err =
-        ry2 * (x + 1) * (x + 1) +
-        rx2 * (y - 1) * (y - 1) -
-        rx2 * ry2;
-
+    err = ry2 * (x + 1) * (x + 1) + rx2 * (y - 1) * (y - 1) - rx2 * ry2;
 
     while (y >= 0) {
-
         gfx_draw_pixel(cx + x, cy + y, color);
         gfx_draw_pixel(cx - x, cy + y, color);
         gfx_draw_pixel(cx + x, cy - y, color);
@@ -437,24 +427,26 @@ void gfx_copy_region(int32_t src_x, int32_t src_y,
 {
     if (!gfx_initialized || w <= 0 || h <= 0) return;
     
-    /* Handle overlapping regions */
+    /* Handle overlapping regions in back_buffer or front framebuffer */
     if (src_y < dst_y || (src_y == dst_y && src_x < dst_x)) {
         /* Copy backwards */
         for (int32_t y = h - 1; y >= 0; y--) {
-            uint8_t *src = get_pixel_addr(src_x, src_y + y);
-            uint8_t *dst = get_pixel_addr(dst_x, dst_y + y);
+            uint8_t *src = get_back_pixel_addr(src_x, src_y + y);
+            uint8_t *dst = get_back_pixel_addr(dst_x, dst_y + y);
             memmove(dst, src, (size_t)w * vid->bytes_per_pixel);
         }
     } else {
         /* Copy forwards */
         for (int32_t y = 0; y < h; y++) {
-            uint8_t *src = get_pixel_addr(src_x, src_y + y);
-            uint8_t *dst = get_pixel_addr(dst_x, dst_y + y);
+            uint8_t *src = get_back_pixel_addr(src_x, src_y + y);
+            uint8_t *dst = get_back_pixel_addr(dst_x, dst_y + y);
             memmove(dst, src, (size_t)w * vid->bytes_per_pixel);
         }
     }
     
-    gfx_mark_dirty(dst_x, dst_y, w, h);
+    if (back_buffer) {
+        gfx_mark_dirty(dst_x, dst_y, w, h);
+    }
 }
 
 /**
@@ -465,14 +457,15 @@ void gfx_clear(uint32_t color)
     gfx_fill_rect(0, 0, (int32_t)vid->width, (int32_t)vid->height, color);
 }
 
-/* Double buffering */
+/* Double buffering & Dirty Rectangles */
 
 void gfx_swap_buffers(void)
 {
     if (!back_buffer) return;
     
-    /* Copy back buffer to front */
+    /* Copy entire back buffer to front framebuffer via rep movsq */
     memcpy((void *)vid->framebuffer_addr, back_buffer, vid->framebuffer_size);
+    has_dirty = false;
 }
 
 bool gfx_has_double_buffer(void)
@@ -480,36 +473,78 @@ bool gfx_has_double_buffer(void)
     return back_buffer != NULL;
 }
 
-/* Dirty rectangle tracking */
-
 void gfx_mark_dirty(int32_t x, int32_t y, int32_t w, int32_t h)
 {
+    if (w <= 0 || h <= 0) return;
+    
+    /* Clip to screen bounds */
+    int32_t x1 = clamp32(x, 0, (int32_t)vid->width);
+    int32_t y1 = clamp32(y, 0, (int32_t)vid->height);
+    int32_t x2 = clamp32(x + w, 0, (int32_t)vid->width);
+    int32_t y2 = clamp32(y + h, 0, (int32_t)vid->height);
+    
+    w = x2 - x1;
+    h = y2 - y1;
+    if (w <= 0 || h <= 0) return;
+    
     if (!has_dirty) {
-        dirty_rect.x = x;
-        dirty_rect.y = y;
+        dirty_rect.x = x1;
+        dirty_rect.y = y1;
         dirty_rect.w = w;
         dirty_rect.h = h;
         has_dirty = true;
     } else {
-        /* Expand rectangle */
-        int32_t x1 = dirty_rect.x < x ? dirty_rect.x : x;
-        int32_t y1 = dirty_rect.y < y ? dirty_rect.y : y;
-        int32_t x2 = dirty_rect.x + dirty_rect.w;
-        int32_t y2 = dirty_rect.y + dirty_rect.h;
-        int32_t nx2 = x + w;
-        int32_t ny2 = y + h;
+        int32_t cur_x1 = dirty_rect.x;
+        int32_t cur_y1 = dirty_rect.y;
+        int32_t cur_x2 = dirty_rect.x + dirty_rect.w;
+        int32_t cur_y2 = dirty_rect.y + dirty_rect.h;
         
-        dirty_rect.x = x1;
-        dirty_rect.y = y1;
-        dirty_rect.w = (x2 > nx2 ? x2 : nx2) - x1;
-        dirty_rect.h = (y2 > ny2 ? y2 : ny2) - y1;
+        int32_t new_x1 = x1 < cur_x1 ? x1 : cur_x1;
+        int32_t new_y1 = y1 < cur_y1 ? y1 : cur_y1;
+        int32_t new_x2 = x2 > cur_x2 ? x2 : cur_x2;
+        int32_t new_y2 = y2 > cur_y2 ? y2 : cur_y2;
+        
+        dirty_rect.x = new_x1;
+        dirty_rect.y = new_y1;
+        dirty_rect.w = new_x2 - new_x1;
+        dirty_rect.h = new_y2 - new_y1;
     }
 }
 
+/**
+ * gfx_flush_dirty - Transfer only modified areas to VRAM (minimizing PCIe bus load)
+ */
 void gfx_flush_dirty(void)
 {
-    /* For now, just clear dirty flag */
-    /* In full implementation, would copy only dirty region */
+    if (!has_dirty || !back_buffer) {
+        has_dirty = false;
+        return;
+    }
+    
+    int32_t x = dirty_rect.x;
+    int32_t y = dirty_rect.y;
+    int32_t w = dirty_rect.w;
+    int32_t h = dirty_rect.h;
+    
+    if (w <= 0 || h <= 0) {
+        has_dirty = false;
+        return;
+    }
+    
+    /* Full-screen blit optimization */
+    if (x == 0 && (uint32_t)w == vid->width && (size_t)w * vid->bytes_per_pixel == vid->pitch) {
+        size_t offset = (size_t)y * vid->pitch;
+        size_t bytes  = (size_t)h * vid->pitch;
+        memcpy((uint8_t *)vid->framebuffer_addr + offset, back_buffer + offset, bytes);
+    } else {
+        size_t row_bytes = (size_t)w * vid->bytes_per_pixel;
+        for (int32_t row = 0; row < h; row++) {
+            uint8_t *src = back_buffer + (size_t)(y + row) * vid->pitch + (size_t)x * vid->bytes_per_pixel;
+            uint8_t *dst = (uint8_t *)vid->framebuffer_addr + (size_t)(y + row) * vid->pitch + (size_t)x * vid->bytes_per_pixel;
+            memcpy(dst, src, row_bytes);
+        }
+    }
+    
     has_dirty = false;
 }
 
